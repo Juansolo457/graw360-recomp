@@ -189,3 +189,33 @@ pwsh -NoProfile -File tools/launch.ps1 -Windowed "-Extra:--graw_debug_bink=true"
 - **Shared SDK:** don't write into fear360-recomp's files. GRAW's patched SDK is its own copy:
   a junction once made a GRAW build overwrite fear360's libraries.
 - **`.recomp.json`:** the user maintains it.
+
+## Step 2 probe: written 2026-10-24 (port/src/rtt_probe.cpp)
+`--graw_debug_rtt=true`, seven hooks in `port-yeti/grawyeti_manifest.toml` under
+"Render-to-texture probe". Built from the plan above, with these corrections from checking each
+address against the generated code:
+- **tex+40 is a pointer** to the render-target descriptor (`lwz r4,40(r31)` before the push),
+  not the descriptor itself.
+- **The Begin hook is at `0x821BB954`**, right after the gate passes and r31 = video+68 is
+  loaded, so the push's `SetRenderTarget` falls inside the pass. `0x821BB988` comes after the
+  push. The gate (`lbz r9,77(r10)` at `0x821BB944`) can skip the whole pass: the probe counts
+  entries against passes.
+- **The resolve has two branches.** Mode 1 render targets use the per-rect `sub_824D1960`
+  (bl at `0x821146A8`). The video's mode 0 uses `D3DDevice_Resolve` (bl at `0x821146DC`). Both
+  are hooked.
+- **The HUD fetch:** `0x824C6F88` is D3D `SetTexture(device, sampler, texture)`. The Bink draw
+  binds its planes with it, and the slot is device+(3176+sampler)*4. The probe hooks its entry
+  and counts binds of each video's resolved D3DTexture outside the video pass. If the count is
+  0, the HUD never samples the texture through this call. That would itself be a finding (an
+  inlined fetch-constant write, or a game-side miss).
+
+What it logs, in the campaign's log (`GRAW rtt ...`):
+- For the first three passes of each video texture:
+  - the engine texture, its D3DTexture and the decoded fetch constant (base, pitch, tiled,
+    format, endian, size, exp_adjust);
+  - the descriptor's colour/depth surfaces, mode and viewport, plus 16 raw dwords of the D3D
+    colour surface;
+  - the `SetRenderTarget` surface, and the resolve's flags and destination, with a check that
+    the destination is the engine texture's own.
+- The first two `SetTexture` binds of each result.
+- Every 2 s: passes, SetRenderTargets, resolves, ends and HUD binds per texture.

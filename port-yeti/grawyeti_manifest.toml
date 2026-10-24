@@ -201,3 +201,40 @@ registers = ["r1", "r31"]
 name = "GrawBinkDraw"            # sub_823400A0 entry
 address = 0x823400A0
 registers = ["r3"]
+
+# Render-to-texture probe for the black video panels (src/rtt_probe.cpp, #2, CROSSCOM.md step 2;
+# logs only with --graw_debug_rtt). sub_821BB8F0 renders one video panel into its texture.
+[[entrypoint.midasm_hook]]
+name = "GrawRttEnter"            # sub_821BB8F0 entry
+address = 0x821BB8F0
+registers = ["r3"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawRttBegin"            # gate passed, r31 = video+68, before the render-target push
+address = 0x821BB954
+registers = ["r29", "r31"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawRttSetRenderTarget"  # sub_8211E870: bl D3D SetRenderTarget (0x824D1188)
+address = 0x8211E8A8
+registers = ["r3", "r5", "r31"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawRttResolveRect"      # sub_82114588: bl per-rect resolve (0x824D1960)
+address = 0x821146A8
+registers = ["r3"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawRttResolve"          # sub_82114588: bl D3DDevice_Resolve (0x824D2CA0)
+address = 0x821146DC
+registers = ["r4", "r6"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawRttEnd"              # sub_821BB8F0: after the resolve, before the pop
+address = 0x821BB9B4
+registers = ["r31"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawRttSetTexture"       # D3D SetTexture(device, sampler, texture) entry
+address = 0x824C6F88
+registers = ["r3", "r4", "r5"]

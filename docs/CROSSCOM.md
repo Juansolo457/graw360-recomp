@@ -526,3 +526,8 @@ campaign videos played at once, both into black panels:
   addresses), together with the renderer trace for the texture addresses. Find which
   allocation returned `10C78000` (virtual address = physical + heap base), its requested size,
   and whether the 0x7000 comes from the game's heap or from Bink's size calculation.
+- **`-Trace` run (07:44), user's report:** the Cross-Com and top-right panels play their
+  intro/outro animation, but the video area stays black. The HUD border is static again. That
+  fits the overlap: the frame animation is drawn straight onto the HUD, while the video passes
+  through the overlapped textures. The log of this run is being analysed for the allocation
+  sizes; see HANDOFF.md.

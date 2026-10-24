@@ -3,8 +3,7 @@
 Read [PLAN.md](PLAN.md) for the phases and exit criteria and [FINDINGS.md](FINDINGS.md) for the
 disc and executable facts. This file is the state, the build/run detail and where things live.
 Update it at the end of every session; the next model starts here, not from chat history.
-**The current top task has its own handoff: [HANDOFF-ASTRA.md](HANDOFF-ASTRA.md) (start there),
-with the full evidence in [CROSSCOM.md](CROSSCOM.md) (#2).**
+**Top task #2: root cause found, see "Current #2 handoff: root cause found" below and [CROSSCOM.md](CROSSCOM.md).**
 
 ## Where it stands
 **The game plays.** The front end hands over to the campaign and to Instant Action, as the
@@ -140,7 +139,56 @@ Our files are MIT (`LICENSE`, `NOTICE`); ReXGlue is BSD-3-Clause with Xenia's no
 fear-nx's renderer is ever brought in, that directory and any build linking it are GPL-3.0.
 Never commit game data, generated translations, captures or saves. Releases are source only.
 
-## Current #2 handoff after Canary comparison (2026-10-24)
+## Current #2 handoff: root cause found (2026-10-24, latest)
+**The black Cross-Com, narration and portrait panels come from overlapping guest memory, not
+from the renderer.** The Bink frame buffers of one video and the 160x120 output texture of
+another occupy the same physical pages, so each CPU-decoded frame overwrites a resolved
+picture. The full evidence chain, with addresses, is in [CROSSCOM.md](CROSSCOM.md) ("Root cause
+found"). In short:
+
+1. **The renderer was ruled out step by step.**
+   - January Canary 263e91b, the build ReXGlue forked from, shows the Cross-Com and the map.
+   - No renderer option fixes it.
+   - An instrumented build of the stock renderer (source `third_party/rexglue-sdk-bd833a2`,
+     patch `tools/patches/rexglue-bd833a2-graw-rtt-trace.patch`, option
+     `--graw_trace_rtt_max_width=200`) showed every step working:
+     - resolve, then invalidate, then reload, then bind, one for one;
+     - the Bink draw is issued, with colour writes on;
+     - the planes reload after every CPU write.
+2. **The cause.** One video's output texture sits 0x7000 into the other's 0x20000-byte Bink
+   plane block. Whatever placed it sized that block at 0x7000.
+   `MmAllocatePhysicalMemoryEx` is identical in ReXGlue and Canary, so the mistake is above
+   the kernel: in the game's or Bink's allocation or size code, which Canary runs through its
+   JIT and we run recompiled. **The likely cause is a codegen error in that code.**
+3. **In progress.** The user is playing a `-Trace` run started at 07:44
+   (`port/logs/run-20261024-074440*.log`; the campaign log is `...~grawyeti-*.log`) with the
+   renderer trace on. Read it once the game is closed:
+   - Find the allocation that returned the Bink plane block (the `10C7xxxx` region last run;
+     addresses change per run, so take them from this run's `GRAW trace ... samples fetch` and
+     `resolve ... to` lines). Note its requested size, and whether `MmAllocatePhysicalMemoryEx`
+     or the game's own heap returned it.
+   - Then follow the size back through the generated code
+     (`port-yeti/generated/yeti_final_xenon/`) to the instruction that computes it. Compare
+     with the PowerPC semantics. Suspects are 64-bit / 32-bit mix-ups, rotate/mask (`rlwinm`)
+     and carry handling.
+   - A fix is either a manifest hook or a `[[entrypoint...]]` override, or a ReXGlue codegen
+     fix if it's a translator bug.
+
+**Related findings, independent of the overlap:**
+- **Background compilation:** `--async_shader_compilation=false` stops ReXGlue from
+  permanently skipping some draws. On the instrumented build the HUD border (#1) then drew
+  correctly. On the stock build it was static again, probably from the same memory overlap.
+  Re-test #1 after the fix.
+- **Renderer DLL on disk:** `port-yeti/out/build/win-amd64-relwithdebinfo/rexgpu-xenosrd.dll`
+  is currently the **instrumented** build. The original is `rexgpu-xenosrd.dll.stock`, and a
+  port-yeti rebuild copies the prebuilt back.
+- **Canary for comparison:** `private/xenia-canary/9e03494/` and `.../263e91b/`, run with
+  `--config=graw-depth-clamp-off.toml --launch_module=Yeti_Final_Xenon.exe` on the ISO.
+
+The user's rules apply: ask before every launch, build or download, never stop their game, and
+commit by explicit path (another session shares this checkout).
+
+## Earlier #2 handoff after Canary comparison (2026-10-24, superseded)
 **Cross-Com works in Xenia Canary 9e03494 with depth clamp ON and OFF.** The user also
 confirmed a correct-looking crosshair and tactical map in the OFF run. These were Canary
 runs, not recompilation builds. No recomp code was changed or built; no fix is claimed.

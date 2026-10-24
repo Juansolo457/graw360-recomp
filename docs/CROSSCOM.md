@@ -845,6 +845,12 @@ renderer DLL is back in place for this.
   - `tools/renderdoc_canary.ps1 [-Build 263e91b]`: Canary on the user's ISO under RenderDoc.
     Captures go to `private/xenia-canary/<build>/renderdoc/`.
   - Press Print Screen in the game window to capture; F12 is Canary's own screenshot key.
+  - **First recomp attempt (09:20) captured nothing.** RenderDoc did hook both programs: each log
+    says "RenderDoc API initialized", and ReXGlue only reads the API to enable debug markers. But
+    no `.rdc` or RenderDoc log was written anywhere. Windows 11 maps Print Screen to the Snipping
+    Tool by default, which likely swallowed the key. **Use F12 in the recomp.** For Canary,
+    where F12 is its own screenshot key, use the RenderDoc UI (qrenderdoc, "Launch Application",
+    then "Trigger Capture"), or turn off the Windows Print Screen shortcut.
 - **Procedure:**
   1. Capture one frame with the Cross-Com clip up in each program, at the same point of the
      first mission.

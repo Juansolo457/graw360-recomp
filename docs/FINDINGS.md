@@ -247,6 +247,25 @@ Two related things did show up:
   front end's) compiles at runtime. The pixel shader samples `.x` of each plane into
   `c = (Y, Cr, Cb, consts.x)` and outputs `dot(tor|tog|tob, c)` with constants `c0`-`c3`. Black
   means the planes sample as 0, the constants are 0, or the compiled microcode is wrong.
-- The stock plugin honours `--dump_shaders <dir>`: each shader's Xenos microcode and its
-  disassembly, written when first translated. Next probe: one run with it, then check the Bink
-  pixel shader (three `tfetch2D` + three `dp4`) against the source above.
+- The compiled Bink shader is correct. `--dump_shaders` wrote nothing (the renderer loads its
+  shaders from `port/cache/shaders/shareable/555307D5.xsh` instead), so the stored microcode was
+  read from that file (big-endian dwords after a 12-byte header per shader). Pixel shader
+  `E4F08314542740C2`: `tfetch` tf0/tf1/tf2 into r1.x/y/z, `maxs` puts c3.x in r1.w and c3.w in
+  oC0.w, `dp4` c0/c1/c2 with r1 into oC0.x/y/z. That matches the HLSL, so the game's recompiled
+  D3DX compiler is not the fault.
+- The game's Bink code (Yeti_Final_Xenon.exe):
+  - `sub_823409C8` compiles the three shaders at start-up and keeps them at `0x828F18B4`
+    (three-plane), `0x828F18B8` (four-plane), `0x828F18BC` (vertex); the device is `*0x828F18B0`.
+  - `sub_82340EE8` draws a frame: the three planes on samplers 0-2, the YUV constants from a
+    table at `0x825A9120` into c0-c3, then a pixel-space quad (the pass-through vertex shader,
+    with the viewport transform switched off around it).
+  - `sub_823400A0` is the video object's draw: if the byte at +24 is set it calls
+    `sub_82340EE8`; **otherwise it clears the box to black** (`0x824CDCC8`, flags 15).
+  - `sub_82340648` is the update: BinkDoFrame (`0x825B8CE0`) / BinkNextFrame (`0x825B9280`)
+    until BinkWait (`0x825B8348`) returns non-zero, then sets +24; BinkGetRealtime
+    (`0x825B86E8`) under 25 % of the read buffer changes the state at +40 (a 4-entry switch).
+  So the box is black either because +24 never sets (Bink's timer or buffering state), or
+  because the draw lands somewhere the HUD doesn't show.
+- `src/bink_probe.cpp` (port-yeti hooks, `--graw_debug_bink`) logs each video object's state on
+  change and per 2 s: updates, draws with and without a frame, BinkWait results, ready sets,
+  frame number, read buffer.

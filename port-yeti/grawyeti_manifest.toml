@@ -169,3 +169,35 @@ registers = []
 name = "GrawFrameMark"
 address = 0x824CCB4C
 registers = []
+
+# Bink video probe for the black Cross-Com box (src/bink_probe.cpp, #2; logs only with
+# --graw_debug_bink). sub_82340648 is the video object's update, sub_823400A0 its draw.
+[[entrypoint.midasm_hook]]
+name = "GrawBinkUpdate"          # sub_82340648 entry
+address = 0x82340648
+registers = ["r3"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawBinkWaitResult"      # after the first bl BinkWait (0x825B8348)
+address = 0x823407A0
+registers = ["r3"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawBinkWaitResult"      # after the second bl BinkWait
+address = 0x823407BC
+registers = ["r3"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawBinkReady"           # stb r28,24(r31): the "has a frame" byte
+address = 0x823407C8
+registers = ["r31"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawBinkRealtime"        # after bl BinkGetRealtime (0x825B86E8)
+address = 0x8234080C
+registers = ["r1", "r31"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawBinkDraw"            # sub_823400A0 entry
+address = 0x823400A0
+registers = ["r3"]

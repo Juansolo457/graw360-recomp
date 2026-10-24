@@ -29,6 +29,7 @@ set(GRAWYETI_SOURCES
     ${GRAW_SHARED_SRC}/ui_style.cpp
     ${GRAW_SHARED_SRC}/ui_pad.cpp
     ${GRAW_SHARED_SRC}/frame_timing.cpp
+    ${GRAW_SHARED_SRC}/bink_probe.cpp
     ${GRAW_SHARED_SRC}/cpu_check.cpp
 )
 

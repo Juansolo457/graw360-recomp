@@ -1,0 +1,733 @@
+diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
+index 96d362b..018e02f 100644
+--- a/include/rex/graphics/d3d12/command_processor.h
++++ b/include/rex/graphics/d3d12/command_processor.h
+@@ -461,23 +461,6 @@ class D3D12CommandProcessor : public CommandProcessor {
+ 
+   bool debug_markers_enabled_ = false;
+ 
+-  // Viewport info caching - avoids redundant GetHostViewportInfo recalculation
+-  // when viewport-affecting register state hasn't changed between draws.
+-  struct ViewportCacheKey {
+-    uint32_t pa_cl_clip_cntl;
+-    uint32_t pa_cl_vte_cntl;
+-    uint32_t pa_su_sc_mode_cntl;
+-    uint32_t pa_su_vtx_cntl;
+-    uint32_t pa_sc_window_offset;
+-    uint32_t normalized_depth_control;
+-    uint32_t vport_regs[6];  // XSCALE, XOFFSET, YSCALE, YOFFSET, ZSCALE, ZOFFSET
+-    uint32_t flags;          // packed: convert_z_to_float24, full_float24, ps_writes_depth
+-    bool operator==(const ViewportCacheKey&) const = default;
+-  };
+-  ViewportCacheKey previous_viewport_key_{};
+-  draw_util::ViewportInfo previous_viewport_info_{};
+-  bool viewport_cache_valid_ = false;
+-
+   // Should bindless textures and samplers be used - many times faster
+   // UpdateBindings than bindful (that becomes a significant bottleneck with
+   // bindful - mainly because of CopyDescriptorsSimple, which takes the majority
+diff --git a/include/rex/graphics/d3d12/deferred_command_list.h b/include/rex/graphics/d3d12/deferred_command_list.h
+index 7f1eb7f..09387a7 100644
+--- a/include/rex/graphics/d3d12/deferred_command_list.h
++++ b/include/rex/graphics/d3d12/deferred_command_list.h
+@@ -353,41 +353,6 @@ class DeferredCommandList {
+     args.base_descriptor.ptr = base_descriptor.ptr;
+   }
+ 
+-  void D3DSetComputeRootShaderResourceView(UINT root_parameter_index,
+-                                           D3D12_GPU_VIRTUAL_ADDRESS buffer_location) {
+-    auto& args = *reinterpret_cast<SetRootConstantBufferViewArguments*>(WriteCommand(
+-        Command::kD3DSetComputeRootShaderResourceView, sizeof(SetRootConstantBufferViewArguments)));
+-    args.root_parameter_index = root_parameter_index;
+-    args.buffer_location = buffer_location;
+-  }
+-
+-  void D3DSetGraphicsRootShaderResourceView(UINT root_parameter_index,
+-                                            D3D12_GPU_VIRTUAL_ADDRESS buffer_location) {
+-    auto& args = *reinterpret_cast<SetRootConstantBufferViewArguments*>(
+-        WriteCommand(Command::kD3DSetGraphicsRootShaderResourceView,
+-                     sizeof(SetRootConstantBufferViewArguments)));
+-    args.root_parameter_index = root_parameter_index;
+-    args.buffer_location = buffer_location;
+-  }
+-
+-  void D3DSetComputeRootUnorderedAccessView(UINT root_parameter_index,
+-                                            D3D12_GPU_VIRTUAL_ADDRESS buffer_location) {
+-    auto& args = *reinterpret_cast<SetRootConstantBufferViewArguments*>(
+-        WriteCommand(Command::kD3DSetComputeRootUnorderedAccessView,
+-                     sizeof(SetRootConstantBufferViewArguments)));
+-    args.root_parameter_index = root_parameter_index;
+-    args.buffer_location = buffer_location;
+-  }
+-
+-  void D3DSetGraphicsRootUnorderedAccessView(UINT root_parameter_index,
+-                                             D3D12_GPU_VIRTUAL_ADDRESS buffer_location) {
+-    auto& args = *reinterpret_cast<SetRootConstantBufferViewArguments*>(
+-        WriteCommand(Command::kD3DSetGraphicsRootUnorderedAccessView,
+-                     sizeof(SetRootConstantBufferViewArguments)));
+-    args.root_parameter_index = root_parameter_index;
+-    args.buffer_location = buffer_location;
+-  }
+-
+   void D3DSetComputeRootSignature(ID3D12RootSignature* root_signature) {
+     auto& arg = *reinterpret_cast<ID3D12RootSignature**>(
+         WriteCommand(Command::kD3DSetComputeRootSignature, sizeof(ID3D12RootSignature*)));
+@@ -433,22 +398,25 @@ class DeferredCommandList {
+ 
+   void BeginDebugMarker(const char* label_name) {
+     size_t label_len = std::strlen(label_name);
+-    uint8_t* args_ptr = reinterpret_cast<uint8_t*>(
+-        WriteCommand(Command::kBeginDebugMarker, sizeof(DebugMarkerHeader) + label_len + 1));
++    uint8_t* args_ptr = reinterpret_cast<uint8_t*>(WriteCommand(
++        Command::kBeginDebugMarker, sizeof(DebugMarkerHeader) + label_len + 1));
+     auto& args = *reinterpret_cast<DebugMarkerHeader*>(args_ptr);
+     args.label_length = static_cast<uint32_t>(label_len);
+-    std::memcpy(args_ptr + sizeof(DebugMarkerHeader), label_name, label_len + 1);
++    std::memcpy(args_ptr + sizeof(DebugMarkerHeader), label_name,
++                label_len + 1);
+   }
+ 
+   void EndDebugMarker() { WriteCommand(Command::kEndDebugMarker, 0); }
+ 
+   void InsertDebugMarker(const char* label_name) {
+     size_t label_len = std::strlen(label_name);
+-    uint8_t* args_ptr = reinterpret_cast<uint8_t*>(
+-        WriteCommand(Command::kInsertDebugMarker, sizeof(DebugMarkerHeader) + label_len + 1));
++    uint8_t* args_ptr = reinterpret_cast<uint8_t*>(WriteCommand(
++        Command::kInsertDebugMarker,
++        sizeof(DebugMarkerHeader) + label_len + 1));
+     auto& args = *reinterpret_cast<DebugMarkerHeader*>(args_ptr);
+     args.label_length = static_cast<uint32_t>(label_len);
+-    std::memcpy(args_ptr + sizeof(DebugMarkerHeader), label_name, label_len + 1);
++    std::memcpy(args_ptr + sizeof(DebugMarkerHeader), label_name,
++                label_len + 1);
+   }
+ 
+  private:
+@@ -481,12 +449,8 @@ class DeferredCommandList {
+     kD3DSetGraphicsRootConstantBufferView,
+     kD3DSetComputeRootDescriptorTable,
+     kD3DSetGraphicsRootDescriptorTable,
+-    kD3DSetComputeRootShaderResourceView,
+-    kD3DSetGraphicsRootShaderResourceView,
+     kD3DSetComputeRootSignature,
+     kD3DSetGraphicsRootSignature,
+-    kD3DSetComputeRootUnorderedAccessView,
+-    kD3DSetGraphicsRootUnorderedAccessView,
+     kSetDescriptorHeaps,
+     kD3DSetPipelineState,
+     kSetPipelineStateHandle,
+diff --git a/include/rex/graphics/shared_memory.h b/include/rex/graphics/shared_memory.h
+index 4d85a2b..d99b1b1 100644
+--- a/include/rex/graphics/shared_memory.h
++++ b/include/rex/graphics/shared_memory.h
+@@ -10,6 +10,7 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <atomic>
+ #include <cstdint>
+ #include <mutex>
+ #include <utility>
+@@ -170,10 +171,16 @@ class SharedMemory {
+   // Things below should be fully protected by global_critical_region.
+   // ***************************************************************************
+ 
+-  // Pages whose contents in the buffer are in sync with guest memory.
+-  std::vector<uint64_t> system_page_flags_valid_;
++  // Double-buffered valid-page flags for lockless checks in RequestRanges.
++  std::vector<uint64_t> valid_buffer_a_;
++  std::vector<uint64_t> valid_buffer_b_;
++  std::atomic<uint64_t*> active_valid_flags_{nullptr};
++  std::atomic<uint64_t*> staging_valid_flags_{nullptr};
+   // Subset of valid pages containing data written by the GPU.
+   std::vector<uint64_t> system_page_flags_valid_and_gpu_written_;
++  // Dirty state tracking for frame-end page-state refresh.
++  std::atomic<bool> gpu_written_data_dirty_{false};
++  std::atomic<uint32_t> dirty_blocks_{0};
+   uint32_t num_system_page_flags_ = 0;
+ 
+   static std::pair<uint32_t, uint32_t> MemoryInvalidationCallbackThunk(
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index a744375..3f998a1 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -1268,10 +1268,10 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* re
+     // 0xFFFFFEED is written to this two locations by D3D only on D3DISSUE_END
+     // and used to detect a finished query.
+     bool is_end_via_z_pass =
+-        pSampleCounts->ZPass_A == kQueryFinished || pSampleCounts->ZPass_B == kQueryFinished;
++        pSampleCounts->ZPass_A == kQueryFinished && pSampleCounts->ZPass_B == kQueryFinished;
+     // Older versions of D3D also checks for ZFail (4D5307D5).
+     bool is_end_via_z_fail =
+-        pSampleCounts->ZFail_A == kQueryFinished || pSampleCounts->ZFail_B == kQueryFinished;
++        pSampleCounts->ZFail_A == kQueryFinished && pSampleCounts->ZFail_B == kQueryFinished;
+     std::memset(pSampleCounts, 0, sizeof(xe_gpu_depth_sample_counts));
+     if (is_end_via_z_pass || is_end_via_z_fail) {
+       pSampleCounts->ZPass_A = fake_sample_count;
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index 19874a5..e47dd67 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -175,9 +175,9 @@ bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffe
+       return true;
+     }
+     bool is_end_via_z_pass =
+-        sample_counts->ZPass_A == kQueryFinished || sample_counts->ZPass_B == kQueryFinished;
++        sample_counts->ZPass_A == kQueryFinished && sample_counts->ZPass_B == kQueryFinished;
+     bool is_end_via_z_fail =
+-        sample_counts->ZFail_A == kQueryFinished || sample_counts->ZFail_B == kQueryFinished;
++        sample_counts->ZFail_A == kQueryFinished && sample_counts->ZFail_B == kQueryFinished;
+     std::memset(sample_counts, 0, sizeof(xenos::xe_gpu_depth_sample_counts));
+     if (is_end_via_z_pass || is_end_via_z_fail) {
+       sample_counts->ZPass_A = fake_sample_count;
+@@ -187,9 +187,9 @@ bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffe
+   };
+ 
+   bool is_end_via_z_pass =
+-      sample_counts->ZPass_A == kQueryFinished || sample_counts->ZPass_B == kQueryFinished;
++      sample_counts->ZPass_A == kQueryFinished && sample_counts->ZPass_B == kQueryFinished;
+   bool is_end_via_z_fail =
+-      sample_counts->ZFail_A == kQueryFinished || sample_counts->ZFail_B == kQueryFinished;
++      sample_counts->ZFail_A == kQueryFinished && sample_counts->ZFail_B == kQueryFinished;
+   bool is_end = is_end_via_z_pass || is_end_via_z_fail;
+ 
+   if (!is_end) {
+@@ -2420,38 +2420,12 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+   // Get dynamic rasterizer state.
+   uint32_t draw_resolution_scale_x = texture_cache_->draw_resolution_scale_x();
+   uint32_t draw_resolution_scale_y = texture_cache_->draw_resolution_scale_y();
+-
+-  bool convert_z_to_float24 =
+-      host_render_targets_used && render_target_cache_->depth_float24_convert_in_pixel_shader();
+-  bool ps_writes_depth = pixel_shader && pixel_shader->writes_depth();
+-
+-  // Build a cache key from all viewport-affecting state to skip redundant
+-  // recalculation when the viewport registers haven't changed between draws.
+-  ViewportCacheKey viewport_key;
+-  viewport_key.pa_cl_clip_cntl = regs[XE_GPU_REG_PA_CL_CLIP_CNTL];
+-  viewport_key.pa_cl_vte_cntl = regs[XE_GPU_REG_PA_CL_VTE_CNTL];
+-  viewport_key.pa_su_sc_mode_cntl = regs[XE_GPU_REG_PA_SU_SC_MODE_CNTL];
+-  viewport_key.pa_su_vtx_cntl = regs[XE_GPU_REG_PA_SU_VTX_CNTL];
+-  viewport_key.pa_sc_window_offset = regs[XE_GPU_REG_PA_SC_WINDOW_OFFSET];
+-  viewport_key.normalized_depth_control = normalized_depth_control.value;
+-  std::memcpy(viewport_key.vport_regs, &regs[XE_GPU_REG_PA_CL_VPORT_XSCALE],
+-              sizeof(viewport_key.vport_regs));
+-  viewport_key.flags = (uint32_t(convert_z_to_float24) << 0) |
+-                       (uint32_t(host_render_targets_used) << 1) | (uint32_t(ps_writes_depth) << 2);
+-
+   draw_util::ViewportInfo viewport_info;
+-  if (viewport_cache_valid_ && viewport_key == previous_viewport_key_) {
+-    viewport_info = previous_viewport_info_;
+-  } else {
+-    draw_util::GetHostViewportInfo(regs, draw_resolution_scale_x, draw_resolution_scale_y, true,
+-                                   D3D12_VIEWPORT_BOUNDS_MAX, D3D12_VIEWPORT_BOUNDS_MAX, false,
+-                                   normalized_depth_control, convert_z_to_float24,
+-                                   host_render_targets_used, ps_writes_depth, viewport_info);
+-    previous_viewport_key_ = viewport_key;
+-    previous_viewport_info_ = viewport_info;
+-    viewport_cache_valid_ = true;
+-  }
+-
++  draw_util::GetHostViewportInfo(
++      regs, draw_resolution_scale_x, draw_resolution_scale_y, true, D3D12_VIEWPORT_BOUNDS_MAX,
++      D3D12_VIEWPORT_BOUNDS_MAX, false, normalized_depth_control,
++      host_render_targets_used && render_target_cache_->depth_float24_convert_in_pixel_shader(),
++      host_render_targets_used, pixel_shader && pixel_shader->writes_depth(), viewport_info);
+   draw_util::Scissor scissor;
+   draw_util::GetScissor(regs, scissor);
+   scissor.offset[0] *= draw_resolution_scale_x;
+@@ -3308,7 +3282,6 @@ bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
+     ff_scissor_update_needed_ = true;
+     ff_blend_factor_update_needed_ = true;
+     ff_stencil_ref_update_needed_ = true;
+-    viewport_cache_valid_ = false;
+     current_guest_pipeline_ = nullptr;
+     current_external_pipeline_ = nullptr;
+     current_graphics_root_signature_ = nullptr;
+diff --git a/src/graphics/d3d12/deferred_command_list.cpp b/src/graphics/d3d12/deferred_command_list.cpp
+index e6d6277..bea2e3c 100644
+--- a/src/graphics/d3d12/deferred_command_list.cpp
++++ b/src/graphics/d3d12/deferred_command_list.cpp
+@@ -190,16 +190,6 @@ void DeferredCommandList::Execute(ID3D12GraphicsCommandList* command_list,
+         command_list->SetGraphicsRootDescriptorTable(args.root_parameter_index,
+                                                      args.base_descriptor);
+       } break;
+-      case Command::kD3DSetComputeRootShaderResourceView: {
+-        auto& args = *reinterpret_cast<const SetRootConstantBufferViewArguments*>(stream);
+-        command_list->SetComputeRootShaderResourceView(args.root_parameter_index,
+-                                                       args.buffer_location);
+-      } break;
+-      case Command::kD3DSetGraphicsRootShaderResourceView: {
+-        auto& args = *reinterpret_cast<const SetRootConstantBufferViewArguments*>(stream);
+-        command_list->SetGraphicsRootShaderResourceView(args.root_parameter_index,
+-                                                        args.buffer_location);
+-      } break;
+       case Command::kD3DSetComputeRootSignature: {
+         command_list->SetComputeRootSignature(
+             *reinterpret_cast<ID3D12RootSignature* const*>(stream));
+@@ -208,16 +198,6 @@ void DeferredCommandList::Execute(ID3D12GraphicsCommandList* command_list,
+         command_list->SetGraphicsRootSignature(
+             *reinterpret_cast<ID3D12RootSignature* const*>(stream));
+       } break;
+-      case Command::kD3DSetComputeRootUnorderedAccessView: {
+-        auto& args = *reinterpret_cast<const SetRootConstantBufferViewArguments*>(stream);
+-        command_list->SetComputeRootUnorderedAccessView(args.root_parameter_index,
+-                                                        args.buffer_location);
+-      } break;
+-      case Command::kD3DSetGraphicsRootUnorderedAccessView: {
+-        auto& args = *reinterpret_cast<const SetRootConstantBufferViewArguments*>(stream);
+-        command_list->SetGraphicsRootUnorderedAccessView(args.root_parameter_index,
+-                                                         args.buffer_location);
+-      } break;
+       case Command::kSetDescriptorHeaps: {
+         auto& args = *reinterpret_cast<const SetDescriptorHeapsArguments*>(stream);
+         UINT num_descriptor_heaps = 0;
+@@ -256,8 +236,10 @@ void DeferredCommandList::Execute(ID3D12GraphicsCommandList* command_list,
+       case Command::kBeginDebugMarker: {
+         auto& args = *reinterpret_cast<const DebugMarkerHeader*>(stream);
+         const char* label_name = reinterpret_cast<const char*>(
+-            reinterpret_cast<const uint8_t*>(stream) + sizeof(DebugMarkerHeader));
+-        command_list->BeginEvent(1, label_name, static_cast<UINT>(args.label_length + 1));
++            reinterpret_cast<const uint8_t*>(stream) +
++            sizeof(DebugMarkerHeader));
++        command_list->BeginEvent(1, label_name,
++                                 static_cast<UINT>(args.label_length + 1));
+       } break;
+       case Command::kEndDebugMarker: {
+         command_list->EndEvent();
+@@ -265,8 +247,10 @@ void DeferredCommandList::Execute(ID3D12GraphicsCommandList* command_list,
+       case Command::kInsertDebugMarker: {
+         auto& args = *reinterpret_cast<const DebugMarkerHeader*>(stream);
+         const char* label_name = reinterpret_cast<const char*>(
+-            reinterpret_cast<const uint8_t*>(stream) + sizeof(DebugMarkerHeader));
+-        command_list->SetMarker(1, label_name, static_cast<UINT>(args.label_length + 1));
++            reinterpret_cast<const uint8_t*>(stream) +
++            sizeof(DebugMarkerHeader));
++        command_list->SetMarker(1, label_name,
++                                static_cast<UINT>(args.label_length + 1));
+       } break;
+       default:
+         assert_unhandled_case(header.command);
+diff --git a/src/graphics/d3d12/pipeline_cache.cpp b/src/graphics/d3d12/pipeline_cache.cpp
+index 8e6b854..99ccf29 100644
+--- a/src/graphics/d3d12/pipeline_cache.cpp
++++ b/src/graphics/d3d12/pipeline_cache.cpp
+@@ -919,15 +919,10 @@ bool PipelineCache::ConfigurePipeline(
+               register_file_.Get<reg::SQ_PROGRAM_CNTL>().vs_export_mode !=
+                   xenos::VertexShaderExportMode::kPosition2VectorsEdgeKill);
+   assert_false(register_file_.Get<reg::SQ_PROGRAM_CNTL>().gen_index_vtx);
+-  // Ucode analysis is always needed on the main thread (for modification and
+-  // hash computation). Translation can be deferred to background threads when
+-  // async compilation is enabled.
+-  if (!vertex_shader->shader().is_ucode_analyzed()) {
+-    vertex_shader->shader().AnalyzeUcode(ucode_disasm_buffer_);
+-  }
+-  if (!vertex_shader->is_translated() && !use_async) {
++  if (!vertex_shader->is_translated()) {
+     std::lock_guard<std::mutex> lock(translation_request_lock_);
+     if (!vertex_shader->is_translated()) {
++      vertex_shader->shader().AnalyzeUcode(ucode_disasm_buffer_);
+       if (!TranslateAnalyzedShader(*shader_translator_, *vertex_shader, dxbc_converter_, dxc_utils_,
+                                    dxc_compiler_)) {
+         REXGPU_ERROR("Failed to translate the vertex shader!");
+@@ -946,7 +941,7 @@ bool PipelineCache::ConfigurePipeline(
+       }
+     }
+   }
+-  if (!use_async && !vertex_shader->is_valid()) {
++  if (!vertex_shader->is_valid()) {
+     // Translation attempted previously, but not valid.
+     return false;
+   }
+@@ -1024,7 +1019,6 @@ bool PipelineCache::ConfigurePipeline(
+                                             : normalized_depth_control.z_write_enable != 0;
+     new_pipeline->priority = pipeline_util::CalculatePipelinePriority(
+         bound_rts, shader_writes_color_targets, shader_writes_depth);
+-    new_pipeline->pending_vertex_shader = vertex_shader;
+     new_pipeline->pending_pixel_shader = pixel_shader;
+     // Submit the pipeline for creation to any available thread.
+     {
+@@ -1239,10 +1233,8 @@ bool PipelineCache::GetCurrentStateDescription(
+     uint32_t bound_depth_and_color_render_target_bits,
+     const uint32_t* bound_depth_and_color_render_target_formats,
+     PipelineRuntimeDescription& runtime_description_out, bool for_placeholder) {
+-  // Translated shaders needed at least for the root signature, unless in
+-  // placeholder mode (async compilation) where both VS and PS translation
+-  // may be deferred to background threads.
+-  assert_true(for_placeholder || (vertex_shader->is_translated() && vertex_shader->is_valid()));
++  // Translated shaders needed at least for the root signature.
++  assert_true(vertex_shader->is_translated() && vertex_shader->is_valid());
+   assert_true(for_placeholder || !pixel_shader ||
+               (pixel_shader->is_translated() && pixel_shader->is_valid()));
+ 
+diff --git a/src/graphics/flags.cpp b/src/graphics/flags.cpp
+index e2983a4..e17bff8 100644
+--- a/src/graphics/flags.cpp
++++ b/src/graphics/flags.cpp
+@@ -19,7 +19,7 @@ REXCVAR_DEFINE_BOOL(native_2x_msaa, true, "GPU", "Enable native 2x MSAA");
+ REXCVAR_DEFINE_BOOL(depth_float24_round, false, "GPU", "Round float24 depth values");
+ REXCVAR_DEFINE_BOOL(depth_float24_convert_in_pixel_shader, false, "GPU",
+                     "Convert float24 depth in pixel shader");
+-REXCVAR_DEFINE_BOOL(depth_transfer_not_equal_test, true, "GPU",
++REXCVAR_DEFINE_BOOL(depth_transfer_not_equal_test, false, "GPU",
+                     "Use not-equal test for depth transfer");
+ REXCVAR_DEFINE_BOOL(gamma_render_target_as_unorm16, true, "GPU",
+                     "Use R16G16B16A16_UNORM for gamma render targets (more accurate than sRGB)")
+diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
+index 8f2fcb0..24f75cb 100644
+--- a/src/graphics/graphics_system.cpp
++++ b/src/graphics/graphics_system.cpp
+@@ -162,9 +162,9 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+           uint64_t current_time = chrono::Clock::QueryGuestTickCount();
+           uint64_t interval_ticks =
+               REXCVAR_GET(vsync) ? vsync_interval_ticks : no_vsync_interval_ticks;
+-          while (current_time - last_frame_time >= interval_ticks) {
++          if (current_time - last_frame_time >= interval_ticks) {
+             MarkVblank();
+-            last_frame_time += interval_ticks;
++            last_frame_time = current_time;
+           }
+           rex::thread::Sleep(std::chrono::milliseconds(1));
+         }
+diff --git a/src/graphics/pipeline/render_target/cache.cpp b/src/graphics/pipeline/render_target/cache.cpp
+index 953c5fd..f398a7a 100644
+--- a/src/graphics/pipeline/render_target/cache.cpp
++++ b/src/graphics/pipeline/render_target/cache.cpp
+@@ -28,13 +28,13 @@
+ #include <rex/logging.h>
+ #include <rex/math.h>
+ 
+-REXCVAR_DEFINE_BOOL(mrt_edram_used_range_clamp_to_min, true, "GPU",
++REXCVAR_DEFINE_BOOL(mrt_edram_used_range_clamp_to_min, false, "GPU",
+                     "Clamp MRT EDRAM used range to minimum");
+ 
+-REXCVAR_DEFINE_BOOL(execute_unclipped_draw_vs_on_cpu_for_psi_render_backend, true, "GPU",
++REXCVAR_DEFINE_BOOL(execute_unclipped_draw_vs_on_cpu_for_psi_render_backend, false, "GPU",
+                     "Execute unclipped draw VS on CPU for PSI render backend");
+ 
+-REXCVAR_DEFINE_BOOL(snorm16_render_target_full_range, true, "GPU",
++REXCVAR_DEFINE_BOOL(snorm16_render_target_full_range, false, "GPU",
+                     "Use full range for SNORM16 render targets");
+ 
+ REXCVAR_DEFINE_BOOL(direct_host_resolve, true, "GPU",
+diff --git a/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp b/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
+index 31de175..7833518 100644
+--- a/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
++++ b/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
+@@ -781,8 +781,7 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+     if (!instr.attributes.unnormalized_coordinates) {
+       switch (instr.dimension) {
+         case xenos::FetchOpDimension::k1D:
+-          // Always need size for 1D textures to support wide 1D textures.
+-          size_needed_components |= 0b0001;
++          size_needed_components |= used_result_nonzero_components & 0b0001;
+           break;
+         case xenos::FetchOpDimension::k2D:
+         case xenos::FetchOpDimension::kCube:
+diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
+index 76f5600..aa99404 100644
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -77,9 +77,6 @@ REXCVAR_DEFINE_INT32(resolution_scale, 1, "GPU",
+     .range(1, 8)
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ 
+-REXCVAR_DEFINE_BOOL(pre_mask_resolve_l2_block, true, "GPU",
+-                    "Pre-mask scaled resolve L2 blocks to the write range before iterating");
+-
+ // DEFINE_int32(
+ //     draw_resolution_scale_x, 1,
+ //     "Integer pixel width scale used for scaling the rendering resolution "
+@@ -1089,15 +1086,6 @@ void TextureCache::ScaledResolveGlobalWatchCallback(
+   uint32_t resolve_l2_block_last = resolve_block_last >> 6;
+   for (uint32_t i = resolve_l2_block_first; i <= resolve_l2_block_last; ++i) {
+     uint64_t resolve_l2_block = scaled_resolve_pages_l2_[i];
+-    if (REXCVAR_GET(pre_mask_resolve_l2_block)) {
+-      // Pre-mask to only process blocks within the write range.
+-      if (i == resolve_l2_block_first) {
+-        resolve_l2_block &= ~((UINT64_C(1) << (resolve_block_first & 63)) - 1);
+-      }
+-      if (i == resolve_l2_block_last && (resolve_block_last & 63) != 63) {
+-        resolve_l2_block &= (UINT64_C(1) << ((resolve_block_last & 63) + 1)) - 1;
+-      }
+-    }
+     uint32_t resolve_block_relative_index;
+     while (rex::bit_scan_forward(resolve_l2_block, &resolve_block_relative_index)) {
+       resolve_l2_block &= ~(UINT64_C(1) << resolve_block_relative_index);
+diff --git a/src/graphics/shared_memory.cpp b/src/graphics/shared_memory.cpp
+index ec0df7c..1f12381 100644
+--- a/src/graphics/shared_memory.cpp
++++ b/src/graphics/shared_memory.cpp
+@@ -32,8 +32,13 @@ SharedMemory::~SharedMemory() {
+ 
+ void SharedMemory::InitializeCommon() {
+   num_system_page_flags_ = ((kBufferSize >> page_size_log2_) + 63) / 64;
+-  system_page_flags_valid_.assign(num_system_page_flags_, 0);
++  valid_buffer_a_.assign(num_system_page_flags_, 0);
++  valid_buffer_b_.assign(num_system_page_flags_, 0);
+   system_page_flags_valid_and_gpu_written_.assign(num_system_page_flags_, 0);
++  active_valid_flags_.store(valid_buffer_a_.data(), std::memory_order_relaxed);
++  staging_valid_flags_.store(valid_buffer_b_.data(), std::memory_order_relaxed);
++  gpu_written_data_dirty_.store(false, std::memory_order_relaxed);
++  dirty_blocks_.store(0, std::memory_order_relaxed);
+ 
+   memory_invalidation_callback_handle_ =
+       memory_.RegisterPhysicalMemoryInvalidationCallback(MemoryInvalidationCallbackThunk, this);
+@@ -82,27 +87,76 @@ void SharedMemory::ShutdownCommon() {
+   host_gpu_memory_sparse_allocated_.shrink_to_fit();
+   host_gpu_memory_sparse_granularity_log2_ = UINT32_MAX;
+ 
+-  system_page_flags_valid_.clear();
+-  system_page_flags_valid_.shrink_to_fit();
++  active_valid_flags_.store(nullptr, std::memory_order_relaxed);
++  staging_valid_flags_.store(nullptr, std::memory_order_relaxed);
++  valid_buffer_a_.clear();
++  valid_buffer_a_.shrink_to_fit();
++  valid_buffer_b_.clear();
++  valid_buffer_b_.shrink_to_fit();
+   system_page_flags_valid_and_gpu_written_.clear();
+   system_page_flags_valid_and_gpu_written_.shrink_to_fit();
+   num_system_page_flags_ = 0;
++  gpu_written_data_dirty_.store(false, std::memory_order_relaxed);
++  dirty_blocks_.store(0, std::memory_order_relaxed);
+ }
+ 
+ void SharedMemory::InvalidateAllPages() {
+   auto global_lock = global_critical_region_.Acquire();
+ 
+-  std::fill(system_page_flags_valid_.begin(), system_page_flags_valid_.end(), uint64_t(0));
+-  std::fill(system_page_flags_valid_and_gpu_written_.begin(),
+-            system_page_flags_valid_and_gpu_written_.end(), uint64_t(0));
++  uint64_t* active = active_valid_flags_.load(std::memory_order_relaxed);
++  uint64_t* staging = staging_valid_flags_.load(std::memory_order_relaxed);
++  if (active && num_system_page_flags_) {
++    std::memset(active, 0, num_system_page_flags_ * sizeof(uint64_t));
++  }
++  if (staging && num_system_page_flags_) {
++    std::memset(staging, 0, num_system_page_flags_ * sizeof(uint64_t));
++  }
++  if (!system_page_flags_valid_and_gpu_written_.empty()) {
++    std::memset(system_page_flags_valid_and_gpu_written_.data(), 0,
++                num_system_page_flags_ * sizeof(uint64_t));
++  }
++
++  // Force a refresh on the next frame-end sync.
++  dirty_blocks_.store(UINT32_MAX, std::memory_order_relaxed);
++  gpu_written_data_dirty_.store(true, std::memory_order_relaxed);
+ }
+ 
+ void SharedMemory::SetSystemPageBlocksValidWithGpuDataWritten() {
+-  auto global_lock = global_critical_region_.Acquire();
++  if (!gpu_written_data_dirty_.load(std::memory_order_relaxed)) {
++    return;
++  }
++
++  uint64_t* staging = staging_valid_flags_.load(std::memory_order_acquire);
++  if (!staging || !num_system_page_flags_) {
++    gpu_written_data_dirty_.store(false, std::memory_order_relaxed);
++    dirty_blocks_.store(0, std::memory_order_relaxed);
++    return;
++  }
+ 
+-  // Pages that are valid only because the CPU uploaded them lose their valid
+-  // bit here, so the next frame re-reads them from guest memory.
+-  system_page_flags_valid_ = system_page_flags_valid_and_gpu_written_;
++  uint32_t dirty_mask = dirty_blocks_.exchange(0, std::memory_order_relaxed);
++  uint32_t dirty_count = rex::bit_count(dirty_mask);
++  if (dirty_count == 0 || dirty_count > 16) {
++    std::memcpy(staging, system_page_flags_valid_and_gpu_written_.data(),
++                num_system_page_flags_ * sizeof(uint64_t));
++  } else {
++    while (dirty_mask) {
++      uint32_t block_index;
++      rex::bit_scan_forward(dirty_mask, &block_index);
++      dirty_mask &= ~(uint32_t(1) << block_index);
++      uint32_t entry_offset = block_index * 64;
++      if (entry_offset >= num_system_page_flags_) {
++        continue;
++      }
++      uint32_t entry_count = std::min(uint32_t(64), num_system_page_flags_ - entry_offset);
++      std::memcpy(staging + entry_offset,
++                  system_page_flags_valid_and_gpu_written_.data() + entry_offset,
++                  entry_count * sizeof(uint64_t));
++    }
++  }
++
++  uint64_t* old_active = active_valid_flags_.exchange(staging, std::memory_order_acq_rel);
++  staging_valid_flags_.store(old_active, std::memory_order_release);
++  gpu_written_data_dirty_.store(false, std::memory_order_relaxed);
+ }
+ 
+ void SharedMemory::ClearCache() {
+@@ -293,6 +347,7 @@ void SharedMemory::MakeRangeValid(uint32_t start, uint32_t length, bool written_
+ 
+   {
+     auto global_lock = global_critical_region_.Acquire();
++    uint64_t* valid_flags = active_valid_flags_.load(std::memory_order_relaxed);
+ 
+     for (uint32_t i = valid_block_first; i <= valid_block_last; ++i) {
+       uint64_t valid_bits = UINT64_MAX;
+@@ -302,9 +357,17 @@ void SharedMemory::MakeRangeValid(uint32_t start, uint32_t length, bool written_
+       if (i == valid_block_last && (valid_page_last & 63) != 63) {
+         valid_bits &= (uint64_t(1) << ((valid_page_last & 63) + 1)) - 1;
+       }
+-      system_page_flags_valid_[i] |= valid_bits;
+-      uint64_t& gpu_written = system_page_flags_valid_and_gpu_written_[i];
+-      gpu_written = written_by_gpu ? (gpu_written | valid_bits) : (gpu_written & ~valid_bits);
++      if (valid_flags) {
++        valid_flags[i] |= valid_bits;
++      }
++      uint64_t old_gpu_written = system_page_flags_valid_and_gpu_written_[i];
++      uint64_t new_gpu_written =
++          written_by_gpu ? (old_gpu_written | valid_bits) : (old_gpu_written & ~valid_bits);
++      if (new_gpu_written != old_gpu_written) {
++        system_page_flags_valid_and_gpu_written_[i] = new_gpu_written;
++        gpu_written_data_dirty_.store(true, std::memory_order_relaxed);
++        dirty_blocks_.fetch_or(uint32_t(1) << (i >> 6), std::memory_order_relaxed);
++      }
+     }
+   }
+ 
+@@ -389,6 +452,45 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
+     }
+   }
+ 
++  uint64_t* valid_flags = active_valid_flags_.load(std::memory_order_acquire);
++  if (valid_flags) {
++    bool all_valid = true;
++    for (const std::pair<uint32_t, uint32_t>& range : merged_ranges) {
++      if (!range.second) {
++        continue;
++      }
++      uint32_t page_first = range.first >> page_size_log2_;
++      uint32_t page_last = (range.first + range.second - 1) >> page_size_log2_;
++      uint32_t block_first = page_first >> 6;
++      uint32_t block_last = page_last >> 6;
++      for (uint32_t i = block_first; i <= block_last; ++i) {
++        uint64_t block_valid = valid_flags[i];
++        if (i == block_first) {
++          uint64_t block_before = (uint64_t(1) << (page_first & 63)) - 1;
++          block_valid |= block_before;
++        }
++        if (i == block_last && (page_last & 63) != 63) {
++          uint64_t block_inside = (uint64_t(1) << ((page_last & 63) + 1)) - 1;
++          block_valid |= ~block_inside;
++        }
++        if (block_valid != UINT64_MAX) {
++          all_valid = false;
++          break;
++        }
++      }
++      if (!all_valid) {
++        break;
++      }
++    }
++    if (all_valid) {
++      COUNT_profile_set("gpu/shared_memory/request_ranges_count", uint32_t(count));
++      COUNT_profile_set("gpu/shared_memory/request_ranges_merged_count",
++                        uint32_t(merged_ranges.size()));
++      COUNT_profile_set("gpu/shared_memory/request_ranges_upload_count", 0);
++      return true;
++    }
++  }
++
+   upload_ranges_.clear();
+   auto append_upload_range = [this](uint32_t page_start, uint32_t page_count) {
+     if (!page_count) {
+@@ -405,6 +507,7 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
+   };
+   {
+     auto global_lock = global_critical_region_.Acquire();
++    valid_flags = active_valid_flags_.load(std::memory_order_relaxed);
+     for (const std::pair<uint32_t, uint32_t>& range : merged_ranges) {
+       uint32_t page_first = range.first >> page_size_log2_;
+       uint32_t page_last = (range.first + range.second - 1) >> page_size_log2_;
+@@ -412,7 +515,7 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
+       uint32_t block_last = page_last >> 6;
+       uint32_t range_start = UINT32_MAX;
+       for (uint32_t i = block_first; i <= block_last; ++i) {
+-        uint64_t block_valid = system_page_flags_valid_[i];
++        uint64_t block_valid = valid_flags ? valid_flags[i] : 0;
+         // Consider pages in the block outside the requested range valid.
+         if (i == block_first) {
+           uint64_t block_before = (uint64_t(1) << (page_first & 63)) - 1;
+@@ -516,6 +619,8 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+     }
+   }
+ 
++  uint32_t dirty_blocks_mask = 0;
++  uint64_t* valid_flags = active_valid_flags_.load(std::memory_order_relaxed);
+   for (uint32_t i = block_first; i <= block_last; ++i) {
+     uint64_t invalidate_bits = UINT64_MAX;
+     if (i == block_first) {
+@@ -524,9 +629,14 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+     if (i == block_last && (page_last & 63) != 63) {
+       invalidate_bits &= (uint64_t(1) << ((page_last & 63) + 1)) - 1;
+     }
+-    system_page_flags_valid_[i] &= ~invalidate_bits;
++    if (valid_flags) {
++      valid_flags[i] &= ~invalidate_bits;
++    }
+     system_page_flags_valid_and_gpu_written_[i] &= ~invalidate_bits;
++    dirty_blocks_mask |= uint32_t(1) << (i >> 6);
+   }
++  gpu_written_data_dirty_.store(true, std::memory_order_relaxed);
++  dirty_blocks_.fetch_or(dirty_blocks_mask, std::memory_order_relaxed);
+ 
+   FireWatches(page_first, page_last, false);
+ 
+diff --git a/src/graphics/util/draw.cpp b/src/graphics/util/draw.cpp
+index 305380e..d02a71f 100644
+--- a/src/graphics/util/draw.cpp
++++ b/src/graphics/util/draw.cpp
+@@ -28,7 +28,7 @@
+ 
+ REXCVAR_DEFINE_BOOL(half_pixel_offset, true, "GPU", "Enable half pixel offset");
+ 
+-REXCVAR_DEFINE_BOOL(resolve_resolution_scale_fill_half_pixel_offset, true, "GPU",
++REXCVAR_DEFINE_BOOL(resolve_resolution_scale_fill_half_pixel_offset, false, "GPU",
+                     "Fill half pixel offset during resolution scale resolve");
+ 
+ // Very prominent in 545407F2.
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+index 001f36b..4cc03e7 100644
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -671,9 +671,9 @@ bool VulkanCommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuff
+       return true;
+     }
+     bool is_end_via_z_pass =
+-        sample_counts->ZPass_A == kQueryFinished || sample_counts->ZPass_B == kQueryFinished;
++        sample_counts->ZPass_A == kQueryFinished && sample_counts->ZPass_B == kQueryFinished;
+     bool is_end_via_z_fail =
+-        sample_counts->ZFail_A == kQueryFinished || sample_counts->ZFail_B == kQueryFinished;
++        sample_counts->ZFail_A == kQueryFinished && sample_counts->ZFail_B == kQueryFinished;
+     std::memset(sample_counts, 0, sizeof(xenos::xe_gpu_depth_sample_counts));
+     if (is_end_via_z_pass || is_end_via_z_fail) {
+       sample_counts->ZPass_A = fake_sample_count;
+@@ -683,9 +683,9 @@ bool VulkanCommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuff
+   };
+ 
+   bool is_end_via_z_pass =
+-      sample_counts->ZPass_A == kQueryFinished || sample_counts->ZPass_B == kQueryFinished;
++      sample_counts->ZPass_A == kQueryFinished && sample_counts->ZPass_B == kQueryFinished;
+   bool is_end_via_z_fail =
+-      sample_counts->ZFail_A == kQueryFinished || sample_counts->ZFail_B == kQueryFinished;
++      sample_counts->ZFail_A == kQueryFinished && sample_counts->ZFail_B == kQueryFinished;
+   bool is_end = is_end_via_z_pass || is_end_via_z_fail;
+ 
+   if (!is_end) {
+diff --git a/src/graphics/xenos.cpp b/src/graphics/xenos.cpp
+index ced4721..4140de7 100644
+--- a/src/graphics/xenos.cpp
++++ b/src/graphics/xenos.cpp
+@@ -119,7 +119,7 @@ float Float7e3To32(uint32_t f10) {
+     exponent = uint32_t(1 - int32_t(mantissa_lzcnt));
+     mantissa = (mantissa << mantissa_lzcnt) & 0x7F;
+   }
+-  return rex::memory::Reinterpret<float>(uint32_t(((exponent + 124) << 23) | (mantissa << 16)));
++  return rex::memory::Reinterpret<float>(uint32_t(((exponent + 124) << 23) | (mantissa << 3)));
+ }
+ 
+ // Based on CFloat24 from d3dref9.dll and the 6e4 code from:

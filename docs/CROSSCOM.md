@@ -745,3 +745,27 @@ those ReXGlue commits. Plan:
    runtime: memory, threads, presenter). Then the fallback is the user's idea: build January
    Canary's GPU code as a fresh plugin against the plugin ABI, as the F.E.A.R. port does with
    fear-nx's renderer (Xenia is BSD-3-Clause, so licensing allows it).
+
+## Renderer revert, step 1: nine commits reverted (built 08:44, not yet tested)
+Local branch `graw-revert-to-january` in `third_party/rexglue-sdk-bd833a2`. The diff from
+bd833a2 is saved as `tools/patches/rexglue-bd833a2-revert-partial.patch`. Astra's diagnostics
+from the working tree are saved separately in the ignored
+`third_party/graw-diagnostics-working.patch`.
+- **Reverted cleanly:**
+  - 8e6baae (ZPD sentinel), acb88c3 (7e3to32 mantissa);
+  - 6124b36 (page-valid flags), 6379943 and bb4a536 (resolve pre-mask);
+  - 75e339b (vblank pacing), a913a8e (async VS translation);
+  - **c1ca695 (root SRV/UAV and viewport caching: binding, where Astra lost the picture)**;
+  - 7a2a2fc (cvar tuning).
+- **Conflicted, not reverted yet** (later refactors touch the same lines; hand merge needed):
+  f20b3b2 (xenia-edge registers/PM4), dc9cece (swizzle cache), 8b2672d (shader
+  translator/pipeline port), 38cbd30 (Vulkan port), e6407f3 (D3D12 backend port), 0bd3521
+  (core controls), 4d3abf6 (gamma UNorm16, 17 files).
+- **Kept:** plug-in extraction and ABI (c22a33e, 55a836f), the setup split (506eee8), the
+  PrimitiveProcessor mutex, debug markers, DRED/EndQuery fixes, build, cvar and logging refactors.
+- Plugin-only build passed, and all 107 runtime imports resolve. Installed as the campaign's
+  `rexgpu-xenosrd.dll`. The previous diagnostic DLL is `rexgpu-xenosrd.dll.before-revert`, and
+  the stock one is still `.stock`.
+- **Test:** `tools/launch.ps1 -Windowed "-Extra:--async_shader_compilation=false"`. If the
+  Cross-Com shows, bisect the nine. If not, hand-merge the conflicting seven, starting with the
+  D3D12 backend port e6407f3 and the shared shader/pipeline port 8b2672d.

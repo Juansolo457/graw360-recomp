@@ -54,8 +54,22 @@ post-process chain: the bloom downsamples 52x720, 64x80 ... and the full-screen 
 capture so far: each capture holds one predicated-tiling tile of the scene (scissor 1280x256), the
 resolves and the presenter.
 
+## Later findings (same day)
+
+- **The margin is the GRAW HUD's edge blur.** In Mission 1 (capture 4990) the pixel is written by a
+  full-screen grid mesh (1,086 vertices, event 18042; Canary's event 19716 is the same mesh with
+  the same texture coordinates) that mixes the 1280x720 scene copy with a 256x200 blurred copy,
+  by a per-vertex factor (about 0.5 at the edges). Issue #1's own title says the border should
+  be blur. In the tutorial the blurred copy shows tile-noise instead, and so does the Cross-Com
+  square, which samples a 256x200 texture too: in the tutorial that texture holds stale data.
+- **More ruled out:** the view rectangle (`sub_82140938`, all 1280x720 with fractions 0,0,1,1 in
+  both runs) and the tutorial-only pass `sub_8217BEF8` (skipping it changes nothing).
+- **Not a resolution problem:** the noise appears at 1x (720p internal) too.
+
 ## Next steps
 
+0. Find which 256x200 texture the edge mesh and the Cross-Com square sample in the tutorial,
+   and why it isn't written there (in Mission 1 it holds the blurred scene).
 1. Capture the composition pass: trigger several consecutive frames
    (`tools/rdoc_trigger.py` with close times), or capture from the guest side by dumping the
    vertex and texture-coordinate data of every draw in `sub_82119858`'s chain in the tutorial and

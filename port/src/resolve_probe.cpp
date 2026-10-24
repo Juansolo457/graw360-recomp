@@ -114,3 +114,17 @@ void GrawClearCall(PPCRegister& r4, PPCRegister& r5, PPCRegister& r6, PPCRegiste
        fmt::format("GRAW clear from {:08X}: count {} first rect {} flags {:X} colour {:08X}",
                    r12.u32, r4.u32, rect, r6.u32, r7.u32));
 }
+
+// sub_82140938 (#1): computes a view's viewport rectangle from its fractions (+388 x, +392 y,
+// +396 width, +400 height) times its render-target size (+384, +386) plus its offset (+380,
+// +382), and stores it in the camera (+600..606). Logs each distinct input once with the caller.
+void GrawViewRect(PPCRegister& r3, PPCRegister& r12) {
+  if (!REXCVAR_GET(graw_debug_resolve) || !Readable(r3.u32 + 380, 24)) return;
+  const uint32_t v = r3.u32;
+  auto h = [&](uint32_t o) { return Load32(v + o) >> 16; };  // the big-endian halfword at v+o
+  const std::string line = fmt::format(
+      "GRAW viewrect from {:08X}: view {:08X} offset ({},{}) size {}x{} fractions x {} y {} w {} h {}",
+      r12.u32, v, h(380), h(382), h(384), h(386), LoadF(v + 388), LoadF(v + 392),
+      LoadF(v + 396), LoadF(v + 400));
+  Note(line, line);
+}

@@ -93,9 +93,10 @@ std::string Chain(uint32_t sp, int depth) {
 
 std::string TexInfo(uint32_t tex) {
   if (!tex || !Readable(tex + 28, 24)) return fmt::format("{:08X}", tex);
-  const uint32_t d1 = Load32(tex + 32), d2 = Load32(tex + 36);
-  return fmt::format("{:08X} {}x{} fmt {}", tex, (d2 & 0x1FFF) + 1, ((d2 >> 13) & 0x1FFF) + 1,
-                     d1 & 0x3F);
+  const uint32_t d0 = Load32(tex + 28), d1 = Load32(tex + 32), d2 = Load32(tex + 36);
+  return fmt::format("{:08X} base {:08X} {}x{} fmt {} [{:08X} {:08X} {:08X}]", tex,
+                     d1 & 0xFFFFF000u, (d2 & 0x1FFF) + 1, ((d2 >> 13) & 0x1FFF) + 1, d1 & 0x3F, d0,
+                     d1, d2);
 }
 
 std::mutex g_mutex;

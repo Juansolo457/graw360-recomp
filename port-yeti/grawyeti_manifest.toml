@@ -339,3 +339,8 @@ registers = ["r4", "r5", "r6", "r7", "r10", "r12"]
 name = "GrawClearCall"           # D3DDevice_Clear, after mflr r12
 address = 0x824CDCCC
 registers = ["r4", "r5", "r6", "r7", "r12"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawViewRect"            # sub_82140938 (view viewport rectangle), after mflr r12
+address = 0x8214093C
+registers = ["r3", "r12"]

@@ -21,7 +21,9 @@ Rendering in the campaign is the open front. These issues are filed on
 [GitHub](https://github.com/Juansolo457/graw360-recomp/issues):
 - **#2 video panels black (Cross-Com, narration panel)**: fixed 2026-10-24 (switch override in
   the campaign manifest), see [CROSSCOM.md](CROSSCOM.md).
-- **#3 tactical map empty**: next priority.
+- **#3 tactical map empty**: next priority. Reproduced unattended 2026-10-24 (Mission 1, Back): ring,
+  markers and objective panel draw; the map grid and buildings do not.
+- Performance at 4K: see [PERF.md](PERF.md) (CPU-bound on two threads; 4K itself is free).
 - #1 HUD border, #4 window checkerboard, #5 speckle and shadows, #6 textures and bump maps, #7
   allies' weapons, #13 black screen under fire.
 - Other open issues: #8 tiny name dialog, #10 saving, #11 frame rate in heavy scenes, #12 image

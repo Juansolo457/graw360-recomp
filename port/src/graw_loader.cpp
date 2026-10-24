@@ -89,21 +89,20 @@ fs::path ProgramFor(const std::string& executable) {
   return {};
 }
 
-// The next program's log: "<first log's name>~<program>-<time>.log" next to this one, so every
-// program in a chain of hand-offs keeps its own log.
+// The next program's log and per-frame CSV (--perf_log_csv): "<first name>~<program>-<time>.<ext>"
+// next to this one's, so every program in a chain of hand-offs keeps its own files.
 void RenameLog(std::vector<std::string>& arguments, const fs::path& program) {
+  char stamp[16];
+  const std::time_t now = std::time(nullptr);
+  std::strftime(stamp, sizeof(stamp), "%H%M%S", std::localtime(&now));
   for (size_t i = 0; i + 1 < arguments.size(); ++i) {
-    if (arguments[i] != "--log_file") continue;
+    if (arguments[i] != "--log_file" && arguments[i] != "--perf_log_csv") continue;
     fs::path log = fs::u8path(arguments[i + 1]);
     std::string base = log.stem().string();
     base = base.substr(0, base.find('~'));
-    char stamp[16];
-    const std::time_t now = std::time(nullptr);
-    std::strftime(stamp, sizeof(stamp), "%H%M%S", std::localtime(&now));
     log.replace_filename(base + "~" + program.stem().string() + "-" + stamp +
                          log.extension().string());
     arguments[i + 1] = log.string();
-    return;
   }
 }
 

@@ -1,46 +1,50 @@
-# Handoff: GRAW 360 on Windows (2026-10-23, end of day 1)
+# Handoff: GRAW 360 on Windows (2026-10-24)
 
 Read [PLAN.md](PLAN.md) for the phases and exit criteria and [FINDINGS.md](FINDINGS.md) for the
 disc and executable facts. This file is the state, the build/run detail and where things live.
 Update it at the end of every session; the next model starts here, not from chat history.
+**The current top task has its own plan and handoff: [CROSSCOM.md](CROSSCOM.md) (#2).**
 
 ## Where it stands
-**Three programs, all booting** (2026-10-23, end of day 1). The disc holds three executables, and
-each is its own translation built from the same host code (`port/src`):
+**The game plays.** The front end hands over to the campaign and to Instant Action, as the
+console's loader would. The user played the campaign tutorial and the first mission. Audio is
+fine. At a 240 Hz guest refresh, the campaign's frame rate is "fantastic" in the user's words.
 
 | Program | Disc file | What it is | State |
 |---|---|---|---|
-| `port/` → `graw.exe` | `default.xex` | front end: start screen, menus | reaches the main menu; hands over to the others |
-| `port-mp/` → `grawmp.exe` | `GR3Xenon_Release.exe` | Instant Action, co-op, multiplayer (Red Storm's GR3) | a co-op Defend mission plays with HUD, menus and the drone camera, but the **3D view is black** |
-| `port-yeti/` → `grawyeti.exe` | `Yeti_Final_Xenon.exe` | the campaign (Ubisoft Paris's Yeti) | boots to the Campaign menu when started alone; not yet reached through the front end, New game untested |
+| `port/` → `graw.exe` | `default.xex` | front end: start screen, menus | works; hands over to the others |
+| `port-mp/` → `grawmp.exe` | `GR3Xenon_Release.exe` | Instant Action, co-op, multiplayer (Red Storm's GR3 engine) | a co-op mission plays; the 3D view is dark or black (#9) |
+| `port-yeti/` → `grawyeti.exe` | `Yeti_Final_Xenon.exe` | the campaign (Ubisoft Paris's Yeti engine) | plays through the front end; the rendering bugs below are open |
+| `port-yeti-nx/` → `grawyeti.exe` | same | the campaign on fear-nx's native Vulkan renderer | experiment, **local only**: worse than stock, Cross-Com still black. Not the way forward |
 
-The front end starts the others the way the console's loader would (`port/src/graw_loader.*`):
-when a program ends with `XamLoaderLaunchTitle`, the host starts the matching program with the
-launch data, its own log (`<first log>~<program>-<time>.log`) and the same arguments. Details:
-[FINDINGS.md](FINDINGS.md) from "The campaign "crash" at the loading screen" on.
+Rendering in the campaign is the open front. These issues are filed on
+[GitHub](https://github.com/Juansolo457/graw360-recomp/issues):
+- **#2 video panels black (Cross-Com, narration panel)**: top priority, see
+  [CROSSCOM.md](CROSSCOM.md).
+- **#3 tactical map empty**: next priority.
+- #1 HUD border, #4 window checkerboard, #5 speckle and shadows, #6 textures and bump maps, #7
+  allies' weapons, #13 black screen under fire.
+- Other open issues: #8 tiny name dialog, #10 saving, #11 frame rate in heavy scenes, #12 image
+  quality defaults, #14 FOV 90.
 
-| Round | Change | Result |
-|---|---|---|
-| 1–4 | front end: missed entries, crash reporter | crash in the HLSL compiler's parser |
-| 5 | front-end switch-table override; qsort comparator | **start screen**; Campaign "crashes" (it was a hand-off) |
-| 6 | `port-mp` + `port-yeti` translations; loader hand-off | Instant Action plays (black 3D); Yeti dies on an FP exception |
-| 7 | `GrawGuardFpscr` (seed FP state on the audio worker); shared controllers | Yeti boots to its **Campaign menu** |
+What is in place:
+- **Hand-off:** `graw_loader.*` and `graw_process.*`.
+- **Controllers:** shared controllers.
+- **Dialogs:** a readable font and pad navigation (`ui_style`, `ui_pad`).
+- **FP guard:** `fpscr_guard` works around the audio worker's FP state.
+- **Jump tables:** the front end's jump-table override.
+- **Speed:** an x86-64-v3 build (one-instruction FMA), and the guest refresh raised to 240 Hz
+  (`launch.ps1 -RefreshRate`; game speed unchanged).
+- **Frame timing:** `frame_timing.cpp`, a 10 s fps summary plus `--graw_frame_log`.
+- **Video probe:** `bink_probe.cpp`.
 
 ### Next steps
-Play-test issues are on GitHub: [#1–#10](https://github.com/Juansolo457/graw360-recomp/issues) (2026-10-23).
-1. **Campaign through the front end.** Ask the user to run
-   `pwsh -NoProfile -File tools/launch.ps1 -Windowed -Scale 1` (from the repo folder), go Start,
-   Campaign, New game. Check the chain of logs in `port/logs/run-*~grawyeti-*.log`.
-2. **Black 3D view in Instant Action** (FINDINGS.md, "Open"). The drone picture-in-picture draws
-   terrain, so 3D into a texture works and the main view doesn't. Try one option per run with
-   `-Project port-mp` or through the front end with `-Extra`: `--render_target_path_d3d12 rov`,
-   `--gamma_render_target_as_unorm16=false`, `--depth_float24_convert_in_pixel_shader`. If none
-   helps: a frame capture (RenderDoc is in the SDK) of the HDR passes.
-3. **Saving** in the campaign (Yeti's `D:\Dummy` write probe; FINDINGS.md, "Controllers,
-   sign-in, storage and Live").
-4. Multiplayer menus: system link only; Live calls should fail cleanly.
+1. [CROSSCOM.md](CROSSCOM.md), its plan, step 1: find the code that renders the video into its
+   texture and resolves it. This needs no build.
+2. The tactical map (#3), which is likely the same render-to-texture path.
+3. FOV 90 (#14): find the campaign's projection setup, then add a hook and a launch option.
 
-### port-yeti-nx: the campaign on fear-nx's renderer (#2, 2026-10-23)
+### port-yeti-nx: the campaign on fear-nx's renderer (#2, tried 2026-10-23, local only)
 The Cross-Com box and the narration panel are black on the stock renderer although the game
 reads and decodes the Bink videos (their audio plays). fear-nx's native Vulkan renderer fixed the
 same class of bug in F.E.A.R., so `port-yeti-nx/` builds the campaign the way fear360's `port-nx`
@@ -55,8 +59,9 @@ renderer in `src/native/` (GPL-3.0-or-later, see NOTICE) and the Xenos plugin li
   (`--graw_campaign_exe`) with `--nx_renderer native --nx_native_resolution_scale <Scale>`.
   `-Extra '--nx_renderer xenos'` runs the stock plugin inside the same executable, to compare.
 - Its SDK lacks `InputSystem::GetStateForUI`; `ui_pad.cpp` uses `GetState` under `GRAW_NX`.
-- Built; not yet play-tested. Check: Cross-Com, narration panel, black border (#1), map (#3),
-  the damage black screen (#13), frame rate against the stock build.
+- Play-tested 2026-10-23: the game was badly broken in play (empty texture lookups, 9 fps
+  stretches) and Cross-Com was still black. Kept as a source-level copy of the Xenos plugin
+  (`--nx_renderer xenos`) for renderer logging, see CROSSCOM.md step 3.
 
 ## How it is built and run
 ```
@@ -90,6 +95,7 @@ pwsh -NoProfile -File tools/capture_window.ps1 -ProcessName graw  # screenshot e
 | `tools/check_switch_tables.py <image.bin> port/generated/default [--toml out.toml]` | replays every generated `switch` against the image and writes `[[entrypoint.switch_tables]]` overrides for mismatches. Rerun after every codegen |
 | `tools/find_missed_functions.py <image.bin> port/generated/default` | function entries the analyser missed (method tables, callbacks built in code), as manifest lines; from fear360. Candidates that split a function show up as codegen `Unresolved …` warnings: find the entry between the warned addresses and drop it |
 | `../fear360-recomp/third_party/rexglue-sdk-nx/tools/binutils/powerpc-none-elf-objdump.exe -D -b binary -m powerpc:common -EB --adjust-vma=0x82000000 --start-address=0x… --stop-address=0x… private/xex/graw.bin` | disassemble a range of the image |
+| `tools/xsh_dump.py <555307D5.xsh> [--hash H]` | decodes the renderer's shader storage (Xenos microcode of every translated shader); the game must be closed |
 | `private/xex/graw.strings.txt` | every printable string of 6+ characters in the image (a 3-line Python regex scan) |
 | the generated code | `port/generated/default/graw_recomp.N.cpp`: every PowerPC instruction is a comment above its translation, so a crash report's file:line gives the guest instruction; `lis/addi` pairs in a function name the strings it uses |
 
@@ -101,6 +107,7 @@ pwsh -NoProfile -File tools/capture_window.ps1 -ProcessName graw  # screenshot e
 | `port/src/shader_debug.cpp` | two debug hooks (`--graw_debug_shader_compile`, off by default): the HLSL compile call's arguments, and every parser reduction into `logs/parser-trace.txt` |
 | `port/src/graw_loader.*`, `graw_process.*` | the hand-off between the three programs (launch data, own log per program, wait for the previous run) |
 | `port/src/autopilot.*`, `tools/autopilot/*.txt` | scripted virtual controller (`--graw_autopilot <script>`, `tools/smoke.ps1 -Autopilot`): button and stick timetables, no window focus needed. The window still opens on the user's screen: ask before unattended runs |
+| `port/src/bink_probe.cpp` | campaign video-object probe for #2 (`--graw_debug_bink=true`, hooks in `port-yeti`'s manifest) |
 | `port/src/fpscr_guard.cpp` | seeds the FP state of the audio worker's context (hooks in all three manifests) |
 | `port-mp/`, `port-yeti/` | the GR3 and Yeti projects: own manifest, `src/main.cpp`, `generated/rexglue.cmake`; `assets` is a junction to `port/assets` |
 | `port/src/crash_report.*` | from fear360 (MIT): `logs/crash-<time>.txt` with the exception, registers and the guest stack (`sub_<360 address>` with the generated file and line), plus a minidump |

@@ -269,3 +269,12 @@ Two related things did show up:
 - `src/bink_probe.cpp` (port-yeti hooks, `--graw_debug_bink`) logs each video object's state on
   change and per 2 s: updates, draws with and without a frame, BinkWait results, ready sets,
   frame number, read buffer.
+- Probe result (2026-10-24 00:05): the Cross-Com object `0x420E39E0` (Bink `0x42A92180`, 160x120,
+  584 frames) plays normally: frame 40 at +2 s, 441 at +22 s (~20 fps), +24 set, every draw
+  (82-312 per 2 s) has a frame and calls the Bink draw. The menu video `0x40BE9FC0` (1280x720,
+  601 frames, visible on screen) looks the same. **So the game side works and the frame is drawn
+  into something the HUD doesn't show.**
+- The video's output texture: `sub_8233FDA0`, after BinkOpen, makes an engine texture of the
+  video's size, `sub_82194720(164, 0)` then `sub_821947D8(tex, w, h, 4, 0, 1, 1, 0)`, kept at
+  video+68. The video object's vtable is `0x8209A5CC` (`sub_82171A70` sets it; draw = slot 1).
+  Plan and next steps: [CROSSCOM.md](CROSSCOM.md).

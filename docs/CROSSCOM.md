@@ -943,3 +943,22 @@ same positions, UVs and vertex colour (0,0,0,1). Only the blend differs:
     in the generated code.
   RB_BLENDCONTROL bit layout: color src 0-4, comb 5-7, dst 8-12; alpha src 16-20, comb 21-23,
   dst 24-28. Factors: 0 Zero, 1 One, 4 SrcColor, 5 InvSrcColor, 6 SrcAlpha, 7 InvSrcAlpha.
+- **The renderer side is ruled out by reading.** ReXGlue's `GetCurrentStateDescription` reads
+  RB_BLENDCONTROL into the pipeline description exactly as Canary does (same factor maps; Canary
+  only adds a MIN/MAX special case). `ConfigurePipeline` matches cached pipelines by a full
+  `memcmp` of that description, blend included. So the D3D12 blend in our capture is the guest
+  register's value: **the guest's RB_BLENDCONTROL0 holds SrcAlpha/InvSrcAlpha at these draws**.
+- **So the fault is in what the game sends to the GPU.** The game's D3D runtime (recompiled in
+  our build) is meant to write RB_BLENDCONTROL0 into the command buffer when the blend render
+  state changes. On the 360 that goes through device dirty masks: 64-bit bit operations such as
+  `li r12,1; rldicr r12,r12,61,63` in the draw paths, e.g. `sub_824C4BF8`. A mistranslated
+  dirty-mask or packet-building instruction would leave the previous blend in effect, which is
+  what we see.
+- **Next:**
+  1. Instrumented renderer: log every `WriteRegister` to RB_BLENDCONTROL0 (0x2201) between the
+     video draw and the overlay draws, with the draw markers. If no write arrives, the guest
+     never emitted one.
+  2. Find the D3D render-state path for blend in the generated code: start from the HUD
+     material setup and the D3D draw functions (`0x824C4838` DrawPrimitiveUP; `0x824C4BF8` and
+     `0x824C4E38` check device+11540). Check the translation of its dirty-mask and
+     SET_CONSTANT packet code against the PowerPC semantics.

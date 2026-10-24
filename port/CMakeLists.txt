@@ -27,6 +27,7 @@ set(GRAW_SOURCES
     src/autopilot.cpp
     src/ui_style.cpp
     src/ui_pad.cpp
+    src/frame_timing.cpp
     src/cpu_check.cpp
 )
 

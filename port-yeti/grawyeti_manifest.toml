@@ -163,3 +163,9 @@ registers = []
 name = "GrawGuardFpscr"
 address = 0x82328998
 registers = []
+
+# Frame timing (src/frame_timing.cpp, #11): just before the game's one call to VdSwap.
+[[entrypoint.midasm_hook]]
+name = "GrawFrameMark"
+address = 0x824CCB4C
+registers = []

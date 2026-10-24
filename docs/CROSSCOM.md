@@ -331,3 +331,31 @@ Depth clamp is therefore not required for the working Cross-Com in this Canary t
 backport it as the presumed #2 fix. Continue comparison of Canary GPU and SDK texture/resolve/
 HUD state paths. User said crosshair, not specifically the HUD border, so #1 remains unverified;
 #13 was not tested. Recomp fixes remain unimplemented/unverified.
+
+## Canary vs ReXGlue: fork point and bisect (2026-10-24)
+- Sources, both in ignored `third_party/`:
+  - `xenia-canary/` at 9e03494, with history but no file blobs (`--filter=blob:none`);
+  - `rexglue-sdk-bd833a2/`, the exact source of the stock nightly the play build uses.
+    `rexglue-sdk-nx/` is an older, patched copy, so don't diff against it.
+- **The fork point is around Canary cec9ca0e, 2026-01-17.**
+  - Every historical version of `texture_util.cc`, `texture_info.cc` and
+    `render_target_cache.cc` was scored against ReXGlue's copies after normalising names and
+    formatting. The closest match is cec9ca0e (2026-01-17), then 28b69c21 (2026-01-06).
+  - There are 346 Canary GPU commits between cec9ca0e and 9e03494. Many touch resolves, EDRAM,
+    tiling and texture invalidation, for example:
+    - e1f4a0d0, tiling window offsets in EDRAM bases;
+    - 9781a75a, stale texture state after invalidation;
+    - 9da69348, EDRAM color/depth aliases;
+    - aed81ca9, guest access and unwatched invalidation;
+    - 437a7280, single-sample EDRAM addressing.
+  - The normalised diffs of the main GPU files run from 100 to 2,700 changed statements each,
+    too many to read blind.
+- **The bisect.** Test whether the Cross-Com works in Canary 263e91b (2026-01-20, the first
+  release after the fork point), unpacked in `private/xenia-canary/263e91b/` with the same
+  `graw-depth-clamp-off.toml`:
+  - **It works:** the bug is something ReXGlue changed in its copy, or a host difference such
+    as the plugin interface. Diff ReXGlue against cec9ca0e, not against 9e03494.
+  - **It's black:** a Canary commit between 2026-01-20 and 2026-10-23 fixed it. Bisect the
+    release builds (a list is in the ignored scratch notes; older ones are in
+    `xenia-canary/xenia-canary-releases`, newer ones in `xenia-canary/xenia-canary` releases).
+    About 8 runs pin one commit, which can then be ported.

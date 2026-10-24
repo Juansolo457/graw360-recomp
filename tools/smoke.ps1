@@ -1,5 +1,6 @@
-# Headless boot check: start graw.exe (its own profile and cache, debug logging), stop it after N
-# seconds and print the end of the log. Surviving the run does not prove the game renders.
+# Boot check: start graw.exe (its own profile and cache, debug logging), stop it after N
+# seconds and print the end of the log. Its window DOES appear on the user's screen (--headless
+# does not hide it) and they can play in it: say so before running. Surviving proves nothing about rendering.
 # -Captures N saves N screenshots 400 ms apart just before stopping (private/captures/).
 #   pwsh -NoProfile -File tools/smoke.ps1 [-Seconds 40] [-Captures 2] [-Extra '--gpu_plugin xenos']
 [CmdletBinding()]

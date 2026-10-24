@@ -13,6 +13,7 @@ include(generated/rexglue.cmake)
 set(GRAW_SOURCES
     src/main.cpp
     src/crash_report.cpp
+    src/shader_debug.cpp
 )
 
 if(WIN32)

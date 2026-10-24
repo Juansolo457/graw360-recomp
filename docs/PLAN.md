@@ -57,7 +57,7 @@ Disc listed and extracted with `tools/xdvdfs.py`, both executables inspected
 (`tools/xexinfo.py`), the main image decrypted (`tools/xex_basic_decrypt.py`) and its imports
 checked against the SDK (`tools/xeximports.py`). Results in [FINDINGS.md](FINDINGS.md).
 
-### Phase 1: first translation and build
+### Phase 1: first translation and build — done (2026-10-23)
 1. `rexglue init` scaffold in `port/` (done), `tools/build.ps1` runs codegen then the build.
 2. **Manifest iteration:** the analyser's `UnresolvedCall` errors become `[entrypoint.functions]`
    entries after checking each target is a function start (`powerpc-none-elf-objdump` on the
@@ -66,7 +66,11 @@ checked against the SDK (`tools/xeximports.py`). Results in [FINDINGS.md](FINDIN
    ~100 MB of C++ and a shorter compile).
 - **Exit:** `graw.exe` links; codegen reports no analysis errors or warnings.
 
-### Phase 2: boot to Press Start
+### Phase 2: boot to Press Start — done (2026-10-23)
+Reached in round 5: the start screen, and the campaign as far as its loading screen. The two
+real blockers were not in this list: missed function entries (205 in all) and a jump table the
+analyser misread (FINDINGS.md, "Round 5"). The list below stays as the checklist for later stops.
+
 Run headless first (`tools/smoke.ps1 -Seconds 60 -Captures 3`), read the log, fix, repeat. The
 failure classes to expect, in the order they'd appear:
 
@@ -105,7 +109,8 @@ failure classes to expect, in the order they'd appear:
   with its background video or a placeholder, navigable with the pad. Recorded in
   [HANDOFF.md](HANDOFF.md) with the build commit and the log.
 
-### Phase 3: into the game (next, not part of this plan's goal)
+### Phase 3: into the game (next)
+First blocker: the campaign loading screen ends the game (FINDINGS.md, "Open").
 Campaign mission 1 loads and plays; saves work (`XContent` in the user data root); the
 night-vision and helicopter rendering issues Xenia lists are checked on our renderer.
 

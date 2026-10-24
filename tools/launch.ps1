@@ -3,12 +3,14 @@
 # 200% Windows scaling), rendering at a multiple of 720p with 16x anisotropic filtering.
 #   pwsh -NoProfile -File tools/launch.ps1                 # 3x = 3840x2160 internal, fullscreen
 #   pwsh -NoProfile -File tools/launch.ps1 -Scale 1 -Windowed -Extra '--log_level debug'
+#   pwsh -NoProfile -File tools/launch.ps1 -Windowed -Scale 1 -Trace   # every kernel call (file opens, ...) in the log
 # This opens a window on the user's screen. Never kill a running graw.exe; ask the user to quit.
 [CmdletBinding()]
 param(
     [ValidateRange(1,3)][int]$Scale = 3,
     [ValidateSet(0,1,2,3,4,5)][int]$Anisotropic = 5,   # SDK enum: 5 = 16x
     [switch]$Windowed,
+    [switch]$Trace,       # --log_level trace --log_noisy: every kernel call with its arguments (large log)
     [string]$Extra = '',
     [ValidateSet('Debug','Release','RelWithDebInfo')][string]$Configuration = 'RelWithDebInfo'
 )
@@ -23,6 +25,7 @@ $fullscreen = if ($Windowed) { '--no-fullscreen' } else { '--fullscreen' }
 $arguments = @($fullscreen,
     '--resolution', '720p', '--resolution_scale', "$Scale", '--anisotropic_override', "$Anisotropic",
     '--game_data_root', "$port\assets", '--user_data_root', "$port\user",
-    '--cache_root', "$port\cache", '--log_file', $log) + @($Extra -split '\s+' | Where-Object { $_ })
+    '--cache_root', "$port\cache", '--log_file', $log, '--log_flush_interval', '1') +
+    $(if ($Trace) { @('--log_level', 'trace', '--log_noisy') } else { @('--log_level', 'debug') }) + @($Extra -split '\s+' | Where-Object { $_ })
 $process = Start-Process -FilePath $executable -WorkingDirectory $port -ArgumentList $arguments -PassThru
 "pid $($process.Id), log $log"

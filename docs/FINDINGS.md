@@ -94,3 +94,58 @@ code (the dispatcher and `lhax` are right; the lexer was not checked). Next: loo
 hooking `sub_82226928`'s entry and dumping its arguments (recipe in HANDOFF.md).
 
 Also fixed this round: the crash reporter's log line still said "F.E.A.R."; renamed.
+
+## Round 5: a misread jump table, then the start screen (2026-10-23)
+**What the compiler was given.** A midasm hook just before the compile call at `0x82226A38`
+(`port/src/shader_debug.cpp`) shows a D3DXCompileShader-shaped call: r6 = entry `"main"`,
+r8 = profile `"vs_3_0"`, r9 = flags `0x100`, r4 = the define list (`_XBOX_CPU`,
+`_XBOX_GPU_FINAL`). The source is an in-memory buffer, and the text was fine.
+
+**Why the parser saw a NULL.** A second hook on every reduction (`0x822AE480`, before the call to
+the semantic-action dispatcher, logging rule, values needed and values on the stack) showed rule
+110 turning a valid node into NULL, rule 108 doing the same, then rule 81 dereferencing the NULL.
+The generated `switch` in `sub_822AC1E8` was **shifted by two cases**: case N jumped where the
+guest table's entry N−2 points (rule 81 ran rule 79's action, 110 ran 108's).
+
+**Root cause in ReXGlue** (`src/codegen/function_scanner.cpp`, `detectJumpTable`, nightly
+`bd833a2` and source `77d8b00`): scanning backwards from the `bctr`, the detector builds the
+table address from `lis r12,0x8203` + `addi r12,r12,0` = `0x82030000`. Because the low 16 bits
+are still zero, the branch `else if ((tableAddr & 0xFFFF) == 0)` treats it as "high half only"
+and adds the next `addi` it meets further back, an unrelated `addi r10,r10,-4` at `0x822AC25C`.
+The table was read from `0x8202FFFC`. Any jump table (or base) on a 64 KB boundary can hit this;
+worth an upstream issue.
+
+**Fix:** an `[[entrypoint.switch_tables]]` override with the 300 correct labels (keyed by the
+`bctr` at `0x822AC2B8`, index register r27). `tools/check_switch_tables.py` replays every
+generated switch from the instruction comments above it, recomputes the targets from the image
+and writes overrides for mismatches: **466 switches, 1 wrong** before the override, 0 after.
+
+**Then:** one more unregistered function, the qsort comparator `0x825C6000` that the compiler's
+back end passes by address. It follows a never-returning `bl`, so the previous function swallowed
+it. `tools/find_missed_functions.py` gained an "after a bl" pass: 3 hits, 1 real (the other two,
+`0x821FB5F4` and `0x825C0004`, are return points). The first version of the debug hook then
+crashed on its own, following a float in r10 into unmapped memory; it now checks pages first and
+is off by default (`--graw_debug_shader_compile` turns it on).
+
+**Result:** the start-up shader compiles succeed (`main` vs/ps, `FontVertexShader`,
+`FontPixelShader` and more), the D3D12 Xenos plugin creates a 1280×2048 colour and depth target
+and a dozen pipelines, the controller connects, and **the game reaches its start screen**. The
+user pressed Start, entered the campaign and reached its **loading screen**, where the game ended
+(section below).
+
+## Open: the campaign loading screen ends the game (2026-10-23)
+Session `port/logs/smoke-20261023-202516.log` (a smoke run the user played in; it is not headless
+on screen). 35 s after the controller connected: `KernelState::TerminateTitle`, then the process
+exited with `0xC0000374` (heap corruption, a fail-fast exit the crash reporter can't catch). At
+the default debug level nothing was logged in between, so the cause is not known yet. Next run
+needs trace logging of file I/O and kernel calls (`tools/launch.ps1 -Trace`) and the user taking
+the same path. Candidates: a file the mission load can't open, `XamLoaderLaunchTitle`, an
+include failure (below), or a heap overrun in translated code.
+
+Also seen in that run: 118 `ResolvePath(<name>.h) failed - device not found` for the shader
+headers on the disc in `data\` (`EffectsCommonConstants.h` ×45, `EffectsPixelConstants.h`,
+`HDRToneMap.h`, `SkyVertexConstants.h`, ...). The game's include handler asks for bare names,
+and something resolves them without a device. The SDK's `NtCreateFile` honours a root-directory
+handle, so the failing call is another path (`NtQueryFullAttributesFile` or the include handler
+itself); the shaders still compiled, so these may be first probes with a fallback. Check this in
+the trace run.

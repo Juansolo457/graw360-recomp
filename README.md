@@ -17,9 +17,9 @@ from [Lost Odyssey Recomp](https://github.com/freefrank/LostOdysseyRecomp).
 
 ## Status
 
-**Phase 2: booting.** The disc is mapped, the executable analysed and translated; `graw.exe`
-builds and runs the game's start-up until it crashes inside the game's own HLSL shader compiler.
-Next milestone: the Press Start screen.
+**Reaches the start screen.** The game boots on Windows to its Press Start screen, and you
+can enter the campaign as far as its loading screen, where it currently stops. Next milestone:
+the first mission.
 
 - [docs/PLAN.md](docs/PLAN.md): the plan to the title screen, phases, exit criteria, risks
 - [docs/FINDINGS.md](docs/FINDINGS.md): what the disc and the executable are

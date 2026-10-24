@@ -82,6 +82,7 @@ def plausible_entry(target):
     return ra != 31  # a load or store off r31 before anything sets it
 
 
+after_bl = set()
 for path in glob.glob(gen + '/*_recomp.*.cpp'):
     hi = {}
     for line in open(path, encoding='utf-8', errors='replace'):
@@ -102,8 +103,18 @@ for path in glob.glob(gen + '/*_recomp.*.cpp'):
         if prev in (BLR, BCTR, 0, NOP) or (prev >> 26) == 18 and not prev & 1:
             if not covered(target) and plausible_entry(target):
                 found.setdefault(target, 0)
+        # After a bl that never returns (an assert or fatal-error call ending the previous
+        # function), the analyser runs on into the next function and swallows it, so `covered`
+        # can't be used. An address built in code that lands right after a bl is a callback
+        # (GRAW: the qsort comparator 0x825C6000). Codegen warns if one splits a function.
+        elif (prev >> 26) == 18 and prev & 1 and plausible_entry(target):
+            after_bl.add(target)
+
+for target in sorted(after_bl - set(found)):
+    found[target] = -1
 
 for target in sorted(found):
-    origin = f'from 0x{found[target]:08X}' if found[target] else 'built in code'
+    origin = ('built in code, after a bl' if found[target] == -1 else
+              f'from 0x{found[target]:08X}' if found[target] else 'built in code')
     print(f'0x{target:08X} = {{}}  # {origin}')
 print(f'# {len(found)} candidates', file=sys.stderr)

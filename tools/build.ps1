@@ -38,9 +38,13 @@ $env:PATH = "$tools/llvm/bin;$tools/ninja;$env:PATH"
 
 $preset = 'win-amd64-' + $Configuration.ToLowerInvariant()
 $prefix = "-DCMAKE_PREFIX_PATH=$tools/rexglue-sdk/win-amd64"
+# x86-64-v3 (AVX2, FMA, BMI; every PC CPU since ~2013 and the Steam Deck): the translated code's
+# std::fma for every PowerPC multiply-add is then one instruction instead of a C runtime call
+# (#11). src/cpu_check.cpp stops older CPUs with a message. Changing these flags rebuilds all.
+$archFlags = @('-DCMAKE_C_FLAGS=-march=x86-64-v3', '-DCMAKE_CXX_FLAGS=-march=x86-64-v3')
 Push-Location $port
 try {
-    & $cmake --preset $preset $prefix
+    & $cmake --preset $preset $prefix @archFlags
     if ($LASTEXITCODE) { throw 'CMake configure failed.' }
     # Codegen first (a no-op when nothing changed), then reconfigure once if the generated
     # sources did not exist yet (the recomp target only appears once they do), then build.
@@ -48,7 +52,7 @@ try {
     & $cmake --build --preset $preset --parallel $Jobs --target "$($name)_codegen"
     if ($LASTEXITCODE) { throw 'Code generation failed.' }
     if ($firstTime) {
-        & $cmake --preset $preset $prefix
+        & $cmake --preset $preset $prefix @archFlags
         if ($LASTEXITCODE) { throw 'CMake re-configure failed.' }
     }
     & $cmake --build --preset $preset --parallel $Jobs

@@ -9,6 +9,13 @@ project(grawmp LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Built for x86-64-v3 (tools/build.ps1: AVX2 and FMA). The translated code turns every PowerPC
+# multiply-add into std::fma, which on the SDK's default SSE4.1 target is a call into the C
+# runtime's software FMA: 14,803 sites in the campaign's code (#11). No floating-point
+# contraction, though: clang would otherwise fuse a separate a*b+c into one FMA, rounding once
+# where the PowerPC rounded twice.
+add_compile_options($<$<CXX_COMPILER_ID:Clang,AppleClang>:-ffp-contract=off>)
+
 include(generated/rexglue.cmake)
 
 set(GRAW_SHARED_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../port/src")
@@ -22,7 +29,13 @@ set(GRAWMP_SOURCES
     ${GRAW_SHARED_SRC}/autopilot.cpp
     ${GRAW_SHARED_SRC}/ui_style.cpp
     ${GRAW_SHARED_SRC}/ui_pad.cpp
+    ${GRAW_SHARED_SRC}/cpu_check.cpp
 )
+
+# The CPU check runs before any x86-64-v3 code (src/cpu_check.cpp), so it is built for v2 and
+# without the precompiled header.
+set_source_files_properties(${GRAW_SHARED_SRC}/cpu_check.cpp PROPERTIES COMPILE_OPTIONS "-march=x86-64-v2"
+                            SKIP_PRECOMPILE_HEADERS ON)
 
 if(WIN32)
     add_executable(grawmp WIN32 ${GRAWMP_SOURCES})

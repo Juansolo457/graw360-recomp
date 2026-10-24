@@ -531,3 +531,36 @@ campaign videos played at once, both into black panels:
   fits the overlap: the frame animation is drawn straight onto the HUD, while the video passes
   through the overlapped textures. The log of this run is being analysed for the allocation
   sizes; see HANDOFF.md.
+
+## Correction: the overlap is not the root cause (2026-10-24 07:44 `-Trace` run)
+The kernel trace (`MmAllocatePhysicalMemoryEx` / `MmFreePhysicalMemory`, virtual `0xE0000000`
+heap = physical + 0x1000 offset) shows a **clean** lifecycle for the one video that played:
+
+| Time | Event |
+|---|---|
+| 07:45:17.314 | allocated: texture `10C7F000` (0x14000, protect 0x404 write-combine), planes `10C93000`/`10C97000` (0x4000), `10C9B000` (0x8000), `10CA3000`/`10CA7000` (0x4000), `10CAB000` (0x8000). No overlap |
+| 07:45:17-22 | `resolve 160x120 to 10C7F000` and the HUD bind, 60-85 a second; planes sampled from those buffers |
+| 07:45:21.883 | all seven blocks freed together; resolves stop |
+
+The user still saw a black panel, with the intro/outro animation playing. So during playback
+nothing overlapped. The overlap in the 07:40 run was most likely one video's freed buffers being
+reused by the next (two videos, close together), so it's a side effect at most.
+**The root cause is open again.** The established facts:
+- the game side works: frames decode, the Bink draw is issued with colour writes on;
+- every texture-cache step happens: planes reload after CPU writes, the output reloads after
+  each resolve, the HUD binds it;
+- the stock renderer's options don't fix it, and January Canary (the fork point) shows it.
+
+**Most promising next checks:**
+1. **Address mapping of the `0xE0000000` heap.** Planes and texture live there (4 KB pages,
+   physical = virtual - 0xE0000000 + 0x1000). If the CPU's writes and the GPU's reads disagree
+   by that 0x1000 offset, the GPU reads the wrong page (zeros means black). Compare ReXGlue's
+   `memory` heap setup and `TranslatePhysical` with Xenia's for the E0 heap. A quick test:
+   during playback, hash the guest bytes at the plane's virtual address, and the bytes the
+   texture cache uploads for its physical address.
+2. **Look at the pixels.** Dump the resolved 160x120 texture and the Y plane right after
+   upload, from the instrumented renderer (read back from shared memory once). That shows
+   whether the planes are zero on the GPU side (a mapping or upload problem) or the draw's
+   output is black (a shader or constant problem: Bink's c0-c3 at pixel constant 0-3).
+3. Or a RenderDoc capture of one frame with the panel up (RenderDoc isn't installed; the user
+   has allowed downloads).

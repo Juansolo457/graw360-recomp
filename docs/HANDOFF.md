@@ -3,7 +3,7 @@
 Read [PLAN.md](PLAN.md) for the phases and exit criteria and [FINDINGS.md](FINDINGS.md) for the
 disc and executable facts. This file is the state, the build/run detail and where things live.
 Update it at the end of every session; the next model starts here, not from chat history.
-**Top task #2: root cause found, see "Current #2 handoff: root cause found" below and [CROSSCOM.md](CROSSCOM.md).**
+**Top task #2: root cause still open. Start with the "Correction" section at the end of [CROSSCOM.md](CROSSCOM.md), then "Current #2 handoff" below.**
 
 ## Where it stands
 **The game plays.** The front end hands over to the campaign and to Instant Action, as the
@@ -139,7 +139,7 @@ Our files are MIT (`LICENSE`, `NOTICE`); ReXGlue is BSD-3-Clause with Xenia's no
 fear-nx's renderer is ever brought in, that directory and any build linking it are GPL-3.0.
 Never commit game data, generated translations, captures or saves. Releases are source only.
 
-## Current #2 handoff: root cause found (2026-10-24, latest)
+## Current #2 handoff (2026-10-24, latest): overlap found, but NOT the root cause - read the correction at the end of CROSSCOM.md first
 **The black Cross-Com, narration and portrait panels come from overlapping guest memory, not
 from the renderer.** The Bink frame buffers of one video and the 160x120 output texture of
 another occupy the same physical pages, so each CPU-decoded frame overwrites a resolved

@@ -714,3 +714,34 @@ Stencil, clipping/UVs, descriptor contents/indexing, blending and later overdraw
 No permanent fix. Next inspect an actual frame's draw output and subsequent pixel history,
 preferably RenderDoc, or bounded after-HUD-draw readback plus vertex/descriptor inspection.
 Game not stopped. Latest installed DLL is diagnostic; flag defaults off. Source patch retained.
+
+## `--d3d12_bindless=false` (08:40 run, Claude): no fix
+With bindless off (and async off), the Cross-Com and the top-right video are still black.
+The scene got a green/olive colour cast and the HUD border stayed static. The descriptor slot
+(168 vs 501) is not simply stale in the bindless path, and renderer options are exhausted.
+
+## Next: rebuild the renderer back toward January Canary (the working fork point)
+ReXGlue's Xenos plugin is Canary's January 2026 GPU code (ReXGlue 96bf707, 2026-01-22) plus 60
+`src/graphics` commits. Canary from that January (263e91b) shows the Cross-Com and the map, and
+the video data is intact up to the final HUD draw (Astra's readbacks). So the break is in one of
+those ReXGlue commits. Plan:
+1. In `third_party/rexglue-sdk-bd833a2`, on a local branch, revert the functional renderer
+   commits while keeping the build, plugin-ABI (c22a33e, 55a836f), cvar and logging
+   refactors. The candidates, roughly by size:
+   - e6407f3, 8b2672d, 38cbd30 and f20b3b2: the March "port backend/pipeline/xenia-edge"
+     imports;
+   - c1ca695 (root SRV/UAV, viewport caching);
+   - dc9cece (swizzle lookup cache);
+   - a913a8e (async VS translation);
+   - 7a2a2fc (cvar tuning);
+   - 6379943 and bb4a536 (resolve pre-mask);
+   - 4d3abf6 (gamma UNorm16);
+   - 6124b36 (page-valid flags);
+   - 75e339b, 8e6baae and acb88c3.
+2. Build the plugin only, drop it in beside `grawyeti.exe` (stock saved as `.stock`), and test.
+3. If the Cross-Com shows, bisect: re-apply halves of the reverted set until the breaking commit
+   is found. Then fix it, or ship our own build of the plugin with that commit reverted.
+4. If reverting everything still shows black, the difference is outside `src/graphics` (the
+   runtime: memory, threads, presenter). Then the fallback is the user's idea: build January
+   Canary's GPU code as a fresh plugin against the plugin ABI, as the F.E.A.R. port does with
+   fear-nx's renderer (Xenia is BSD-3-Clause, so licensing allows it).

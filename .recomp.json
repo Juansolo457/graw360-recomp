@@ -1,0 +1,22 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "Tom Clancy's Ghost Recon Advanced Warfighter",
+  "wikidata": "Q2090121",
+  "system": "Xbox 360",
+  "type": "recomp",
+  "original": {
+    "region": "USA/Europe"
+  },
+  "project": "GRAW 360 Recompiled",
+  "status": "in-progress",
+  "targets": ["Windows"],
+  "toolchain": "Rexglue",
+  "approach": "The 360 default.xex statically recompiled to x86-64 C++ with ReXGlue, with a game-specific runtime standing in for the Xbox.",
+  "notes": "The console-exclusive Red Storm version, with the third-person camera and the Cross-Com drone. It boots on Windows to its Press Start screen; next is the campaign and its first mission. No game data included: bring your own Xbox 360 copy.",
+  "maintainers": [
+    {
+      "name": "Juansolo457",
+      "link": "https://github.com/Juansolo457"
+    }
+  ]
+}

@@ -911,3 +911,35 @@ R8G8B8A8 (1x); the HUD draws are events 17778-18205.
    through shared memory; the VS reads `ResourceId::317`), or trace from the game's HUD sprite
    code (Yeti `sub_821BBAB0` stores the panel material; the fade lives near there). Then
    compare the generated C++ of the colour/alpha computation with the PowerPC semantics.
+
+## ROOT CAUSE NARROWED: wrong BLEND STATE on the HUD overlay draws (Canary comparison, 09:56)
+Canary 263e91b under RenderDoc (`private/xenia-canary/263e91b/renderdoc/…frame6040.rdc`,
+`tools/rdoc_find_video.py`) shows **the same overlay draws with identical vertex data**: the
+same positions, UVs and vertex colour (0,0,0,1). Only the blend differs:
+
+| Draw (recomp / Canary) | Canary blend (src, dst) | Recomp blend | Result in recomp |
+|---|---|---|---|
+| top-right fill 18110 / 9790 | One, InvSrcColor | SrcAlpha, InvSrcAlpha | opaque black over the narration video |
+| top-right fill 18114 / 9794 | One, InvSrcColor | SrcAlpha, InvSrcAlpha | the same |
+| Cross-Com 32x256 18122 / 9802 | Zero, InvSrcColor | SrcAlpha, InvSrcAlpha | black over the Cross-Com |
+| Cross-Com static 18126 / 9807 | One, One (additive) | SrcAlpha, InvSrcAlpha | opaque static |
+
+- With Canary's modes, black or static leaves the destination nearly unchanged: these are
+  frame and noise effects meant to be subtle. With alpha blending they paint over everything.
+  The video draw itself (SrcAlpha/InvSrcAlpha, vertex alpha 0.784) is the same in both.
+- **This explains #2 and very likely #1** (the HUD border is the same static texture,
+  alpha-blended instead of additive), and possibly #3 (map).
+- So these draws don't get the blend the game sets. They keep SrcAlpha/InvSrcAlpha from the
+  previous draw. It's one of two things:
+  - **game side:** the recompiled D3D runtime never writes RB_BLENDCONTROL0 for these draws,
+    for example a dirty-flag bit-op mistranslated; or
+  - **renderer side:** the register is right, but the pipeline is built or reused with a stale
+    blend (pipeline-key/caching).
+- **Next: one trace.** Log the guest RB_BLENDCONTROL0 (and RB_COLORCONTROL) at IssueDraw for the
+  HUD draws that sample BC2 1024x1024 / 128x128 / 32x256 textures:
+  - if the register holds One/InvSrcColor, the renderer is at fault (compare the pipeline's
+    blend description);
+  - if it holds SrcAlpha/InvSrcAlpha, the game side is: trace the D3D SetRenderState/blend path
+    in the generated code.
+  RB_BLENDCONTROL bit layout: color src 0-4, comb 5-7, dst 8-12; alpha src 16-20, comb 21-23,
+  dst 24-28. Factors: 0 Zero, 1 One, 4 SrcColor, 5 InvSrcColor, 6 SrcAlpha, 7 InvSrcAlpha.

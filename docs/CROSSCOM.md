@@ -797,3 +797,40 @@ Kept on purpose:
 
 All 107 runtime imports resolve. Installed; step 1's DLL is `rexgpu-xenosrd.dll.revert-step1`.
 Test: `tools/launch.ps1 -Windowed "-Extra:--async_shader_compilation=false"`.
+- **Revert step 2 result (09:01): still black.** With the March D3D12, pipeline, PM4 and
+  swizzle-cache imports undone, the Cross-Com and the top-right video are still black.
+
+## Paused (2026-10-24, user's call; still the #1 issue)
+Where it stands:
+- Proven fine: Bink decode and the game-side player, Bink's shader compilation, the plane
+  uploads, the resolve, and the converted output texture. Astra's readback shows the actual
+  video frames in it.
+- The panel is lost in the final HUD draw, which uses the same shaders as the working menu
+  video.
+- None of these fix it: the renderer options, bindless off, depth off for that draw, and
+  reverting ReXGlue's renderer changes back to roughly January (two steps, all functional
+  changes except 0bd3521, 4d3abf6 and the Vulkan port).
+- Since January Canary (263e91b) shows it, and our renderer now holds essentially the same
+  logic, the difference is most likely **outside the renderer DLL**: the host
+  (`rexruntime`: memory views, threads, timing, presenter or ImGui overlay compositing), or the
+  game code itself (recompiled vs Canary's JIT), for example the HUD draw's vertices/UVs or
+  something the game computes, like a panel visibility flag.
+
+Ideas for when this resumes:
+1. One RenderDoc frame of the recomp with the panel up, compared with the same frame in Canary.
+   It shows the HUD draw's actual inputs and output, and whether something later overdraws it.
+2. Dump the HUD draw's vertex data (positions/UVs) in both. Wrong UVs would sample a black
+   border texel.
+3. The user's fallback: build January Canary's GPU code as a renderer plug-in, the way the
+   F.E.A.R. port uses fear-nx's. Our revert result suggests this alone won't fix it if the
+   cause is host- or game-side.
+
+Renderer DLLs in `port-yeti/out/build/win-amd64-relwithdebinfo/`:
+- `rexgpu-xenosrd.dll` is still the **step-2 revert build** (the game was running when work
+  stopped);
+- `.stock` is the prebuilt original, and `.revert-step1`, `.revert-step2`, `.before-*` and
+  `.traced` are experiments.
+- Restore the stock one with
+  `cp rexgpu-xenosrd.dll.stock rexgpu-xenosrd.dll` (game closed), or by rebuilding port-yeti.
+- The revert branch is `graw-revert-to-january` in `third_party/rexglue-sdk-bd833a2`; the
+  patches are in `tools/patches/`.

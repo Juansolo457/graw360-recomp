@@ -3,7 +3,7 @@
 Read [PLAN.md](PLAN.md) for the phases and exit criteria and [FINDINGS.md](FINDINGS.md) for the
 disc and executable facts. This file is the state, the build/run detail and where things live.
 Update it at the end of every session; the next model starts here, not from chat history.
-**Top task #2: root cause still open. Start with the "Correction" section at the end of [CROSSCOM.md](CROSSCOM.md), then "Current #2 handoff" below.**
+**Top task #2 (black video panels) is PAUSED and still the #1 issue: read "Paused" at the end of [CROSSCOM.md](CROSSCOM.md) first. The campaign renderer DLL may still be an experiment; restore `rexgpu-xenosrd.dll.stock` before normal play.**
 
 ## Where it stands
 **The game plays.** The front end hands over to the campaign and to Instant Action, as the

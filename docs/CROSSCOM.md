@@ -393,3 +393,21 @@ HUD state paths. User said crosshair, not specifically the HUD border, so #1 rem
   explains it. The cause is in ReXGlue's code changes since 96bf707. The March ports
   (e6407f3, 38cbd30, 8b2672d, f20b3b2, "xenia-edge") rewrote much of the D3D12 render-target
   and texture caches.
+- **Code comparison with Canary 263e91b** (worktree `third_party/xenia-canary-263e91b/`,
+  normalised diffs in the session scratchpad):
+  - Shared memory: Canary keeps a third page-flag set, "valid and written by a GPU resolve",
+    and `RequestRange(..., bool* any_data_resolved_out)`, so each texture records
+    `base_resolved` / `mips_resolved`. ReXGlue removed both.
+  - Canary uses that only for gamma (sRGB) handling and resolution-scaled sampling offsets.
+    On its own it would not black out an X8R8G8B8 texture at 1x.
+  - `RangeWrittenByGpu`, the resolve-to-texture-cache notification, is the same in both: fire
+    the watches, then mark the pages GPU-written.
+  - The remaining differences are in ReXGlue's reworked texture cache (430 + 501 changed
+    statements) and D3D12 render-target cache (781). Too much to read blind.
+- **Next: an instrumented renderer.** `third_party/rexglue-sdk-bd833a2` is the exact source of
+  the prebuilt `rexgpu-xenosrd.dll`.
+  - Build that plugin from source with logging keyed to the Cross-Com texture: resolve
+    destination and extent, the `RangeWrittenByGpu` watch firing, texture-cache invalidation
+    and reload, and the fetch bound for the HUD draw.
+  - Drop the DLL in beside `grawyeti.exe` in place of the prebuilt one (same commit, same ABI).
+  - Compare with a Canary run whose log shows the same events.

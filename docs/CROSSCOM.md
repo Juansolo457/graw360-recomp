@@ -411,3 +411,17 @@ HUD state paths. User said crosshair, not specifically the HUD border, so #1 rem
     and reload, and the fetch bound for the HUD draw.
   - Drop the DLL in beside `grawyeti.exe` in place of the prebuilt one (same commit, same ABI).
   - Compare with a Canary run whose log shows the same events.
+- **Instrumented renderer built** (2026-10-24):
+  - The source is `third_party/rexglue-sdk-bd833a2` plus `tools/patches/rexglue-bd833a2-graw-rtt-trace.patch`,
+    which adds `include/rex/graphics/graw_trace.h` and hooks the D3D12 resolve and the texture
+    cache.
+  - Built target `rexgpu-xenos` only: `cmake --preset win-amd64`, then `--build --preset
+    win-amd64-relwithdebinfo --target rexgpu-xenos`, with the `.tools` LLVM in a VS DevShell.
+  - The submodules' symlinks were checked out as text (core.symlinks=false), so they were
+    replaced with copies first.
+  - All 107 of its `rexruntimerd.dll` imports exist in the prebuilt runtime.
+  - Installed over `port-yeti/out/build/win-amd64-relwithdebinfo/rexgpu-xenosrd.dll`, with the
+    original at `rexgpu-xenosrd.dll.stock`. A port-yeti rebuild copies the prebuilt back.
+  - Option `--graw_trace_rtt_max_width=<px>`: resolves at most that wide, and texture-cache
+    bind/load/invalidate events on their destinations, logged as `GRAW trace ...` with 2 s
+    summaries.

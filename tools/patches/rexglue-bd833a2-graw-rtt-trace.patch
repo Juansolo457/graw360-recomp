@@ -1,0 +1,214 @@
+diff --git a/include/rex/graphics/graw_trace.h b/include/rex/graphics/graw_trace.h
+new file mode 100644
+index 0000000..0c3a3ac
+--- /dev/null
++++ b/include/rex/graphics/graw_trace.h
+@@ -0,0 +1,75 @@
++// GRAW #2 instrumentation (local only, never upstreamed): traces small render-to-texture
++// resolves and every texture-cache event on their destination ranges, so a black video panel
++// can be followed from the resolve to the texture the HUD samples. Off unless
++// --graw_trace_rtt_max_width > 0 (resolves at most that wide are traced).
++#pragma once
++
++#include <chrono>
++#include <cstdint>
++#include <map>
++#include <mutex>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include <rex/cvar.h>
++#include <rex/logging.h>
++
++REXCVAR_DECLARE(uint32_t, graw_trace_rtt_max_width);
++
++namespace rex::graphics::graw_trace {
++
++struct State {
++  std::mutex mutex;
++  std::vector<std::pair<uint32_t, uint32_t>> ranges;  // traced resolve destinations
++  std::map<std::string, uint64_t> counts;             // per 2 s
++  std::map<std::string, uint32_t> detailed;           // lines logged per event key
++  std::chrono::steady_clock::time_point window = std::chrono::steady_clock::now();
++};
++
++inline State& Get() {
++  static State state;
++  return state;
++}
++
++inline bool Enabled() { return REXCVAR_GET(graw_trace_rtt_max_width) != 0; }
++
++// Is any byte of [start, start + length) inside a traced resolve destination?
++inline bool Tracked(uint32_t start, uint32_t length) {
++  State& s = Get();
++  std::lock_guard<std::mutex> lock(s.mutex);
++  start &= 0x1FFFFFFF;
++  for (const auto& [base, size] : s.ranges) {
++    if (start < base + size && base < start + length) return true;
++  }
++  return false;
++}
++
++inline void Track(uint32_t start, uint32_t length) {
++  State& s = Get();
++  std::lock_guard<std::mutex> lock(s.mutex);
++  start &= 0x1FFFFFFF;
++  for (const auto& r : s.ranges) {
++    if (r.first == start && r.second == length) return;
++  }
++  if (s.ranges.size() < 64) s.ranges.emplace_back(start, length);
++}
++
++// Counts an event, and returns true if it should also be logged in full (the first `limit`
++// times for this key). Logs a summary of all counts every 2 s.
++inline bool Count(const std::string& key, uint32_t limit = 6) {
++  State& s = Get();
++  std::lock_guard<std::mutex> lock(s.mutex);
++  ++s.counts[key];
++  auto now = std::chrono::steady_clock::now();
++  if (now - s.window >= std::chrono::seconds(2)) {
++    s.window = now;
++    std::string line;
++    for (const auto& [k, v] : s.counts) line += " | " + k + " x" + std::to_string(v);
++    REXGPU_INFO("GRAW trace last 2 s:{}", line);
++    s.counts.clear();
++  }
++  return s.detailed[key]++ < limit;
++}
++
++}  // namespace rex::graphics::graw_trace
+diff --git a/src/graphics/d3d12/render_target_cache.cpp b/src/graphics/d3d12/render_target_cache.cpp
+index dd321a5..6784517 100644
+--- a/src/graphics/d3d12/render_target_cache.cpp
++++ b/src/graphics/d3d12/render_target_cache.cpp
+@@ -26,6 +26,7 @@
+ #include <rex/graphics/d3d12/command_processor.h>
+ #include <rex/graphics/d3d12/deferred_command_list.h>
+ #include <rex/graphics/d3d12/render_target_cache.h>
++#include <rex/graphics/graw_trace.h>
+ #include <rex/graphics/d3d12/texture_cache.h>
+ #include <rex/graphics/flags.h>
+ #include <rex/graphics/format/dxbc.h>
+@@ -1180,6 +1181,34 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
+     return true;
+   }
+ 
++  // GRAW #2 trace: small resolves and their destinations.
++  bool graw_traced = false;
++  if (graw_trace::Enabled()) {
++    uint32_t w = resolve_info.coordinate_info.width_div_8 * 8;
++    uint32_t h = resolve_info.height_div_8 * 8;
++    if (w <= REXCVAR_GET(graw_trace_rtt_max_width)) {
++      graw_traced = true;
++      if (resolve_info.copy_dest_extent_length) {
++        graw_trace::Track(resolve_info.copy_dest_extent_start,
++                          resolve_info.copy_dest_extent_length);
++      }
++      std::string key = fmt::format("resolve {}x{} to {:08X}", w, h,
++                                    resolve_info.copy_dest_base);
++      if (graw_trace::Count(key, 4)) {
++        REXGPU_INFO(
++            "GRAW trace {}: extent {:08X}+{:X}, copy_control {:08X}, dest_info {:08X}, "
++            "color_base {} depth_base {} copying_depth {} scaled {} path {} "
++            "clear color {:08X}{:08X} depth {:08X}",
++            key, resolve_info.copy_dest_extent_start, resolve_info.copy_dest_extent_length,
++            resolve_info.rb_copy_control.value, resolve_info.copy_dest_info.value,
++            resolve_info.color_original_base, resolve_info.depth_original_base,
++            resolve_info.IsCopyingDepth(), draw_resolution_scaled, int(GetPath()),
++            resolve_info.rb_color_clear, resolve_info.rb_color_clear_lo,
++            resolve_info.rb_depth_clear);
++      }
++    }
++  }
++
+   DeferredCommandList& command_list = command_processor_.GetDeferredCommandList();
+ 
+   // Copying.
+@@ -1315,6 +1344,10 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
+           written_address_out = resolve_info.copy_dest_extent_start;
+           written_length_out = resolve_info.copy_dest_extent_length;
+           copied = true;
++          if (graw_traced) {
++            graw_trace::Count(fmt::format("resolve copied to {:08X}",
++                                          resolve_info.copy_dest_base), 0);
++          }
+         }
+       } else {
+         REXGPU_ERROR(
+diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
+index 76f5600..783cfea 100644
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -19,6 +19,7 @@
+ #include <rex/dbg.h>
+ #include <rex/graphics/flags.h>
+ #include <rex/graphics/pipeline/texture/cache.h>
++#include <rex/graphics/graw_trace.h>
+ #include <rex/graphics/pipeline/texture/info.h>
+ #include <rex/graphics/pipeline/texture/util.h>
+ #include <rex/graphics/register_file.h>
+@@ -125,6 +126,10 @@ REXCVAR_DEFINE_BOOL(pre_mask_resolve_l2_block, true, "GPU",
+ //     "96 MB, and with 3x3, it will be 360 + 216 MB.",
+ //     "GPU");
+ 
++REXCVAR_DEFINE_UINT32(graw_trace_rtt_max_width, 0, "GPU",
++                      "GRAW #2: trace resolves at most this wide and texture-cache events on "
++                      "their destinations (0 = off)");
++
+ namespace rex::graphics {
+ 
+ const TextureCache::LoadShaderInfo TextureCache::load_shader_info_[kLoadShaderCount] = {
+@@ -446,6 +451,13 @@ bool TextureCache::CommitPreparedTextureLoad(const PendingTextureLoad& pending_l
+   // not up to date anymore.
+   texture.MakeUpToDateAndWatch(global_critical_region_.Acquire());
+   texture.LogAction("Loaded");
++  if (graw_trace::Enabled() &&
++      graw_trace::Tracked(texture_key.base_page << 12, texture.GetGuestBaseSize())) {
++    graw_trace::Count(fmt::format("load base {:08X} {}x{} (base {} mips {})",
++                                  texture_key.base_page << 12, texture_key.GetWidth(),
++                                  texture_key.GetHeight(), pending_load.load_base,
++                                  pending_load.load_mips), 0);
++  }
+ 
+   return true;
+ }
+@@ -509,6 +521,25 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
+     // (if the format is emulated with different host bit representations for
+     // signed and unsigned - otherwise only the unsigned one is loaded).
+     bool key_changed = binding.key != old_key;
++    if (graw_trace::Enabled() &&
++        graw_trace::Tracked(binding.key.base_page << 12, uint32_t(binding.key.pitch << 5) * 4 *
++                                                             binding.key.GetHeight())) {
++      std::string key = fmt::format("bind fetch {} base {:08X} {}x{} fmt {}", index,
++                                    binding.key.base_page << 12, binding.key.GetWidth(),
++                                    binding.key.GetHeight(), uint32_t(binding.key.format));
++      if (graw_trace::Count(key, 3)) {
++        Texture* t = FindOrCreateTexture(binding.key);
++        REXGPU_INFO(
++            "GRAW trace {}: key_changed {}, tiled {}, pitch {}, mips {}, scaled {}, signed_sep {}, "
++            "swizzle {:03X}, texture {}, outdated_mask {}, fetch {:08X} {:08X} {:08X} {:08X} "
++            "{:08X} {:08X}",
++            key, key_changed, uint32_t(binding.key.tiled), binding.key.pitch << 5,
++            binding.key.mip_max_level + 1, uint32_t(binding.key.scaled_resolve),
++            uint32_t(binding.key.signed_separate), uint32_t(fetch.swizzle), (void*)t,
++            t ? t->outdated_mask() : 0xFFFFFFFFu, fetch.dword_0, fetch.dword_1, fetch.dword_2,
++            fetch.dword_3, fetch.dword_4, fetch.dword_5);
++      }
++    }
+     bool any_sign_was_not_signed = texture_util::IsAnySignNotSigned(old_swizzled_signs);
+     bool any_sign_was_signed = texture_util::IsAnySignSigned(old_swizzled_signs);
+     bool any_sign_is_not_signed = texture_util::IsAnySignNotSigned(binding.swizzled_signs);
+@@ -752,6 +783,11 @@ void TextureCache::WatchCallback(const std::unique_lock<std::recursive_mutex>& g
+                                  bool invalidated_by_gpu) {
+   Texture& texture = *static_cast<Texture*>(context);
+   texture.WatchCallback(global_lock, argument != 0);
++  if (graw_trace::Enabled() &&
++      graw_trace::Tracked(texture.key().base_page << 12, texture.GetGuestBaseSize())) {
++    graw_trace::Count(fmt::format("invalidate {:08X} {} by_gpu {}", texture.key().base_page << 12,
++                                  argument != 0 ? "mips" : "base", invalidated_by_gpu), 0);
++  }
+   texture.texture_cache().texture_became_outdated_.store(true, std::memory_order_release);
+ }
+ 

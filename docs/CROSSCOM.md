@@ -496,3 +496,33 @@ HUD state paths. User said crosshair, not specifically the HUD border, so #1 rem
     texture load) matches January Canary.
   - **Trace build 4:** logs any `RequestRanges` upload that overlaps a traced resolve
     destination ("UPLOAD from guest memory over traced ...").
+
+## Root cause found: overlapping memory (2026-10-24 07:40 trace)
+**The video planes and the video output textures overlap in guest physical memory.** That
+can't happen on a console, and it explains black, garbage and run-to-run variation. Two
+campaign videos played at once, both into black panels:
+
+| Range | Contents |
+|---|---|
+| `10C64000`-`10C78000` | video A output texture (160x120 X8R8G8B8 tiled, 0x14000) |
+| `10C78000`-`10C98000` | video A Bink planes: Cr `78000`, Cb `7C000`, Y `80000`; second frame `88000`/`8C000`/`90000` (0x20000) |
+| `10C7F000`-`10C93000` | **video B output texture**, inside A's planes |
+| `10C93000`-`10CB3000` | video B planes: `93000`/`97000`/`9B000`, `A3000`/`A7000`/`AB000`, overlapping A's second frame |
+
+- Video B's texture sits 0x7000 into A's plane block, and B's planes start right after that
+  texture. Whatever placed them treated A's block as 0x7000 bytes long, but Bink uses 0x20000
+  bytes.
+- So every CPU-decoded Bink frame overwrites the other panel's resolved picture. The texture
+  cache, correctly, reloads it from the overwritten memory.
+- Uploads over resolved ranges happen once each, at first use, so the "re-upload" hypothesis
+  was wrong. The overwrites come from the overlap.
+- **The renderer is not the cause.** It handles what it's given correctly. The earlier renderer
+  findings (async skipping the border, `clear_memory_page_state` and so on) stand on their own.
+- `MmAllocatePhysicalMemoryEx` is the same in ReXGlue and Canary. So the under-sized block comes
+  from above the kernel: the game's or Bink's own allocation code, or a size calculation, which
+  Canary runs through its JIT and we run as recompiled C++. **Suspect: a codegen error in that
+  code.**
+- **Next:** a run with `-Trace`, where every kernel call logs its arguments (allocation sizes and
+  addresses), together with the renderer trace for the texture addresses. Find which
+  allocation returned `10C78000` (virtual address = physical + heap base), its requested size,
+  and whether the 0x7000 comes from the game's heap or from Bink's size calculation.

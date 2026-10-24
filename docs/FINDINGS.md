@@ -230,3 +230,23 @@ Two related things did show up:
 - **`D:\Dummy`.** Yeti opens `D:\Dummy` for writing at start-up and gets `0xC0000022` (access
   denied: the VFS doesn't allow writes to `game:`/`d:`). It looks like a writable-drive probe;
   check what Yeti does with the result when saving (New game, then a checkpoint, then Load game).
+
+## Cross-Com and the narration panel are black (#2)
+- The campaign opens and reads each Cross-Com `.bik` in full, and the clip's audio plays, so
+  decoding runs. Ruled out on the stock renderer: `--readback_resolve`, invalid fetch constants.
+- fear-nx's native Vulkan renderer (`port-yeti-nx`, 2026-10-23) did not fix it: still black, and
+  the rest of the game broke (over 1,000 empty texture lookups per 10 s, an unhandled 2048x2048
+  format 23 texture, stretches at 9 fps). Not the way forward; kept local only.
+- Its log shows how the Cross-Com video reaches the GPU: two sets of three `k_8` (format 2)
+  planes, one 160x120 and two 80x64 (Y, Cr, Cb; no alpha plane), at `0x0FEE4000`/`E8000`/`EC000`
+  and `0x0FEF4000`/`F8000`/`FC000`, re-uploaded several times a second. So the CPU-decoded frames
+  land in texture memory; the black comes later.
+- The campaign has no precompiled shaders. Bink's shaders are HLSL text in `.rdata`
+  (`yeti.bin` file offsets `0x41CD0` pass-through vertex shader, `0x41EF8` three-plane and
+  `0x42318` four-plane pixel shaders) that the game's own D3DX compiler (recompiled, like the
+  front end's) compiles at runtime. The pixel shader samples `.x` of each plane into
+  `c = (Y, Cr, Cb, consts.x)` and outputs `dot(tor|tog|tob, c)` with constants `c0`-`c3`. Black
+  means the planes sample as 0, the constants are 0, or the compiled microcode is wrong.
+- The stock plugin honours `--dump_shaders <dir>`: each shader's Xenos microcode and its
+  disassembly, written when first translated. Next probe: one run with it, then check the Bink
+  pixel shader (three `tfetch2D` + three `dp4`) against the source above.

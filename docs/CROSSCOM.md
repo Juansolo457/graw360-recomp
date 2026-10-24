@@ -975,3 +975,31 @@ same positions, UVs and vertex colour (0,0,0,1). Only the blend differs:
     and replaced before any launch.
   - Installed; backups `rexgpu-xenosrd.dll.stock` and `.blend-trace`.
   - Run: `tools/launch.ps1 -Windowed "-Extra:--graw_trace_rtt_max_width=200 --async_shader_compilation=false"`.
+
+## Blend trace result (10:13 run): the GAME writes the wrong blend value
+For each of three video draws (`t0=0FED0000:160x120:f6`, blend 0x07060706 as expected for the
+video), the following HUD draws and the guest's RB_BLENDCONTROL0 writes were logged:
+- Before nearly every overlay draw the guest **does write RB_BLENDCONTROL0, always
+  0x07060706** = SrcAlpha / Add / InvSrcAlpha for both colour and alpha (fields: src 6, dst 7).
+- The overlay draws: the atlas `1BEDD000:1024x1024:f19` (DXT2/3) twice, then `16E37000:32x256`,
+  then the static `16E63000:128x128`. They all carry 0x07060706. Canary shows they need
+  One/InvSrcColor (~0x05010501), Zero/InvSrcColor (~0x05000500) and One/One (~0x01010101).
+- So the D3D layer flushes blend state on every draw as it should, but it's handed SrcAlpha/
+  InvSrcAlpha every time. The wrong value is chosen higher up, in the engine's mapping from a
+  HUD element's blend mode to D3D blend factors. That's recompiled game code. The renderer
+  and the D3D flush are not at fault.
+- The value isn't a literal in the generated code (no 0x07060706 constant). It's assembled from
+  separate src/dst factors. A scan of `.rdata`/`.data` for small-integer tables containing the
+  (6,7) and (1,5)/(1,1) pairs found nothing convincing.
+- **Next (reverse engineering, no runtime work needed to start):**
+  1. Find where the HUD sprite renderer sets the blend mode. Start from the HUD material slot
+     code (`sub_821BBAB0` stores the panel texture into 28-byte material entries at table+72).
+     Find the element/material field holding the blend mode, and the function that turns it
+     into D3D render-state calls (SRCBLEND/DESTBLEND/BLENDOP), likely a switch or an indexed
+     table.
+  2. Compare the generated C++ for that path with the PowerPC: suspects are a field load at the
+     wrong width or offset (lbz/lhz vs lwz), a rotate/mask, a compare-and-branch, or a switch
+     table that falls through to a default of "alpha blend".
+  3. Shortcut: hook the D3D blend setter and log the caller (LR) and arguments for the overlay
+     draws. On the 360 the D3D render-state setters are small functions near `0x824C...`,
+     next to the draw functions found earlier.

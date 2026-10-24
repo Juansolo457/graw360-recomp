@@ -1,12 +1,16 @@
 // graw - Ghost Recon Advanced Warfighter (Xbox 360), ReXGlue application.
 //
-// Shared by the disc's programs: port/ (default.xex, the front end, graw.exe) and port-sp/
-// (gr3xenon_release.exe, the campaign, grawsp.exe). Each main.cpp includes its own generated
+// Shared by the disc's programs (graw_loader.h): port/ (default.xex, the front end, graw.exe),
+// port-mp/ (gr3xenon_release.exe: Instant Action, co-op, multiplayer, grawmp.exe) and port-yeti/
+// (yeti_final_xenon.exe, the campaign, grawyeti.exe). Each main.cpp includes its own generated
 // init header, defines GRAW_APP_NAME, then includes this file. The programs hand over to each
 // other the way the console's loader would (graw_loader.h).
 
 #pragma once
 
+#include <rex/cvar.h>
+#include <rex/input/device_assignment.h>
+#include <rex/input/input_system.h>
 #include <rex/logging.h>
 #include <rex/rex_app.h>
 #include <rex/system/xthread.h>
@@ -23,6 +27,15 @@
 #ifndef GRAW_XEX_IMAGE
 #define GRAW_XEX_IMAGE "game:\\default.xex"
 #endif
+
+// The runtime signs in only player 1 (a local profile; Xbox Live is gone) and gives controllers
+// player slots in connection order. On the user's PC a Logitech virtual XInput device takes slot
+// 0, so the Xbox pad was player 2: unsigned, "PLAYER TWO" in Instant Action, and in F.E.A.R. no
+// saves. As in fear360, every controller (and the keyboard) drives player 1 by default.
+REXCVAR_DEFINE_BOOL(graw_shared_controllers, true, "GRAW",
+                    "Every connected controller (and the keyboard) drives player 1, the "
+                    "signed-in profile that can save; off = one controller per player slot")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 class GrawApp : public rex::ReXApp {
  public:
@@ -50,6 +63,17 @@ class GrawApp : public rex::ReXApp {
     // (F.E.A.R. lesson). "xenos" is the SDK's Xenos -> D3D12/Vulkan translator; a
     // --gpu_plugin on the command line still takes precedence.
     if (config.gpu_plugin.empty()) config.gpu_plugin = "xenos";
+
+    if (REXCVAR_GET(graw_shared_controllers) && config.input_factory) {
+      config.input_factory = [base = config.input_factory](bool tool_mode) {
+        auto input = base(tool_mode);
+        if (auto* system = dynamic_cast<rex::input::InputSystem*>(input.get())) {
+          system->SetDeviceAssignment(std::make_unique<rex::input::SharedAssignment>());
+          REXLOG_INFO("GRAW: every controller drives player 1 (the signed-in profile)");
+        }
+        return input;
+      };
+    }
     REXLOG_INFO("GRAW ({}): GPU plugin '{}'", GRAW_APP_NAME, config.gpu_plugin);
   }
 

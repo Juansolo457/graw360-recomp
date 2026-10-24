@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -29,9 +30,14 @@ REXCVAR_DEFINE_STRING(graw_frontend_exe, "", "GRAW",
                       "port/out/build/<preset> next to this build")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
+REXCVAR_DEFINE_STRING(graw_mp_exe, "", "GRAW",
+                      "The GR3 program (gr3xenon_release.exe's translation: Instant Action, co-op, "
+                      "multiplayer); empty = grawmp.exe in port-mp/out/build/<preset>")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
 REXCVAR_DEFINE_STRING(graw_campaign_exe, "", "GRAW",
-                      "The campaign's program (gr3xenon_release.exe's translation); empty = "
-                      "grawsp.exe in port-sp/out/build/<preset> next to this build")
+                      "The campaign's program (yeti_final_xenon.exe's translation); empty = "
+                      "grawyeti.exe in port-yeti/out/build/<preset>")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 namespace graw::loader {
@@ -68,15 +74,38 @@ fs::path SiblingProgram(const char* project, const char* name) {
 }
 
 fs::path ProgramFor(const std::string& executable) {
+  const auto pick = [](const std::string& set, const char* project, const char* name) {
+    return set.empty() ? SiblingProgram(project, name) : fs::path(set);
+  };
   if (executable == "default.xex") {
-    const std::string set = REXCVAR_GET(graw_frontend_exe);
-    return set.empty() ? SiblingProgram("port", "graw.exe") : fs::path(set);
+    return pick(REXCVAR_GET(graw_frontend_exe), "port", "graw.exe");
   }
   if (executable == "gr3xenon_release.exe") {
-    const std::string set = REXCVAR_GET(graw_campaign_exe);
-    return set.empty() ? SiblingProgram("port-sp", "grawsp.exe") : fs::path(set);
+    return pick(REXCVAR_GET(graw_mp_exe), "port-mp", "grawmp.exe");
+  }
+  if (executable == "yeti_final_xenon.exe") {
+    return pick(REXCVAR_GET(graw_campaign_exe), "port-yeti", "grawyeti.exe");
   }
   return {};
+}
+
+// The next program's log: "<first log's name>~<program>-<time>.log" next to this one, so every
+// program in a chain of hand-offs keeps its own log.
+void RenameLog(std::vector<std::string>& arguments, const fs::path& program) {
+  for (size_t i = 0; i + 1 < arguments.size(); ++i) {
+    if (arguments[i] != "--log_file") continue;
+    fs::path log = fs::u8path(arguments[i + 1]);
+    std::string base = log.stem().string();
+    base = base.substr(0, base.find('~'));
+    if (base.size() > 8 && base.ends_with("-restart")) base.resize(base.size() - 8);
+    char stamp[16];
+    const std::time_t now = std::time(nullptr);
+    std::strftime(stamp, sizeof(stamp), "%H%M%S", std::localtime(&now));
+    log.replace_filename(base + "~" + program.stem().string() + "-" + stamp +
+                         log.extension().string());
+    arguments[i + 1] = log.string();
+    return;
+  }
 }
 
 std::atomic<bool> g_handed_off{false};
@@ -121,19 +150,19 @@ void HandOff() {
 
   const std::string executable = GuestFileName(loader.launch_path);
   fs::path program = ProgramFor(executable);
-  if (program.empty()) {
-    // Yeti_Final_Xenon.exe (multiplayer) has no translation yet: back to the front end.
-    REXLOG_WARN("GRAW: {} requested; no translation of it yet, returning to the front end",
-                loader.launch_path);
+  if (program.empty() || !fs::exists(program)) {
+    REXLOG_WARN("GRAW: {} requested; {} is not built, returning to the front end",
+                loader.launch_path, program.empty() ? std::string("no program") : program.string());
     program = ProgramFor("default.xex");
-  }
-  if (!fs::exists(program)) {
-    REXLOG_ERROR("GRAW: {} requested, but {} is not built", loader.launch_path, program.string());
-    return;
+    if (!fs::exists(program)) {
+      REXLOG_ERROR("GRAW: the front end {} is not built either", program.string());
+      return;
+    }
   }
 
   std::vector<std::string> arguments =
       graw::process::WithoutFlags(graw::process::OwnArguments(), {"graw_launch_data"});
+  RenameLog(arguments, program);
   if (loader.launch_data_present || loader.launch_flags) {
     const fs::path file = fs::temp_directory_path() /
                           ("graw360-launch-" + std::to_string(std::rand()) + ".bin");

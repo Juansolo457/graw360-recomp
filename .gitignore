@@ -8,11 +8,13 @@ private/
 *.bik
 *.big
 port/assets/
-port-sp/assets
+port-mp/assets
+port-yeti/assets
 
 # Generated translation, build output, runtime state
 port/generated/default/
-port-sp/generated/gr3xenon_release/
+port-mp/generated/gr3xenon_release/
+port-yeti/generated/yeti_final_xenon/
 port*/out/
 port*/logs/
 port*/user*/

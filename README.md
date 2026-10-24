@@ -17,9 +17,13 @@ from [Lost Odyssey Recomp](https://github.com/freefrank/LostOdysseyRecomp).
 
 ## Status
 
-**Reaches the start screen.** The game boots on Windows to its Press Start screen, and you
-can enter the campaign as far as its loading screen, where it currently stops. Next milestone:
-the first mission.
+**Boots, with work left in each mode.** The disc holds three programs, each recompiled
+separately, and the front end hands over between them as the console did:
+
+- the front end (start screen, menus) works;
+- Instant Action and co-op load and play, but the 3D view is still black (HUD, menus and the
+  drone camera draw);
+- the campaign program boots to its Campaign menu; starting a mission is next.
 
 - [docs/PLAN.md](docs/PLAN.md): the plan to the title screen, phases, exit criteria, risks
 - [docs/FINDINGS.md](docs/FINDINGS.md): what the disc and the executable are
@@ -29,7 +33,9 @@ the first mission.
 
 ```powershell
 pwsh -NoProfile -File tools/extract.ps1 -Iso 'D:\path\to\your\graw.iso'   # ~4.8 GB into port/assets
-pwsh -NoProfile -File tools/build.ps1                                        # codegen + build
+pwsh -NoProfile -File tools/build.ps1                                        # front end: codegen + build
+pwsh -NoProfile -File tools/build.ps1 -Project port-mp                       # Instant Action / multiplayer
+pwsh -NoProfile -File tools/build.ps1 -Project port-yeti                     # campaign
 pwsh -NoProfile -File tools/smoke.ps1 -Seconds 60 -Captures 3               # headless boot check
 pwsh -NoProfile -File tools/launch.ps1 -Windowed -Scale 1                    # run it
 ```
@@ -41,7 +47,9 @@ multilingual disc). The toolchain (ReXGlue SDK, LLVM 20, CMake, Ninja) is reache
 ## Layout
 
 ```
-port/        the ReXGlue project: graw_manifest.toml (function hints), src/ (host code), assets/ (your disc, ignored)
+port/        the front end (default.xex): manifest, src/ (host code shared by all three), assets/ (your disc, ignored)
+port-mp/     Instant Action, co-op and multiplayer (GR3Xenon_Release.exe)
+port-yeti/   the campaign (Yeti_Final_Xenon.exe)
 tools/       extract, build, launch, smoke, window capture, XDVDFS reader, XEX inspector/decryptor, import survey
 docs/        plan, findings, handoff
 private/     your captures, logs and decrypted images (ignored)

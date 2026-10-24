@@ -1,5 +1,5 @@
 // GRAW 360 - starting another of the disc's programs after this one ends (graw_loader.h: the
-// front end handing over to the campaign, and back). From fear360-recomp (MIT, same author).
+// front end handing over to the other programs, and back). From fear360-recomp (MIT, same author).
 //
 // A new run is told the old one's process id (graw_restart_wait_pid) and waits for it to exit
 // before it starts (WaitForPreviousRun, from ReXApp::OnConfigurePaths), so the two never hold the

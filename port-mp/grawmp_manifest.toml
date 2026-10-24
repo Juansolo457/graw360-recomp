@@ -1,11 +1,12 @@
-# Ghost Recon Advanced Warfighter (Xbox 360), the campaign program: GR3Xenon_Release.exe on the
+# Ghost Recon Advanced Warfighter (Xbox 360), the GR3 program (Instant Action, co-op,
+# multiplayer): GR3Xenon_Release.exe on the
 # disc (title 555307D5, SHA-256 4d8a0abb93f3867df53e229a54f55435a57b403f65781d5737237ff8c36c023a),
 # started by the front end (default.xex, port/) through XamLoaderLaunchTitle when the player picks
-# Campaign. Same engine and imports as default.xex, different build: its own translation.
+# Instant Action (the campaign is yeti_final_xenon.exe, port-yeti/). Same engine and imports as default.xex, different build: its own translation.
 # ReXGlue 0.10; scaffolded by `rexglue init`. See docs/FINDINGS.md, "The disc's three programs".
 
 [project]
-name = "grawsp"
+name = "grawmp"
 sdk_version = "0.10.0"
 game_root = "assets"
 
@@ -229,3 +230,37 @@ includes = []
 0x82723968 = {}  # from 0x820895DC
 0x827AE118 = {}  # from 0x827D1A18
 0x825C5A90 = {}  # qsort comparator, after a bl
+
+# Keep FP exceptions masked across the game's FPSCR writes (src/fpscr_guard.cpp): one hook
+# before each mtfsf, the C runtime's floating-point environment functions.
+[[entrypoint.midasm_hook]]
+name = "GrawGuardFpscr"
+address = 0x822C1118
+registers = []
+
+[[entrypoint.midasm_hook]]
+name = "GrawGuardFpscr"
+address = 0x822C114C
+registers = []
+
+[[entrypoint.midasm_hook]]
+name = "GrawGuardFpscr"
+address = 0x822C116C
+registers = []
+
+[[entrypoint.midasm_hook]]
+name = "GrawGuardFpscr"
+address = 0x822C117C
+registers = []
+
+[[entrypoint.midasm_hook]]
+name = "GrawGuardFpscr"
+address = 0x822C353C
+registers = []
+
+# The audio worker dispatches this callback (the game's mixer) on a context the runtime never
+# seeded with InitHost: seed it on entry (src/fpscr_guard.cpp).
+[[entrypoint.midasm_hook]]
+name = "GrawGuardFpscr"
+address = 0x82593700
+registers = []

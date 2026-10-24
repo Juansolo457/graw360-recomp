@@ -87,13 +87,13 @@ macro(rexglue_setup_target target_name)
         target_link_libraries(${target_name}_recomp PRIVATE rex::runtime)
         rexglue_apply_target_settings(${target_name}_recomp)
         rexglue_apply_recomp_settings(${target_name}_recomp
-            "${REXGLUE_ENTRYPOINT_INCLUDE_DIR}/grawsp_pch.h")
-        add_dependencies(${target_name}_recomp grawsp_codegen)
+            "${REXGLUE_ENTRYPOINT_INCLUDE_DIR}/grawmp_pch.h")
+        add_dependencies(${target_name}_recomp grawmp_codegen)
         target_link_libraries(${target_name} PRIVATE
             ${target_name}_recomp)
     endif()
     # Also on the host, so a tree that has never run codegen still generates it.
-    add_dependencies(${target_name} grawsp_codegen)
+    add_dependencies(${target_name} grawmp_codegen)
     target_include_directories(${target_name} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -109,7 +109,7 @@ macro(rexglue_setup_target target_name)
 endmacro()
 
 # Codegen runs as part of the build, re-running only when an input in codegen.d
-# changes. Build it alone with 'cmake --build . --target grawsp_codegen'.
+# changes. Build it alone with 'cmake --build . --target grawmp_codegen'.
 # Listing the sources as outputs orders any target that compiles them after
 # codegen, including one a project assembles itself rather than taking the
 # library rexglue_setup_target() builds. The stamp comes first: the DEPFILE
@@ -117,13 +117,13 @@ endmacro()
 add_custom_command(
     OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/generated/gr3xenon_release/codegen.build.stamp"
            ${REXGLUE_ENTRYPOINT_GENERATED_SOURCES}
-    COMMAND $<TARGET_FILE:rex::rexglue> codegen ${CMAKE_CURRENT_SOURCE_DIR}/grawsp_manifest.toml
+    COMMAND $<TARGET_FILE:rex::rexglue> codegen ${CMAKE_CURRENT_SOURCE_DIR}/grawmp_manifest.toml
     DEPFILE "${CMAKE_CURRENT_SOURCE_DIR}/generated/gr3xenon_release/codegen.d"
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    COMMENT "Generating recompiled code for grawsp"
+    COMMENT "Generating recompiled code for grawmp"
     VERBATIM
 )
-add_custom_target(grawsp_codegen
+add_custom_target(grawmp_codegen
     DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/generated/gr3xenon_release/codegen.build.stamp")
 
 # Include DLL module shared library targets if codegen has generated them

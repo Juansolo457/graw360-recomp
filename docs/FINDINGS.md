@@ -9,7 +9,7 @@ here applies to `default.xex` SHA-256 `295ac4ded72c95bb86e9d9441828bb5b193f863af
 | ISO | 7,834,892,288 bytes (Redump-verified USA/Europe multilingual disc); XDVDFS game partition at `0x0FD90000`; 1,038 files, 4.76 GiB |
 | `default.xex` | 8,826,880 bytes, title `555307D5`, media `617C5216`, v0.0.0.1, built 2006-02-23 16:40 UTC, original PE `default.pe`, load `0x82000000`, image `0x9C0000`, entry `0x82200FE0`, encrypted + basic compression; decrypted image 10,223,616 bytes |
 | `GR3Xenon_Release.exe` | same size and headers, built two minutes earlier (16:38), entry `0x821EB308`, different content throughout: a sibling build left on the disc. The console loads `default.xex`; so do we |
-| `Yeti_Final_Xenon.exe` | 6,922,240 bytes, same title ID, built 2006-02-16, entry `0x82402660`, image `0x950000`. Ubisoft Paris's Yeti engine: the multiplayer game, with `Yeti.big` (1.29 GB), `NewYetiShadersX360.sdf/.sat` and `NewShaderlist.txt` |
+| `Yeti_Final_Xenon.exe` | 6,922,240 bytes, same title ID, built 2006-02-16, entry `0x82402660`, image `0x950000`. Ubisoft Paris's Yeti engine: the single-player **campaign** (first thought to be multiplayer; see "The disc's three programs"), with `Yeti.big` (1.29 GB), `NewYetiShadersX360.sdf/.sat` and `NewShaderlist.txt` |
 | XDK | 2.0.**2417** (LIBCPMT, XAPILIB .4, XBOXKRNL, XGRAPHC, XONLINE, D3D9, D3DX9, XACT, XAUD, X3DAUD, XHV). Yeti adds XMP and the LTCG audio libs |
 | Data | `data/` 1.6 GB: 10 maps as `*_map.glb` + `*_map_asynch.glb` (Red Storm's GLB packages), `.mis` missions, `.xpr` textures (intel, mapshots, env maps), `.xwb/.xsb` XACT banks per mission and language, `.bik` menu backgrounds and the 411 MB attract movie; `video/` ~300 Bink cutscenes and tips; `Sound_Bin/` 1.5 GB of `.SB4/.SS4` (Yeti's sound banks, multiplayer); `Language/*.str`; `$SystemUpdate/su20076000` |
 | Shaders | `data/*.hlsl` and `data/ShaderFragmentsModel3/*.h`: **HLSL source on the disc**; the image contains the XGraphics microcode compiler (`d:\xenon\nov05\...\xgraphics\ucode\compiler\...` source paths) and a `game:\shader_cache\` path |
@@ -18,7 +18,7 @@ here applies to `default.xex` SHA-256 `295ac4ded72c95bb86e9d9441828bb5b193f863af
 - Red Storm's GR3 Xenon engine: `CLIENT.Ph.RedStorm_GhostRecon3-Xenon`, `D:\GR2_GraphableMemory_%d.log`, RTTI for Red Storm's networking (`RSNetwork`, `RSRNP*` reliable UDP, `RSXbLink*` system link), `IkeStateMgr` saves, `PersistentActor` `.cms` files.
 - Middleware: Havok ("Havok Physics evaluation key" strings, `ragdoll.hkx`, `treadsmotion.dat`), Bink (`BINKDATA`, `.bik` names), XACT (`cortez.xgs`, `gr_*.xwb/.xsb`), zlib/libpng/libjpeg, a "Magma" UI and package system (`MagmaManager.cpp`, `magma.glb`, `magma_launcher.glb`, `MagmaPackages`, `Magma Font`).
 - Boot flow by asset name: `UbiLogo.bik`, `ESRB.bik`, `CortezIntro_US/Euro.bik` → "Launcher" front end (`launcher_art`, `launcher_art_sp`, `PressStart`, `PressStartLaunch`, `Menus_LauncherLoad`, `Mus_Menu_Launcher`, `gr_static_launcher_bootstrap.xwb`) → `L_MainMenu` (`MM_Background.bik`, `SP_Background.bik`, `MP_Background.bik`).
-- Multiplayer hand-off: the string `Yeti_Final_Xenon.exe` is in the main image, and `XamLoaderLaunchTitle` / `XamLoaderSetLaunchData` are imported.
+- Hand-off to the other programs: the strings `Yeti_Final_Xenon.exe` and `gr3xenon_release.exe` are in the main image, and `XamLoaderLaunchTitle` / `XamLoaderSetLaunchData` are imported.
 - Xenia Canary [issue 464](https://github.com/xenia-canary/game-compatibility/issues/464): `state-playable` (2026-05-17), `gpu-drawing-corrupt` (flicker on a road section, artifacts at night, helicopter view, rare shadow glitches; one glitch reproduced on real hardware), `requires_force_depth_clamp` (2026-09-25). Its `tech-engine-diesel` label is wrong (Diesel is the PC version's engine).
 
 ## Kernel imports (tools/xeximports.py against ReXGlue `c94f5eb`+fear-nx)
@@ -133,49 +133,100 @@ and a dozen pipelines, the controller connects, and **the game reaches its start
 user pressed Start, entered the campaign and reached its **loading screen**, where the game ended
 (section below).
 
-## Open: the campaign loading screen ends the game (2026-10-23)
-Session `port/logs/smoke-20261023-202516.log` (a smoke run the user played in; it is not headless
-on screen). 35 s after the controller connected: `KernelState::TerminateTitle`, then the process
-exited with `0xC0000374` (heap corruption, a fail-fast exit the crash reporter can't catch). At
-the default debug level nothing was logged in between, so the cause is not known yet. Next run
-needs trace logging of file I/O and kernel calls (`tools/launch.ps1 -Trace`) and the user taking
-the same path. Candidates: a file the mission load can't open, `XamLoaderLaunchTitle`, an
-include failure (below), or a heap overrun in translated code.
+## The campaign "crash" at the loading screen was a hand-off (2026-10-23)
+Session `port/logs/smoke-20261023-202516.log` (a smoke run the user played in: `--headless`
+still shows the window) ended 35 s after the controller connected with
+`KernelState::TerminateTitle` and a `0xC0000374` exit. The trace run that followed
+(`port/logs/run-20261023-203813.log`, 66 MB, `tools/launch.ps1 -Trace`, Start then Campaign) ends
+with a 3.6 MB `MmAllocatePhysicalMemoryEx` (the loading screen) and `TerminateTitle` 4 ms later:
+no file error, no exception. In ReXGlue only three things call `TerminateTitle`: closing the
+window (which logs its own message, absent here), `XamLoaderTerminateTitle` and
+`XamLoaderLaunchTitle`, and neither of those logs.
 
-Also seen in that run: 118 `ResolvePath(<name>.h) failed - device not found` for the shader
-headers on the disc in `data\` (`EffectsCommonConstants.h` ×45, `EffectsPixelConstants.h`,
-`HDRToneMap.h`, `SkyVertexConstants.h`, ...). The game's include handler asks for bare names,
-and something resolves them without a device. The SDK's `NtCreateFile` honours a root-directory
-handle, so the failing call is another path (`NtQueryFullAttributesFile` or the include handler
-itself); the shaders still compiled, so these may be first probes with a fallback. Check this in
-the trace run.
+The shader-header messages are harmless. The trace shows the include handler first probing the
+bare name with `NtQueryFullAttributesFile("HDRToneMap.h")` (no device, fails), then opening
+`game:\data\HDRToneMap.h`, which succeeds and is read. Each header logs one error and one warning
+per include.
 
-## The disc's three programs: Campaign is a hand-off, not a crash (2026-10-23)
-Trace run `port/logs/run-20261023-203813.log` (66 MB, `tools/launch.ps1 -Trace`; the user went
-Start, Campaign). The last kernel calls are a 3.6 MB `MmAllocatePhysicalMemoryEx` (the loading
-screen), then `KernelState::TerminateTitle` 4 ms later: no file error, no exception. In ReXGlue
-only three things call `TerminateTitle`: closing the window (logs its own message, absent here),
-`XamLoaderTerminateTitle` and `XamLoaderLaunchTitle`, neither of which logs.
+## The disc's three programs (2026-10-23)
+`default.xex` calls `XamLoaderLaunchTitle` from one function, `sub_822012A8` (which also checks for
+the `XLNI_DET_MEDIA` / `XLNI_DASH_ARCADE` names). Its four callers pass `gr3xenon_release.exe`
+(from `sub_82170EE0`, after `XamLoaderSetLaunchData`), `Yeti_Final_Xenon.exe` (no launch data set
+at that site) and `default.xex` (twice). Which menu item leads where was settled by the user's
+session through the hand-off (`port-sp/logs/smoke-20261023-204822-restart.log`): four picks of
+**Campaign** requested `Yeti_Final_Xenon.exe` (16 bytes of launch data), and **Instant Action**
+requested `gr3xenon_release.exe` (15 bytes) and loaded a co-op "Defend" mission.
 
-`default.xex` calls `XamLoaderLaunchTitle` from one function, `sub_822012A8` (it also checks for
-the `XLNI_DET_MEDIA` / `XLNI_DASH_ARCADE` names), and its four callers pass:
+| Executable | Engine | What it is | Project |
+|---|---|---|---|
+| `default.xex` | Red Storm's GR3 | the front end: start screen, menus (`PressStartLaunch`, `magma_launcher.glb`, `L_MainMenu`) | `port/`, `graw.exe` |
+| `GR3Xenon_Release.exe` | Red Storm's GR3 | Instant Action, co-op and multiplayer (the `data/` maps: arroyo, boneyard, temple, ...) | `port-mp/`, `grawmp.exe` |
+| `Yeti_Final_Xenon.exe` | Ubisoft Paris's Yeti | the single-player campaign (`Yeti.big`, the `Sound_Bin/*.SB4/.SS4` banks, `NewYetiShaders*`) | `port-yeti/`, `grawyeti.exe` |
 
-| Caller | After `XamLoaderSetLaunchData`? | Launches |
-|---|---|---|
-| `sub_82170EE0` | yes (twice) | `gr3xenon_release.exe`: the single-player **campaign** |
-| (call at `graw_recomp.82.cpp:3184`) | no | `Yeti_Final_Xenon.exe`: **multiplayer** |
-| `sub_820FB9D0`, `sub_82176230` | yes | `default.xex`: back to the front end |
-
-So **`default.xex` is the front end** (the "Launcher": `PressStartLaunch`, `magma_launcher.glb`,
-`L_MainMenu`), and the campaign is **`GR3Xenon_Release.exe`**, a separate program. The two are the
-same engine with the same 65 + 133 imports (`GR3Xenon_Release.exe` also reads launch data:
-`XamLoaderGetLaunchData`), but different builds: the decrypted images differ in 2,035,033 of
-2,555,904 words, with code shifted throughout. ReXGlue records the launch request in
+`default.xex` and `GR3Xenon_Release.exe` share the engine and the same 65 + 133 imports but are
+different builds: the decrypted images differ in 2,035,033 of 2,555,904 words, with code shifted
+throughout. Yeti imports 38 XAM and 134 kernel functions; all have SDK implementations apart from
+the loader-provided variables and C formatting helpers. ReXGlue records a launch request in
 `XamModule::LoaderData::launch_path` and nothing reads it, so the process just ends.
 
-Fix: a second translation (`port-sp/`, `grawsp.exe`, same host code) and a hand-off in the host
-(`port/src/graw_loader.*`): when the main guest thread ends with a launch path, save the launch
-data to a file and start the program holding that executable's translation with the same
-arguments, after this process exits (`graw_process.*` from fear360); the new program loads the
-launch data back into its XAM loader data before its module starts. Multiplayer (Yeti) has no
-translation yet and returns to the front end.
+**The hand-off** (`port/src/graw_loader.*`): when the main guest thread ends with a launch path,
+the host writes the launch data and flags to a temporary file and starts the program holding
+that executable's translation with this run's arguments and its own log file
+(`<first log>~<program>-<time>.log`), after this process exits (`graw_process.*`, from fear360).
+The new program loads the launch data back into its XAM loader data before its module starts.
+A program that isn't built sends the player back to the front end. Started alone, the GR3
+program asks for `default.xex` with 16 bytes of launch data, as it would on a console.
+
+**The GR3 translation** (`port-mp/`): the same recipe as the front end, applied before the first
+run: 4 tail-call targets, 200 method-table and code-built entries, the qsort comparator after a
+never-returning `bl` (`0x825C5A90`; four other after-`bl` hits are mid-function), two splitters
+dropped (`0x82233C7C`, `0x822B84CC`). All 466 switches check out, because this build's parser
+table isn't on a 64 KB boundary.
+
+## Open: Instant Action draws a black 3D view (2026-10-23)
+The user's clip (`Desktop 2026.10.23 - 20.50.58.04.mp4`): a co-op Defend mission runs, with the
+HUD (timer, ammo, grenades, compass, kill feed "PLAYER TWO" / "Rebel", enemy markers), the
+tactical map overlay, the pause menu (In-Game Options, Abort Mission, Multiplayer Menu) and the
+**drone camera picture-in-picture showing terrain**. Everything behind the HUD is black. The log
+has no GPU errors. So 3D rendering into a texture works and the main view doesn't. Candidates:
+the HDR path (tone map / final blit into the front buffer), the depth range (Xenia lists the game
+as `requires_force_depth_clamp`; ReXGlue's plugin has no such option), or a render-target format.
+Plugin options to try: `--render_target_path_d3d12 rov` (Xenia testers mention rov/rtv for this
+game), `--gamma_render_target_as_unorm16`, `--depth_float24_convert_in_pixel_shader`.
+
+## The campaign program (Yeti) and its FP exception (2026-10-23)
+`port-yeti/` translates `Yeti_Final_Xenon.exe` (`grawyeti.exe`): 4 tail-call targets, 100
+table/code entries, the qsort comparator after a `bl` (`0x82502C90`), one getter tail-called from a
+new thunk (`0x823E2F90`), 2 splitters dropped (`0x823FD544`, `0x82431D84`); 177 generated files,
+all 388 switches check out.
+
+Its first runs died after a second on the audio worker thread with `C000008F` (floating-point
+inexact result) and `MXCSR = 0x0020`: every FP exception unmasked. ReXGlue keeps each context's
+host MXCSR in a cached value (`ctx.fpscr.csr`) and writes the whole value to the CPU whenever the
+translated code changes the flush mode (`enableFlushMode` / `disableFlushMode` around vector
+code: ~21,000 sites in Yeti) or the rounding mode (`mtfsf` -> `storeFromGuest`). Guest threads
+seed that value with `InitHost()` (all exceptions masked); the context the audio worker uses for
+the game's mixer callback (`0x82328998` here) is never seeded, so its value is 0 and the mixer's
+first vector op writes MXCSR = 0. The front end and the GR3 program have the same exposure
+(callbacks `0x82593CA0`, `0x82593700`) but their mixers didn't trip it. Fix
+(`port/src/fpscr_guard.cpp`): a `GrawGuardFpscr` hook that runs `InitHost()` on the current
+context, at each program's audio callback entry and before each of its five `mtfsf` sites. Worth
+an upstream fix in the SDK's audio worker.
+
+With that, `grawyeti.exe` started alone boots to the game's **Campaign menu** (Play game, New
+game, Load game, Tips, Missions, Statistics, Credits; capture
+`private/captures/grawyeti-20261023-210417.png`).
+
+## Controllers, sign-in, storage and Live (2026-10-23)
+The user asked whether the game is stuck looking for an Xbox hard drive or Xbox Live. Evidence so
+far: none of the three programs logs a failed sign-in, content or network call, and none imports
+a device selector (the game uses the default storage); the stops were the hand-off and the FP bug.
+Two related things did show up:
+- **Controller slot.** SDL lists the Logitech virtual pad (`046D:0000`, "XInput Controller #1")
+  as controller 0 and the Xbox Series controller as 1. ReXGlue signs in only player 1, so the
+  user played as an unsigned player 2 ("PLAYER TWO" in the Instant Action kill feed); in F.E.A.R.
+  that made saving fail. Ported fear360's fix: `graw_shared_controllers` (default on), every
+  controller drives player 1 (`SharedAssignment`).
+- **`D:\Dummy`.** Yeti opens `D:\Dummy` for writing at start-up and gets `0xC0000022` (access
+  denied: the VFS doesn't allow writes to `game:`/`d:`). It looks like a writable-drive probe;
+  check what Yeti does with the result when saving (New game, then a checkpoint, then Load game).

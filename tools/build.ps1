@@ -3,13 +3,13 @@
 # pinned copy. Codegen (translating default.xex to C++) runs as part of the build whenever
 # graw_manifest.toml or the executable changed; the first run takes a few minutes.
 #   pwsh -NoProfile -File tools/build.ps1 [-Configuration RelWithDebInfo] [-Jobs 14]
-#   pwsh -NoProfile -File tools/build.ps1 -Project port-sp     # the campaign program (grawsp.exe)
+#   pwsh -NoProfile -File tools/build.ps1 -Project port-mp     # Instant Action/multiplayer (grawmp.exe); -Project port-yeti = the campaign
 [CmdletBinding()]
 param(
     [ValidateSet('Debug','Release','RelWithDebInfo')][string]$Configuration = 'RelWithDebInfo',
     [ValidateRange(1,64)][int]$Jobs = 14,
-    # port = the front end (default.xex -> graw.exe); port-sp = the campaign (GR3Xenon_Release.exe -> grawsp.exe)
-    [ValidateSet('port', 'port-sp')][string]$Project = 'port'
+    # port = the front end (default.xex -> graw.exe); port-mp = Instant Action/multiplayer (GR3Xenon_Release.exe -> grawmp.exe); port-yeti = the campaign (Yeti_Final_Xenon.exe -> grawyeti.exe)
+    [ValidateSet('port', 'port-mp', 'port-yeti')][string]$Project = 'port'
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -20,7 +20,8 @@ if (!(Test-Path $cmake)) { throw "Toolchain missing at $tools (see docs/HANDOFF.
 # Each project: its executable on the disc, that file's SHA-256, codegen target, output folder.
 $projects = @{
     'port'    = @('default.xex', '295ac4ded72c95bb86e9d9441828bb5b193f863afb5a20a993275e01144cdb83', 'graw', 'default')
-    'port-sp' = @('GR3Xenon_Release.exe', '4d8a0abb93f3867df53e229a54f55435a57b403f65781d5737237ff8c36c023a', 'grawsp', 'gr3xenon_release')
+    'port-mp' = @('GR3Xenon_Release.exe', '4d8a0abb93f3867df53e229a54f55435a57b403f65781d5737237ff8c36c023a', 'grawmp', 'gr3xenon_release')
+    'port-yeti' = @('Yeti_Final_Xenon.exe', '32735d0908bd45e965d427de6d1be2f995cb9ef44f6633b5ee7df5f34dbaadfb', 'grawyeti', 'yeti_final_xenon')
 }
 $xexName, $expected, $name, $outDir = $projects[$Project]
 $xex = Join-Path $port "assets/$xexName"

@@ -2,8 +2,8 @@
 
 Goal of this plan: boot the Xbox 360 **Tom Clancy's Ghost Recon Advanced Warfighter** natively
 on Windows and reach the **Press Start / main menu** screen, with the game's own code running
-and drawing. Everything after that (playable missions, 4K, high frame rate, Linux, the Yeti
-multiplayer executable) is listed at the end as later phases, in the order they'd come.
+and drawing. Everything after that (playable missions, 4K, high frame rate, Linux) is listed at
+the end as later phases, in the order they'd come.
 
 Written 2026-10-23 from the recon in [FINDINGS.md](FINDINGS.md). The build/run detail and the
 current state live in [HANDOFF.md](HANDOFF.md).
@@ -36,8 +36,10 @@ Xenos renderer), which this repo is laid out to accept as a second `port-*/` dir
   compiler linked into the image (`data/*.hlsl`, `NewYetiShadersX360.sdf`, a
   `game:\shader_cache\` path). Xenia's "Diesel" label is wrong; Diesel is the PC version's
   engine (GRIN).
-- A second executable, `Yeti_Final_Xenon.exe` (Ubisoft Paris's Yeti engine, `Yeti.big`
-  1.29 GB), is the **multiplayer** game, started from the main one through
+- Two more executables, both started from the front end through `XamLoaderLaunchTitle`:
+  `GR3Xenon_Release.exe` (Instant Action, co-op, multiplayer) and `Yeti_Final_Xenon.exe`
+  (Ubisoft Paris's Yeti engine, `Yeti.big` 1.29 GB: the **campaign**; FINDINGS.md, "The disc's
+  three programs"). First read as multiplayer; corrected 2026-10-23. Started through
   `XamLoaderLaunchTitle`. Not needed for the title screen.
 - Kernel surface: 133 `xboxkrnl` + 65 `xam` imports (F.E.A.R.: 347 + 338). Every import
   ReXGlue has no implementation for is Xbox Live or voice (`XNetCreateKey`,
@@ -101,8 +103,8 @@ failure classes to expect, in the order they'd appear:
    `SharedAssignment` (every controller drives player 1) in `graw_app.h`.
 7. **Audio.** XACT wave banks via XAudio; the bootstrap bank loads before the front end.
    Audio failures are logged, not fatal.
-8. **The Yeti hand-off.** Choosing Multiplayer calls `XamLoaderLaunchTitle` with
-   `Yeti_Final_Xenon.exe`. Out of scope now; make sure the runtime's reaction is a logged
+8. **The hand-offs.** Campaign and Instant Action call `XamLoaderLaunchTitle` with the other
+   executables (done: `port/src/graw_loader.*`). Originally: make sure the runtime's reaction is a logged
    message, not a crash.
 
 - **Exit:** a capture of the Press Start screen from our own `graw.exe`, then the main menu
@@ -119,8 +121,8 @@ Integer resolution scaling to 4K, the game's AA and 16× AF, display-locked paci
 (check the engine's timestep first: GRAW 360 ran at 30), a settings panel and Quit in the
 front end, crash reports, Steam Deck build.
 
-### Phase 5: multiplayer executable
-`Yeti_Final_Xenon.exe` as a second recomp target with the same host code (the F.E.A.R. Files
+### Phase 5: the other two programs (started 2026-10-23)
+`GR3Xenon_Release.exe` (`port-mp/`) and `Yeti_Final_Xenon.exe` (`port-yeti/`) as recomp targets with the same host code (the F.E.A.R. Files
 pattern: a second manifest and translation, one `src/`), reached from the main game's menu the
 way the collection launcher switches games. Local/system-link play only; Xbox Live is gone.
 

@@ -303,3 +303,37 @@ labels = [
   0x822AD57C, 0x822AD57C, 0x822AD57C, 0x822AD57C, 0x822AC344, 0x822AD5AC,
   0x822AD57C, 0x822AD57C, 0x822AD57C, 0x822AD5C0, 0x822AD5D8, 0x822AD5E8,
 ]
+
+# Keep FP exceptions masked across the game's FPSCR writes (src/fpscr_guard.cpp): one hook
+# before each mtfsf, the C runtime's floating-point environment functions.
+[[entrypoint.midasm_hook]]
+name = "GrawGuardFpscr"
+address = 0x821F6958
+registers = []
+
+[[entrypoint.midasm_hook]]
+name = "GrawGuardFpscr"
+address = 0x821F698C
+registers = []
+
+[[entrypoint.midasm_hook]]
+name = "GrawGuardFpscr"
+address = 0x821F69AC
+registers = []
+
+[[entrypoint.midasm_hook]]
+name = "GrawGuardFpscr"
+address = 0x821F69BC
+registers = []
+
+[[entrypoint.midasm_hook]]
+name = "GrawGuardFpscr"
+address = 0x821FB54C
+registers = []
+
+# The audio worker dispatches this callback (the game's mixer) on a context the runtime never
+# seeded with InitHost: seed it on entry (src/fpscr_guard.cpp).
+[[entrypoint.midasm_hook]]
+name = "GrawGuardFpscr"
+address = 0x82593CA0
+registers = []

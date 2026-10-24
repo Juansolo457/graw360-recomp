@@ -16,6 +16,7 @@ set(GRAW_SOURCES
     src/shader_debug.cpp
     src/graw_loader.cpp
     src/graw_process.cpp
+    src/fpscr_guard.cpp
 )
 
 if(WIN32)

@@ -1,0 +1,165 @@
+# Ghost Recon Advanced Warfighter (Xbox 360), the campaign: Yeti_Final_Xenon.exe on the disc
+# (title 555307D5, SHA-256 32735d0908bd45e965d427de6d1be2f995cb9ef44f6633b5ee7df5f34dbaadfb),
+# Ubisoft Paris's Yeti engine with Yeti.big, started by the front end (default.xex, port/) through
+# XamLoaderLaunchTitle when the player picks Campaign. ReXGlue 0.10; scaffolded by `rexglue init`.
+# See docs/FINDINGS.md, "The disc's three programs".
+
+[project]
+name = "grawyeti"
+sdk_version = "0.10.0"
+game_root = "assets"
+
+[entrypoint]
+file_path = "assets/Yeti_Final_Xenon.exe"
+out_directory_path = "generated/yeti_final_xenon"
+includes = []
+
+# Function entries the analyser misses (tools/find_missed_functions.py), never edits to
+# generated code.
+[entrypoint.functions]
+# Round 1 (2026-10-23): the analyser's four "b target not in any function" (tail-call targets).
+0x82390A60 = {}   # b from 0x8238ACB0
+0x823E2F78 = {}   # b from 0x823D3A04
+0x823E3328 = {}   # b from 0x823D3D18
+0x82390A50 = {}   # b from 0x8238ACE0
+
+# Round 2 (2026-10-23): tools/find_missed_functions.py on the decrypted image before the first run:
+# 100 method-table slots and addresses built in code, plus the qsort comparator after a
+# never-returning bl (0x82502C90; the other two after-bl hits, 0x82402004 and 0x82590070, are
+# mid-function, not entries).
+0x820E07F8 = {}  # built in code
+0x820FC6D0 = {}  # built in code
+0x820FEA10 = {}  # built in code
+0x82101140 = {}  # built in code
+0x82103658 = {}  # built in code
+0x82103D40 = {}  # built in code
+0x82103D58 = {}  # built in code
+0x821063A8 = {}  # built in code
+0x821063C8 = {}  # built in code
+0x821063E0 = {}  # built in code
+0x821063F8 = {}  # built in code
+0x821065A8 = {}  # built in code
+0x821065C0 = {}  # built in code
+0x821065D8 = {}  # built in code
+0x821065F0 = {}  # built in code
+0x82106608 = {}  # built in code
+0x821066E8 = {}  # built in code
+0x82106708 = {}  # built in code
+0x821067A0 = {}  # built in code
+0x821067C0 = {}  # built in code
+0x82107F78 = {}  # built in code
+0x82109908 = {}  # built in code
+0x8210AF58 = {}  # built in code
+0x821F8948 = {}  # from 0x820918C8
+0x82286C50 = {}  # from 0x820933F8
+0x82298F50 = {}  # from 0x820937C0
+0x822A0798 = {}  # from 0x8209675C
+0x822A3000 = {}  # from 0x820968C0
+0x822A6F38 = {}  # from 0x82096C58
+0x822C43D8 = {}  # built in code
+0x82305250 = {}  # from 0x82099974
+0x823282F8 = {}  # from 0x820109AC
+0x8232AF50 = {}  # from 0x8209A2A0
+0x8232E0B0 = {}  # from 0x8209A028
+0x8232E0C0 = {}  # from 0x8209A318
+0x8232E0C8 = {}  # from 0x8209A31C
+0x8232E0D0 = {}  # from 0x8209A320
+0x8232E0D8 = {}  # from 0x8209A418
+0x8232E0E8 = {}  # from 0x8209A424
+0x8232E0F0 = {}  # from 0x8209A338
+0x8232E110 = {}  # from 0x8209A438
+0x8232E128 = {}  # from 0x8209A448
+0x8232E138 = {}  # from 0x8209A450
+0x8232E148 = {}  # from 0x8209A458
+0x82366888 = {}  # from 0x8200123C
+0x82366898 = {}  # from 0x82001240
+0x823668A8 = {}  # from 0x82001244
+0x823668B8 = {}  # from 0x82001280
+0x823668C8 = {}  # from 0x82001284
+0x82370958 = {}  # from 0x82001BD4
+0x823AF1F8 = {}  # from 0x82005834
+0x823AF2A0 = {}  # from 0x82005858
+0x823B00F0 = {}  # from 0x82005910
+0x823B2780 = {}  # from 0x82005ACC
+0x823B2788 = {}  # from 0x82005ABC
+0x823B2790 = {}  # from 0x82005AC0
+0x823B9968 = {}  # from 0x82005F50
+0x823D3A10 = {}  # built in code
+0x823D3A18 = {}  # built in code
+0x823F2CD4 = {}  # from 0x8209B8A0
+0x823F3BFC = {}  # from 0x8209B8E0
+0x823F9D80 = {}  # from 0x8209B958
+# 0x823FD544 dropped (round 3): a label inside a function, codegen "Unresolved b target"
+0x823FD564 = {}  # from 0x8209BA50
+0x823FD6AC = {}  # from 0x8209BA70
+0x823FDA18 = {}  # from 0x8209BA88
+0x823FDB58 = {}  # from 0x8209BAA0
+0x823FE230 = {}  # from 0x8209BAB8
+0x82400AE8 = {}  # from 0x8209BB48
+0x82404A14 = {}  # from 0x8209BB78
+0x8240617C = {}  # from 0x8209BBC0
+0x824062F4 = {}  # from 0x8209BBD0
+# 0x82431D84 dropped (round 3): a label inside a function, codegen "Unresolved b target"
+0x82455DE0 = {}  # from 0x82010944
+0x82456190 = {}  # from 0x82010B14
+0x824561B8 = {}  # from 0x82010B18
+0x824561E0 = {}  # from 0x82010B1C
+0x82456208 = {}  # from 0x82010B20
+0x82456630 = {}  # from 0x82010B54
+0x82456650 = {}  # from 0x82010968
+0x82456668 = {}  # built in code
+0x82456678 = {}  # built in code
+0x82456688 = {}  # built in code
+0x82456698 = {}  # built in code
+0x824566A8 = {}  # built in code
+0x824566B8 = {}  # built in code
+0x824566C8 = {}  # built in code
+0x824566D8 = {}  # built in code
+0x824566E8 = {}  # built in code
+0x824A9768 = {}  # from 0x82025D84
+0x824E736C = {}  # from 0x8209BC28
+0x824E8D68 = {}  # from 0x8209BC50
+0x824E8DBC = {}  # from 0x8209BC40
+0x824E8F64 = {}  # from 0x8209BC78
+0x824E8FB0 = {}  # from 0x8209BC68
+0x82521C40 = {}  # built in code
+0x82564108 = {}  # from 0x820347D0
+0x82594550 = {}  # from 0x82038D8C
+0x825B0844 = {}  # from 0x8209BC98
+0x825B55A0 = {}  # from 0x825D0074
+0x82502C90 = {}  # qsort comparator, after a bl
+0x823E2F90 = {}  # round 3: getter, tail-called from the new thunk at 0x823D3A10
+
+# Keep FP exceptions masked across the game's FPSCR writes (src/fpscr_guard.cpp): one hook
+# before each mtfsf, the C runtime's floating-point environment functions.
+[[entrypoint.midasm_hook]]
+name = "GrawGuardFpscr"
+address = 0x823F7098
+registers = []
+
+[[entrypoint.midasm_hook]]
+name = "GrawGuardFpscr"
+address = 0x823F70CC
+registers = []
+
+[[entrypoint.midasm_hook]]
+name = "GrawGuardFpscr"
+address = 0x823F70EC
+registers = []
+
+[[entrypoint.midasm_hook]]
+name = "GrawGuardFpscr"
+address = 0x823F70FC
+registers = []
+
+[[entrypoint.midasm_hook]]
+name = "GrawGuardFpscr"
+address = 0x82401F5C
+registers = []
+
+# The audio worker dispatches this callback (the game's mixer) on a context the runtime never
+# seeded with InitHost: seed it on entry (src/fpscr_guard.cpp).
+[[entrypoint.midasm_hook]]
+name = "GrawGuardFpscr"
+address = 0x82328998
+registers = []

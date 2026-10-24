@@ -26,7 +26,7 @@ SWITCH = re.compile(r'^\s*switch \(ctx\.r(\d+)\.u32\) \{')
 CASE = re.compile(r'^\s*case (\d+):')
 GOTO = re.compile(r'^\s*goto loc_([0-9A-F]+);')
 FUNC = re.compile(r'^DEFINE_REX_FUNC\(sub_([0-9A-F]+)\)')
-LOOKBACK = 16
+LOOKBACK = 24
 
 
 def u32(x):
@@ -38,8 +38,11 @@ def regs(text):
 
 
 def replay(insns, image):
-    """Replay the instructions before a bctr. Returns (kind, table, base, shift, index_reg)."""
-    val = {}          # register -> known constant
+    """Replay the instructions before a bctr. Returns (kind, table, base, shift, index register,
+    table length from the bound check or None)."""
+    val = {}
+    index_src = None  # the register the table load is indexed by (before scaling)
+    bounds = {}       # register -> K from `cmplwi crX,rN,K`          # register -> known constant
     idx = {}          # register -> (index register, scale shift)
     loaded = {}       # register -> (kind, table address) for a value loaded from the table
     shifted = {}      # register -> (kind, table, shift) a loaded offset shifted left
@@ -61,6 +64,8 @@ def replay(insns, image):
                 val.pop(a[0], None)
         elif op == 'li':
             val[a[0]] = u32(num(a[1]))
+        elif op == 'cmplwi' and len(a) == 3:
+            bounds[a[1]] = num(a[2])
         elif op == 'rlwinm' and len(a) == 5:
             d, s, sh = a[0], a[1], int(a[2])
             mb, me = int(a[3]), int(a[4])
@@ -77,6 +82,8 @@ def replay(insns, image):
             d, ra, rb = a
             table = val.get(ra) if ra in val else val.get(rb)
             kind = {'lwzx': 'word', 'lhzx': 'half', 'lbzx': 'byte'}[op]
+            other = rb if ra in val else ra
+            index_src = idx[other][0] if other in idx else None
             if table is not None:
                 loaded[d] = (kind, table)
             val.pop(d, None)
@@ -95,6 +102,9 @@ def replay(insns, image):
             s = a[0]
             if s in loaded and loaded[s][0] == 'word':
                 result = ('word', loaded[s][1], 0, 0)
+    if result:
+        bound = bounds.get(index_src)
+        result = result + (index_src, bound + 1 if bound is not None else None)
     return result
 
 
@@ -146,19 +156,30 @@ def main():
                 if not got:
                     unknown += 1
                 else:
-                    kind, table, base, shift = got
+                    kind, table, base, shift, src, length = got
                     n = max(cases) + 1 if cases else 0
+                    problems = []
+                    if src and src != f'r{index_reg}':
+                        problems.append(f'switches on r{index_reg}, the PowerPC indexes with {src}')
+                        index_reg = int(src[1:])
+                    if length and length > n:
+                        problems.append(f'{n} cases, the bound check allows {length}')
+                        n = length
                     want = []
                     for k in range(n):
                         e = entry(image, kind, table, k)
                         want.append(e if kind == 'word' else u32(base + (e << shift)))
                     diff = [k for k in range(n) if cases.get(k) != want[k]]
-                    if diff:
-                        bad += 1
+                    if problems:
                         print(f'sub_{func} ({path.split("/")[-1].split(chr(92))[-1]}:{i + 1}): '
-                              f'{kind} table {table:08X} base {base:08X} shift {shift} index r{index_reg}: '
-                              f'{len(diff)} of {n} cases wrong (case {diff[0]}: generated '
-                              f'{cases.get(diff[0], 0):08X}, image {want[diff[0]]:08X})')
+                              f'{kind} table {table:08X}: ' + '; '.join(problems))
+                    if diff or problems:
+                        bad += 1
+                        if diff:
+                            print(f'sub_{func} ({path.split("/")[-1].split(chr(92))[-1]}:{i + 1}): '
+                                  f'{kind} table {table:08X} base {base:08X} shift {shift} index r{index_reg}: '
+                                  f'{len(diff)} of {n} cases wrong (case {diff[0]}: generated '
+                                  f'{cases.get(diff[0], 0):08X}, image {want[diff[0]]:08X})')
                         blocks.append((func, index_reg, want, table))
                 i = j
             i += 1

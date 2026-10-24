@@ -440,3 +440,15 @@ HUD state paths. User said crosshair, not specifically the HUD border, so #1 rem
   limit: its outcome (no rasterization, no host vertices, render-target update failed, pipeline
   not ready, drawn), plus colour mask, normalised mask, VTE/clip/mode registers, blend, depth,
   window offset, scissors, viewport and vertex count.
+- **Trace run 2 (07:27), still black; the user saw the panel flash for about half a second.**
+  The Bink draw into the Cross-Com target is issued normally every frame:
+  - `draw pitch 160 base 736 fmt 0 (k_8_8_8_8) msaa 0: drawn`, with a pixel shader;
+  - `RB_COLOR_MASK` F (normalised F), depth off, alpha test off, blend ONE/ZERO;
+  - VTE `0x400` (screen-space XY), clip disabled, window scissor 160x120, 4 vertices.
+
+  So the draw runs and writes black. The suspect is now its input: the Y/Cr/Cb planes the CPU
+  rewrites every frame. A half-second flash fits a first upload followed by CPU writes the
+  texture cache never picks up.
+- **Trace build 3:** traced draws also log the textures they sample, with decoded fetch
+  constants, and add their ranges to the texture-cache trace, so CPU-write invalidations and
+  reloads of the planes show up.

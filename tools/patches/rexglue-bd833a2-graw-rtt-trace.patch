@@ -80,7 +80,7 @@ index 0000000..0c3a3ac
 +
 +}  // namespace rex::graphics::graw_trace
 diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
-index 19874a5..3aee8df 100644
+index 19874a5..9db3303 100644
 --- a/src/graphics/d3d12/command_processor.cpp
 +++ b/src/graphics/d3d12/command_processor.cpp
 @@ -20,6 +20,7 @@
@@ -91,7 +91,7 @@ index 19874a5..3aee8df 100644
  #include <rex/graphics/d3d12/graphics_system.h>
  #include <rex/graphics/d3d12/shader.h>
  #include <rex/graphics/flags.h>
-@@ -2268,6 +2269,35 @@ Shader* D3D12CommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32_
+@@ -2268,6 +2269,59 @@ Shader* D3D12CommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32_
    return pipeline_cache_->LoadShader(shader_type, host_address, dword_count);
  }
  
@@ -122,12 +122,36 @@ index 19874a5..3aee8df 100644
 +      regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XOFFSET),
 +      regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YOFFSET), vertices);
 +}
++// Logs the textures a traced draw samples and starts tracing texture-cache events on them.
++void GrawNoteDrawTextures(const RegisterFile& regs, uint32_t used_texture_mask) {
++  auto si = regs.Get<reg::RB_SURFACE_INFO>();
++  uint32_t index;
++  uint32_t mask = used_texture_mask;
++  while (rex::bit_scan_forward(mask, &index)) {
++    mask &= ~(UINT32_C(1) << index);
++    xenos::xe_gpu_texture_fetch_t fetch = regs.GetTextureFetch(index);
++    uint32_t base = fetch.base_address << 12;
++    uint32_t w = fetch.size_2d.width + 1, h = fetch.size_2d.height + 1;
++    graw_trace::Track(base, std::max(UINT32_C(0x1000), w * h * 4));
++    std::string key = fmt::format("draw pitch {} samples fetch {} base {:08X} {}x{} fmt {}",
++                                  uint32_t(si.surface_pitch), index, base, w, h,
++                                  uint32_t(fetch.format));
++    if (graw_trace::Count(key, 2)) {
++      REXGPU_INFO(
++          "GRAW trace {}: type {} tiled {} pitch {} endian {} swizzle {:03X} fetch {:08X} "
++          "{:08X} {:08X} {:08X} {:08X} {:08X}",
++          key, uint32_t(fetch.type), uint32_t(fetch.tiled), uint32_t(fetch.pitch) << 5,
++          uint32_t(fetch.endianness), uint32_t(fetch.swizzle), fetch.dword_0, fetch.dword_1,
++          fetch.dword_2, fetch.dword_3, fetch.dword_4, fetch.dword_5);
++    }
++  }
++}
 +}  // namespace
 +
  bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint32_t index_count,
                                        IndexBufferInfo* index_buffer_info,
                                        bool major_mode_explicit) {
-@@ -2285,6 +2315,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2285,6 +2339,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    }
  
    bool surface_pitch_is_zero = regs.Get<reg::RB_SURFACE_INFO>().surface_pitch == 0;
@@ -138,7 +162,7 @@ index 19874a5..3aee8df 100644
  
    // Vertex shader analysis.
    auto vertex_shader = static_cast<D3D12Shader*>(active_vertex_shader());
-@@ -2321,6 +2355,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2321,6 +2379,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      // cache.
      if (!memexport_used_vertex) {
        // This draw has no effect.
@@ -146,7 +170,7 @@ index 19874a5..3aee8df 100644
        return true;
      }
    }
-@@ -2338,6 +2373,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2338,6 +2397,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    }
    if (!primitive_processing_result.host_draw_vertex_count) {
      // Nothing to draw.
@@ -154,7 +178,7 @@ index 19874a5..3aee8df 100644
      return true;
    }
  
-@@ -2366,6 +2402,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2366,6 +2426,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
                     : 0;
    if (!render_target_cache_->Update(is_rasterization_done, normalized_depth_control,
                                      normalized_color_mask, *vertex_shader)) {
@@ -163,7 +187,7 @@ index 19874a5..3aee8df 100644
      return false;
    }
  
-@@ -2400,6 +2438,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2400,6 +2462,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    }
    if (REXCVAR_GET(async_shader_compilation) &&
        pipeline_cache_->GetD3D12PipelineByHandle(pipeline_handle) == nullptr) {
@@ -172,16 +196,17 @@ index 19874a5..3aee8df 100644
      return true;
    }
  
-@@ -2628,6 +2668,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2628,6 +2692,9 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      SubmitBarriers();
      PROFILE_DRAW_CALL();
      PROFILE_VERTICES(primitive_processing_result.host_draw_vertex_count);
 +    if (graw_rt) GrawNoteDraw(regs, "drawn", pixel_shader, normalized_color_mask,
 +                              primitive_processing_result.host_draw_vertex_count);
++    if (graw_rt) GrawNoteDrawTextures(regs, used_texture_mask);
      deferred_command_list_.D3DDrawInstanced(primitive_processing_result.host_draw_vertex_count, 1,
                                              0, 0);
    } else {
-@@ -2687,6 +2729,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2687,6 +2754,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      SubmitBarriers();
      PROFILE_DRAW_CALL();
      PROFILE_VERTICES(primitive_processing_result.host_draw_vertex_count);

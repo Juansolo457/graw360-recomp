@@ -1,7 +1,7 @@
 # Launch the GRAW recomp (port/, the front end; it hands over to the campaign and Instant Action)
 # for playing. The guest is told it is on a 1280x720 display (as on a real 360; this also avoids
 # ReXGlue's 4:3 squeeze at 200% Windows scaling) and renders at a multiple of that.
-# Image quality defaults (#12): 2x = 2560x1440 internal and 16x anisotropic filtering. No FXAA by
+# Defaults: the guest display at 240 Hz (#11); 2x = 2560x1440 internal and 16x anisotropic filtering (#12). No FXAA by
 # default (it blurs the image; -Aa fxaa|fxaa_extreme turns it on). The renderer can't force MSAA:
 # the game picks its own (the campaign already renders with 4x MSAA). For smoother edges render
 # above the window's size and let it downscale (supersampling): -Scale 3 = 3840x2160.
@@ -11,7 +11,7 @@
 #   pwsh -NoProfile -File tools/launch.ps1 -Windowed -Scale 1 -Aa none   # as the 360 draws it
 #   pwsh -NoProfile -File tools/launch.ps1 -Windowed -Trace          # every kernel call (file opens, ...) in the log
 #   pwsh -NoProfile -File tools/launch.ps1 -Windowed -PerfLog        # per-frame CSV next to the log; fps summary every 10 s in the log (#11)
-#   pwsh -NoProfile -File tools/launch.ps1 -Windowed -RefreshRate 240 -PerfLog   # the guest's display at 240 Hz (#11)
+#   pwsh -NoProfile -File tools/launch.ps1 -Windowed -RefreshRate 60 -PerfLog    # the 360's 60 Hz cap, for comparison (#11)
 # This opens a window on the user's screen. Never kill a running graw.exe; ask the user to quit.
 [CmdletBinding()]
 param(
@@ -21,9 +21,10 @@ param(
     [switch]$Windowed,
     [switch]$Trace,       # --log_level trace --log_noisy: every kernel call with its arguments (large log)
     [switch]$PerfLog,     # --graw_frame_log: one CSV row per presented frame, logs\perf-<time>.csv (src/frame_timing.cpp)
-    # The refresh rate the guest's display reports (24-240 Hz). A 360 game that waits for vblanks
-    # to pace itself runs faster when it's higher: F.E.A.R. went from 30 to 120 fps this way.
-    [ValidateRange(0,240)][double]$RefreshRate = 0,
+    # The refresh rate the guest's display reports (24-240 Hz; 0 = the SDK's 60). GRAW presents
+    # once per vblank, so at 60 it's capped at 60 fps; at 240 the campaign averaged 83 fps (up to
+    # 136) with game speed unchanged (#11, play-test 2026-10-23).
+    [ValidateRange(0,240)][double]$RefreshRate = 240,
     [string]$Extra = '',
     # port = the front end (graw.exe, what a player starts); port-mp = Instant Action/multiplayer (grawmp.exe), port-yeti = the campaign (grawyeti.exe), alone
     [ValidateSet('port', 'port-mp', 'port-yeti')][string]$Project = 'port',

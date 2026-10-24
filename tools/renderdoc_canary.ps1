@@ -1,8 +1,8 @@
 # Run Xenia Canary on the user's GRAW disc image under RenderDoc, as the reference side of the
 # recomp-vs-Canary frame comparison (#2, docs/CROSSCOM.md). Canary is NOT part of this project:
 # it lives in the ignored private/xenia-canary/<build>/ with the user's config, and its outputs
-# (captures, logs) stay private. Press Print Screen in the Canary window to capture a frame
-# (F12 is Canary's own screenshot key).
+# (captures, logs) stay private. Press F12 a few times in the Canary window: RenderDoc captures
+# (Canary also saves its own screenshot; Windows 11 may swallow Print Screen).
 #   pwsh -NoProfile -File tools/renderdoc_canary.ps1                    # 263e91b, depth clamp off
 #   pwsh -NoProfile -File tools/renderdoc_canary.ps1 -Build 9e03494
 # This opens a window on the user's screen. Never kill a running Xenia; ask the user to quit.
@@ -35,4 +35,4 @@ $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $arguments = @('capture', '-d', $dir, '-c', (Join-Path $captureDir "canary-$Build-$stamp"), $exe,
     "`"$Iso`"", "--config=$Config", '--launch_module=Yeti_Final_Xenon.exe')
 $process = Start-Process -FilePath $rdoc -WorkingDirectory $dir -ArgumentList $arguments -PassThru
-"pid $($process.Id); RenderDoc captures go to $captureDir (Print Screen in the Canary window)"
+"pid $($process.Id); RenderDoc captures go to $captureDir (press F12 a few times in the Canary window)"

@@ -861,3 +861,17 @@ renderer DLL is back in place for this.
      check the later draws over that screen area for overdraw.
   4. The first difference names the cause: host-side (runtime) or game-side (recompiled code).
 - Captures and logs contain game imagery: private, never committed.
+- **Second recomp attempt (09:24, F12): captured**, `port/logs/renderdoc/graw-…_frame9822.rdc`
+  (297 MB), but the frame holds **one draw only**: ReXGlue's presenter copying the guest
+  front buffer to the 2560x1440 swapchain, with the Cross-Com box already black. The guest's
+  own GPU work wasn't in that present interval: the window presents at 240 Hz and the guest
+  renders 60-80 fps, so most intervals contain no guest submission.
+  - **Next try:** `-RefreshRate 60`, so presents line up with guest frames, and press F12 a
+    few times; use the capture with many events. If that still misses, add host-side
+    `StartFrameCapture`/`EndFrameCapture` around one guest frame at the `GrawFrameMark`
+    (VdSwap) hook. ReXGlue already loads the RenderDoc API.
+  - Analysis scripts, run inside RenderDoc with `qrenderdoc --python`:
+    - `tools/rdoc_hud_draws.py`: draws using a given texture size, via `GetUsage`, since
+      bindless hides per-draw bindings;
+    - `tools/rdoc_pixel_history.py`: every event that touched a pixel in the Cross-Com box, on
+      every large colour target.

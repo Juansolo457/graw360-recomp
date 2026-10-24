@@ -110,7 +110,7 @@ index 0000000..0c3a3ac
 +
 +}  // namespace rex::graphics::graw_trace
 diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
-index 19874a5..79a778e 100644
+index 19874a5..f271bce 100644
 --- a/src/graphics/d3d12/command_processor.cpp
 +++ b/src/graphics/d3d12/command_processor.cpp
 @@ -20,6 +20,7 @@
@@ -140,7 +140,22 @@ index 19874a5..79a778e 100644
  REXCVAR_DEFINE_BOOL(d3d12_bindless, true, "GPU/D3D12", "Use bindless resources where available")
      .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
  
-@@ -2268,6 +2281,59 @@ Shader* D3D12CommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32_
+@@ -1768,7 +1781,14 @@ void D3D12CommandProcessor::ShutdownContext() {
+   CommandProcessor::ShutdownContext();
+ }
+ 
++namespace {
++void GrawNoteBlendWrite(uint32_t value);
++}  // namespace
++
+ void D3D12CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
++  if (index == XE_GPU_REG_RB_BLENDCONTROL0 && graw_trace::Enabled()) {
++    GrawNoteBlendWrite(value);
++  }
+   CommandProcessor::WriteRegister(index, value);
+ 
+   if (index >= XE_GPU_REG_SHADER_CONSTANT_000_X && index <= XE_GPU_REG_SHADER_CONSTANT_511_W) {
+@@ -2268,6 +2288,113 @@ Shader* D3D12CommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32_
    return pipeline_cache_->LoadShader(shader_type, host_address, dword_count);
  }
  
@@ -172,6 +187,60 @@ index 19874a5..79a778e 100644
 +      regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YOFFSET), vertices);
 +}
 +// Logs the textures a traced draw samples and starts tracing texture-cache events on them.
++// GRAW #2 blend trace: around each HUD draw of a 160x120 video texture, log the next draws'
++// RB_BLENDCONTROL0 and every RB_BLENDCONTROL0 write the guest makes in between.
++struct GrawBlendTrace {
++  int armed = 0;      // draws still to log after a video draw
++  int dumps = 0;      // video draws logged so far
++  uint64_t writes = 0;
++  uint32_t last_value = 0;
++};
++GrawBlendTrace g_graw_blend;
++
++void GrawNoteBlendWrite(uint32_t value) {
++  ++g_graw_blend.writes;
++  if (g_graw_blend.armed > 0) {
++    REXGPU_INFO("GRAW blend   write RB_BLENDCONTROL0 {:08X} (previous {:08X}, write #{})", value,
++                g_graw_blend.last_value, g_graw_blend.writes);
++  }
++  g_graw_blend.last_value = value;
++}
++
++std::string GrawFetchSummary(const RegisterFile& regs, uint32_t used_texture_mask, bool* video) {
++  std::string out;
++  uint32_t index;
++  uint32_t mask = used_texture_mask;
++  while (rex::bit_scan_forward(mask, &index)) {
++    mask &= ~(UINT32_C(1) << index);
++    xenos::xe_gpu_texture_fetch_t f = regs.GetTextureFetch(index);
++    uint32_t w = f.size_2d.width + 1, h = f.size_2d.height + 1;
++    if (w == 160 && h == 120 && uint32_t(f.format) == 6) *video = true;
++    out += fmt::format(" t{}={:08X}:{}x{}:f{}", index, uint32_t(f.base_address) << 12, w, h,
++                       uint32_t(f.format));
++  }
++  return out;
++}
++
++void GrawNoteBlendDraw(const RegisterFile& regs, uint32_t used_texture_mask, uint32_t verts,
++                       bool indexed) {
++  bool video = false;
++  std::string fetches = GrawFetchSummary(regs, used_texture_mask, &video);
++  if (video && g_graw_blend.dumps < 3 && g_graw_blend.armed == 0) {
++    ++g_graw_blend.dumps;
++    g_graw_blend.armed = 12;
++    REXGPU_INFO("GRAW blend VIDEO draw #{}: blend0 {:08X} colorcontrol {:08X} verts {}{}",
++                g_graw_blend.dumps, regs[XE_GPU_REG_RB_BLENDCONTROL0],
++                regs[XE_GPU_REG_RB_COLORCONTROL], verts, fetches);
++    return;
++  }
++  if (g_graw_blend.armed > 0) {
++    --g_graw_blend.armed;
++    REXGPU_INFO("GRAW blend   draw{}: blend0 {:08X} colorcontrol {:08X} mask {:08X} verts {}{}",
++                indexed ? " indexed" : "", regs[XE_GPU_REG_RB_BLENDCONTROL0],
++                regs[XE_GPU_REG_RB_COLORCONTROL], regs[XE_GPU_REG_RB_COLOR_MASK], verts, fetches);
++  }
++}
++
 +void GrawNoteDrawTextures(const RegisterFile& regs, uint32_t used_texture_mask) {
 +  auto si = regs.Get<reg::RB_SURFACE_INFO>();
 +  uint32_t index;
@@ -200,7 +269,7 @@ index 19874a5..79a778e 100644
  bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint32_t index_count,
                                        IndexBufferInfo* index_buffer_info,
                                        bool major_mode_explicit) {
-@@ -2285,6 +2351,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2285,6 +2412,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    }
  
    bool surface_pitch_is_zero = regs.Get<reg::RB_SURFACE_INFO>().surface_pitch == 0;
@@ -211,7 +280,7 @@ index 19874a5..79a778e 100644
  
    // Vertex shader analysis.
    auto vertex_shader = static_cast<D3D12Shader*>(active_vertex_shader());
-@@ -2321,6 +2391,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2321,6 +2452,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      // cache.
      if (!memexport_used_vertex) {
        // This draw has no effect.
@@ -219,7 +288,7 @@ index 19874a5..79a778e 100644
        return true;
      }
    }
-@@ -2338,10 +2409,27 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2338,10 +2470,27 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    }
    if (!primitive_processing_result.host_draw_vertex_count) {
      // Nothing to draw.
@@ -247,7 +316,7 @@ index 19874a5..79a778e 100644
  
    // Shader modifications.
    uint32_t ps_param_gen_pos = UINT32_MAX;
-@@ -2366,6 +2454,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2366,6 +2515,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
                     : 0;
    if (!render_target_cache_->Update(is_rasterization_done, normalized_depth_control,
                                      normalized_color_mask, *vertex_shader)) {
@@ -256,7 +325,7 @@ index 19874a5..79a778e 100644
      return false;
    }
  
-@@ -2400,6 +2490,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2400,6 +2551,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    }
    if (REXCVAR_GET(async_shader_compilation) &&
        pipeline_cache_->GetD3D12PipelineByHandle(pipeline_handle) == nullptr) {
@@ -265,7 +334,7 @@ index 19874a5..79a778e 100644
      return true;
    }
  
-@@ -2617,6 +2709,50 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2617,6 +2770,50 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    SetPrimitiveTopology(primitive_topology);
    // Must not call anything that may change the primitive topology from now on!
  
@@ -316,26 +385,34 @@ index 19874a5..79a778e 100644
    // Draw.
    if (primitive_processing_result.index_buffer_type ==
        PrimitiveProcessor::ProcessedIndexBufferType::kNone) {
-@@ -2628,6 +2764,9 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2628,6 +2825,13 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      SubmitBarriers();
      PROFILE_DRAW_CALL();
      PROFILE_VERTICES(primitive_processing_result.host_draw_vertex_count);
 +    if (graw_rt) GrawNoteDraw(regs, "drawn", pixel_shader, normalized_color_mask,
 +                              primitive_processing_result.host_draw_vertex_count);
 +    if (graw_rt) GrawNoteDrawTextures(regs, used_texture_mask);
++    if (graw_trace::Enabled()) {
++      GrawNoteBlendDraw(regs, used_texture_mask,
++                        primitive_processing_result.host_draw_vertex_count, false);
++    }
      deferred_command_list_.D3DDrawInstanced(primitive_processing_result.host_draw_vertex_count, 1,
                                              0, 0);
    } else {
-@@ -2687,6 +2826,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2687,6 +2891,12 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      SubmitBarriers();
      PROFILE_DRAW_CALL();
      PROFILE_VERTICES(primitive_processing_result.host_draw_vertex_count);
 +    if (graw_rt) GrawNoteDraw(regs, "drawn indexed", pixel_shader, normalized_color_mask,
 +                              primitive_processing_result.host_draw_vertex_count);
++    if (graw_trace::Enabled()) {
++      GrawNoteBlendDraw(regs, used_texture_mask,
++                        primitive_processing_result.host_draw_vertex_count, true);
++    }
      deferred_command_list_.D3DDrawIndexedInstanced(
          primitive_processing_result.host_draw_vertex_count, 1, 0, 0, 0);
      if (scratch_index_buffer != nullptr) {
-@@ -2879,9 +3020,57 @@ bool D3D12CommandProcessor::IssueCopy() {
+@@ -2879,9 +3089,57 @@ bool D3D12CommandProcessor::IssueCopy() {
    }
    ReadbackResolveMode readback_mode = GetReadbackResolveMode(REXCVAR_GET(d3d12_readback_resolve));
    if (readback_mode == ReadbackResolveMode::kDisabled) {

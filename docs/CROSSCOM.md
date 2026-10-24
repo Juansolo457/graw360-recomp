@@ -962,3 +962,16 @@ same positions, UVs and vertex colour (0,0,0,1). Only the blend differs:
      material setup and the D3D draw functions (`0x824C4838` DrawPrimitiveUP; `0x824C4BF8` and
      `0x824C4E38` check device+11540). Check the translation of its dirty-mask and
      SET_CONSTANT packet code against the PowerPC semantics.
+- **Blend trace build (10:05).** SDK branch `graw-blend-trace` = stock bd833a2 + the trace patch
+  (`tools/patches/rexglue-bd833a2-graw-rtt-trace.patch`, now including the blend logging).
+  - `D3D12CommandProcessor::WriteRegister` logs each RB_BLENDCONTROL0 write while armed.
+  - After each HUD draw that samples a 160x120 format-6 texture (the video), the next 12 draws
+    log their RB_BLENDCONTROL0 / RB_COLORCONTROL / RB_COLOR_MASK, vertex count and fetches,
+    for the first three video draws. Lines are `GRAW blend ...`. Enabled by the existing
+    `--graw_trace_rtt_max_width`.
+  - **Build the plugin with Vulkan OFF.** The stock `rexgpu-xenosrd.dll` is the Vulkan-off
+    configuration (~3 MB, 107-108 runtime imports). A Vulkan-on build (6.7 MB) imports 20
+    symbols the prebuilt runtime lacks and would not load. One was briefly installed by mistake
+    and replaced before any launch.
+  - Installed; backups `rexgpu-xenosrd.dll.stock` and `.blend-trace`.
+  - Run: `tools/launch.ps1 -Windowed "-Extra:--graw_trace_rtt_max_width=200 --async_shader_compilation=false"`.

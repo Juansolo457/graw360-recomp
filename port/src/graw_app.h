@@ -26,6 +26,18 @@
 #include "ui_pad.h"
 #include "ui_style.h"
 
+#if defined(GRAW_NX)
+// port-yeti-nx (fear-nx's patched SDK): fear-nx's native renderer and the statically linked
+// stock Xenos plugin (plugin_main.cpp).
+#include <rex/system/gpu_plugin.h>
+
+#include "display_vblank.h"
+#include "native/native_system.h"
+extern "C" uint32_t rex_gpu_abi_version(void);
+extern "C" rex::system::IGraphicsSystem* rex_gpu_create(uint32_t abi_version,
+                                                         const rex::system::GpuCreateInfo* info);
+#endif
+
 #ifndef GRAW_APP_NAME
 #define GRAW_APP_NAME "graw"
 #endif
@@ -89,7 +101,30 @@ class GrawApp : public rex::ReXApp {
         return input;
       };
     }
+#if defined(GRAW_NX)
+    // port-yeti-nx: fear-nx's native Vulkan renderer (--nx_renderer native, its default), or the
+    // stock Xenos plugin linked into this executable (--nx_renderer xenos) for comparison. No
+    // plugin DLL either way (#2).
+    config.gpu_plugin.clear();
+    if (fear_nx::native::Enabled()) {
+      fear::display_vblank::Configure();
+      config.graphics = fear_nx::native::CreateGraphicsSystem();
+      REXLOG_INFO("GRAW ({}): fear-nx's native Vulkan Xenos renderer", GRAW_APP_NAME);
+      return;
+    }
+    if (rex_gpu_abi_version() != rex::system::kGpuPluginAbiVersion) {
+      REXLOG_ERROR("GRAW: linked Xenos plugin has ABI {}, host expects {}", rex_gpu_abi_version(),
+                   rex::system::kGpuPluginAbiVersion);
+      return;
+    }
+    rex::system::GpuCreateInfo info{};
+    info.struct_size = sizeof(info);
+    info.backend = "any";
+    config.graphics.reset(rex_gpu_create(rex::system::kGpuPluginAbiVersion, &info));
+    REXLOG_INFO("GRAW ({}): the stock Xenos plugin, linked in", GRAW_APP_NAME);
+#else
     REXLOG_INFO("GRAW ({}): GPU plugin '{}'", GRAW_APP_NAME, config.gpu_plugin);
+#endif
   }
 
   void OnLoadXexImage(std::string& xex_image) override { xex_image = GRAW_XEX_IMAGE; }

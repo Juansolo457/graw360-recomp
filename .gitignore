@@ -10,11 +10,13 @@ private/
 port/assets/
 port-mp/assets
 port-yeti/assets
+port-yeti-nx/assets
 
 # Generated translation, build output, runtime state
 port/generated/default/
 port-mp/generated/gr3xenon_release/
 port-yeti/generated/yeti_final_xenon/
+port-yeti-nx/generated/yeti_final_xenon/
 port*/out/
 port*/logs/
 port*/user*/

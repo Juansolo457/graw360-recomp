@@ -25,14 +25,26 @@ param(
     # once per vblank, so at 60 it's capped at 60 fps; at 240 the campaign averaged 83 fps (up to
     # 136) with game speed unchanged (#11, play-test 2026-10-23).
     [ValidateRange(0,240)][double]$RefreshRate = 240,
+    # The campaign on fear-nx's native Vulkan renderer (port-yeti-nx, #2): the front end hands
+    # Campaign to that build instead of port-yeti. Built with tools/build.ps1 -Project port-yeti-nx.
+    [switch]$Nx,
     [string]$Extra = '',
-    # port = the front end (graw.exe, what a player starts); port-mp = Instant Action/multiplayer (grawmp.exe), port-yeti = the campaign (grawyeti.exe), alone
-    [ValidateSet('port', 'port-mp', 'port-yeti')][string]$Project = 'port',
+    # port = the front end (graw.exe, what a player starts); port-mp = Instant Action/multiplayer (grawmp.exe), port-yeti = the campaign (grawyeti.exe), alone; port-yeti-nx = the campaign on the native renderer, alone
+    [ValidateSet('port', 'port-mp', 'port-yeti', 'port-yeti-nx')][string]$Project = 'port',
     [ValidateSet('Debug','Release','RelWithDebInfo')][string]$Configuration = 'RelWithDebInfo'
 )
 $ErrorActionPreference = 'Stop'
 $port = Join-Path $PSScriptRoot "..\$Project" | Resolve-Path
-$exeName = @{ 'port' = 'graw'; 'port-mp' = 'grawmp'; 'port-yeti' = 'grawyeti' }[$Project]
+$exeName = @{ 'port' = 'graw'; 'port-mp' = 'grawmp'; 'port-yeti' = 'grawyeti'; 'port-yeti-nx' = 'grawyeti' }[$Project]
+$buildDir = "out\build\win-amd64-$($Configuration.ToLowerInvariant())"
+# The native renderer's own options (other programs ignore options they don't know).
+$nxArguments = @()
+if ($Nx -or $Project -eq 'port-yeti-nx') {
+    $campaign = Join-Path $PSScriptRoot "..\port-yeti-nx\$buildDir\grawyeti.exe"
+    if (!(Test-Path $campaign)) { throw "port-yeti-nx isn't built: tools/build.ps1 -Project port-yeti-nx" }
+    $nxArguments = @('--graw_campaign_exe', (Resolve-Path $campaign).Path,
+        '--nx_renderer', 'native', '--nx_native_resolution_scale', "$Scale")
+}
 $running = Get-Process -Name graw, grawmp, grawyeti -ErrorAction SilentlyContinue
 if ($running) { throw "GRAW is already running (pid $($running.Id -join ', ')). Quit it first." }
 $executable = Join-Path $port "out\build\win-amd64-$($Configuration.ToLowerInvariant())\$exeName.exe"
@@ -47,7 +59,7 @@ $arguments = @($fullscreen,
     '--game_data_root', "$port\assets", '--user_data_root', "$port\user",
     '--cache_root', "$port\cache", '--log_file', $log, '--log_flush_interval', '1') +
     $(if ($PerfLog) { @('--graw_frame_log', $perfCsv) } else { @() }) +
-    $(if ($RefreshRate -gt 0) { @('--video_mode_refresh_rate', "$RefreshRate") } else { @() }) +
+    $(if ($RefreshRate -gt 0) { @('--video_mode_refresh_rate', "$RefreshRate") } else { @() }) + $nxArguments +
     $(if ($Trace) { @('--log_level', 'trace', '--log_noisy') } else { @('--log_level', 'debug') }) + @($Extra -split '\s+' | Where-Object { $_ })
 $process = Start-Process -FilePath $executable -WorkingDirectory $port -ArgumentList $arguments -PassThru
 "pid $($process.Id), log $log"

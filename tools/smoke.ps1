@@ -18,14 +18,14 @@ param(
     [string]$Tag = '',       # names the captures folder (<program>-<tag>-<time>)
     [string]$Extra = '',
     # port = the front end (graw.exe, what a player starts); port-mp = Instant Action/multiplayer (grawmp.exe), port-yeti = the campaign (grawyeti.exe), alone
-    [ValidateSet('port', 'port-mp', 'port-yeti')][string]$Project = 'port',
+    [ValidateSet('port', 'port-mp', 'port-yeti', 'port-yeti-nx')][string]$Project = 'port',
     [switch]$FreshProfile,   # start from an empty test profile (the same path through the menus every run)
     [ValidateSet('Debug','Release','RelWithDebInfo')][string]$Configuration = 'RelWithDebInfo'
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $port = Join-Path $root $Project | Resolve-Path
-$exeName = @{ 'port' = 'graw'; 'port-mp' = 'grawmp'; 'port-yeti' = 'grawyeti' }[$Project]
+$exeName = @{ 'port' = 'graw'; 'port-mp' = 'grawmp'; 'port-yeti' = 'grawyeti'; 'port-yeti-nx' = 'grawyeti' }[$Project]
 $executable = Join-Path $port "out\build\win-amd64-$($Configuration.ToLowerInvariant())\$exeName.exe"
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 New-Item -ItemType Directory -Force (Join-Path $port 'logs') | Out-Null

@@ -17,3 +17,14 @@ local.
 
 Ghost Recon is a trademark of Ubisoft Entertainment. This project is not affiliated with or
 endorsed by Ubisoft, Red Storm Entertainment, Ubisoft Paris or Microsoft.
+
+port-yeti-nx/src/native/ is a copy (see its UPSTREAM.md) of fear360-recomp's port-nx/src/native,
+itself from fear-nx (https://github.com/infriker/fear-nx, commit acad80d), GPL-3.0-or-later,
+adapted from Project8Recomp (https://github.com/R-drg/project8-sw) and nfsmw-nx
+(https://github.com/StevensND/nfsmw-nx). The port-yeti-nx build that links it is therefore
+distributed under the GNU GPL v3 or later. port-yeti-nx/src/display_vblank.* and
+texture_pack.* come from fear360-recomp (MIT, same author).
+
+third_party/rexglue-sdk-nx (not tracked) is a junction to fear360-recomp's copy of ReXGlue
+c94f5eb with fear-nx's native-vulkan SDK patch and fear360's patches applied; ReXGlue's
+BSD-3-Clause license and Xenia's notices apply to it.

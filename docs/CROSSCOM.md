@@ -388,3 +388,8 @@ HUD state paths. User said crosshair, not specifically the HUD border, so #1 rem
   - Run A: `--clear_memory_page_state=false` alone.
   - Run B, if A is black: every Canary-matching value at once, plus `-Scale 1`, as Canary ran
     at 1x.
+- **Run A (`--clear_memory_page_state=false`): still black.**
+- **Run B (all Canary-matching values above, `-Scale 1`): still black.** So no renderer option
+  explains it. The cause is in ReXGlue's code changes since 96bf707. The March ports
+  (e6407f3, 38cbd30, 8b2672d, f20b3b2, "xenia-edge") rewrote much of the D3D12 render-target
+  and texture caches.

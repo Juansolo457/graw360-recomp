@@ -14,6 +14,8 @@ set(GRAW_SOURCES
     src/main.cpp
     src/crash_report.cpp
     src/shader_debug.cpp
+    src/graw_loader.cpp
+    src/graw_process.cpp
 )
 
 if(WIN32)
@@ -25,5 +27,5 @@ endif()
 # The Xenos plugin is copied next to graw.exe so the runtime can load it.
 rexglue_setup_target(graw GPU_PLUGINS xenos)
 if(WIN32)
-    target_link_libraries(graw PRIVATE dbghelp)   # crash reports (src/crash_report.cpp)
+    target_link_libraries(graw PRIVATE dbghelp shell32)   # crash reports; CommandLineToArgvW (graw_process.cpp)
 endif()

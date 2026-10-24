@@ -1,14 +1,28 @@
 // graw - Ghost Recon Advanced Warfighter (Xbox 360), ReXGlue application.
 //
-// Phase 1 (docs/PLAN.md): the stock SDK runtime and its Xenos GPU plugin, no game-specific
-// host code yet. Everything we learn about this executable goes into docs/ first.
+// Shared by the disc's programs: port/ (default.xex, the front end, graw.exe) and port-sp/
+// (gr3xenon_release.exe, the campaign, grawsp.exe). Each main.cpp includes its own generated
+// init header, defines GRAW_APP_NAME, then includes this file. The programs hand over to each
+// other the way the console's loader would (graw_loader.h).
 
 #pragma once
 
 #include <rex/logging.h>
 #include <rex/rex_app.h>
+#include <rex/system/xthread.h>
 
 #include "crash_report.h"
+#include "graw_loader.h"
+#include "graw_process.h"
+
+#ifndef GRAW_APP_NAME
+#define GRAW_APP_NAME "graw"
+#endif
+// The executable on the disc this program is the translation of (the runtime loads
+// game:\default.xex unless told otherwise).
+#ifndef GRAW_XEX_IMAGE
+#define GRAW_XEX_IMAGE "game:\\default.xex"
+#endif
 
 class GrawApp : public rex::ReXApp {
  public:
@@ -16,11 +30,18 @@ class GrawApp : public rex::ReXApp {
 
   static std::unique_ptr<rex::ui::WindowedApp> Create(
       rex::ui::WindowedAppContext& ctx) {
-    return std::unique_ptr<GrawApp>(new GrawApp(ctx, "graw",
+    return std::unique_ptr<GrawApp>(new GrawApp(ctx, GRAW_APP_NAME,
         PPCImageConfig));
   }
 
  protected:
+  // A program started by another (the hand-off) waits for that one to exit first, so the two
+  // never hold the window, the saves or the log at the same time.
+  void OnConfigurePaths(rex::PathConfig& paths) override {
+    (void)paths;
+    graw::process::WaitForPreviousRun();
+  }
+
   void OnPreSetup(rex::RuntimeConfig& config) override {
     // logs/crash-<time>.txt + .dmp with the guest stack (sub_<360 address> names) on any fault.
     graw::crash_report::InstallCrashReporter();
@@ -29,6 +50,16 @@ class GrawApp : public rex::ReXApp {
     // (F.E.A.R. lesson). "xenos" is the SDK's Xenos -> D3D12/Vulkan translator; a
     // --gpu_plugin on the command line still takes precedence.
     if (config.gpu_plugin.empty()) config.gpu_plugin = "xenos";
-    REXLOG_INFO("GRAW: GPU plugin '{}'", config.gpu_plugin);
+    REXLOG_INFO("GRAW ({}): GPU plugin '{}'", GRAW_APP_NAME, config.gpu_plugin);
+  }
+
+  void OnLoadXexImage(std::string& xex_image) override { xex_image = GRAW_XEX_IMAGE; }
+
+  // The launch data the previous program set (XamLoaderSetLaunchData), for this one to read.
+  void OnPreLaunchModule() override { graw::loader::RestoreLaunchData(); }
+
+  // XamLoaderLaunchTitle ends the title; start the program that holds the requested executable.
+  void OnGuestThreadExit(rex::system::XThread* thread) override {
+    if (thread && thread->main_thread()) graw::loader::HandOff();
   }
 };

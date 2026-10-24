@@ -8,11 +8,14 @@ param(
     [ValidateRange(5,600)][int]$Seconds = 40,
     [ValidateRange(0,20)][int]$Captures = 0,
     [string]$Extra = '',
+    # port = the front end (graw.exe, what a player starts); port-sp = the campaign (grawsp.exe) alone
+    [ValidateSet('port', 'port-sp')][string]$Project = 'port',
     [ValidateSet('Debug','Release','RelWithDebInfo')][string]$Configuration = 'RelWithDebInfo'
 )
 $ErrorActionPreference = 'Stop'
-$port = Join-Path $PSScriptRoot '..\port' | Resolve-Path
-$executable = Join-Path $port "out\build\win-amd64-$($Configuration.ToLowerInvariant())\graw.exe"
+$port = Join-Path $PSScriptRoot "..\$Project" | Resolve-Path
+$exeName = if ($Project -eq 'port-sp') { 'grawsp' } else { 'graw' }
+$executable = Join-Path $port "out\build\win-amd64-$($Configuration.ToLowerInvariant())\$exeName.exe"
 New-Item -ItemType Directory -Force (Join-Path $port 'logs') | Out-Null
 $log = Join-Path $port ('logs\smoke-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.log')
 $info = [Diagnostics.ProcessStartInfo]::new($executable)

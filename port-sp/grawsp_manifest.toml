@@ -1,0 +1,231 @@
+# Ghost Recon Advanced Warfighter (Xbox 360), the campaign program: GR3Xenon_Release.exe on the
+# disc (title 555307D5, SHA-256 4d8a0abb93f3867df53e229a54f55435a57b403f65781d5737237ff8c36c023a),
+# started by the front end (default.xex, port/) through XamLoaderLaunchTitle when the player picks
+# Campaign. Same engine and imports as default.xex, different build: its own translation.
+# ReXGlue 0.10; scaffolded by `rexglue init`. See docs/FINDINGS.md, "The disc's three programs".
+
+[project]
+name = "grawsp"
+sdk_version = "0.10.0"
+game_root = "assets"
+
+[entrypoint]
+file_path = "assets/GR3Xenon_Release.exe"
+out_directory_path = "generated/gr3xenon_release"
+includes = []
+
+# Function entries the analyser misses (tools/find_missed_functions.py), never edits to
+# generated code.
+[entrypoint.functions]
+# Round 1 (2026-10-23): the analyser's four "b target not in any function" (tail-call targets, the
+# same four functions default.xex needed, at this build's addresses).
+0x8214A7D8 = {}   # b from 0x8214A834
+0x82588A48 = {}   # b from 0x825928CC
+0x82148FC0 = {}   # b from 0x821493C4
+0x82155018 = {}   # b from 0x82148B88
+
+# Round 2 (2026-10-23): tools/find_missed_functions.py on the decrypted image, before the first run
+# (the front end needed the same kinds). 200 method-table slots and addresses built in code, plus
+# the qsort comparator after a never-returning bl (0x825C5A90; the pass's other four hits,
+# 0x822C35E4, 0x82310020, 0x82350044, 0x825DC800, are mid-function, not entries).
+0x820DF650 = {}  # from 0x82001C50
+0x820E0228 = {}  # from 0x82001B74
+0x820EA760 = {}  # from 0x8200258C
+0x820EC138 = {}  # from 0x82002544
+0x82103F50 = {}  # built in code
+0x82104140 = {}  # from 0x82004A9C
+0x82104148 = {}  # from 0x82001B30
+0x82104150 = {}  # from 0x82004A00
+0x821082C0 = {}  # from 0x82005454
+0x82108EB8 = {}  # from 0x820055A0
+0x821091C8 = {}  # built in code
+0x821091D8 = {}  # built in code
+0x821091E8 = {}  # built in code
+0x821091F8 = {}  # built in code
+0x82109208 = {}  # built in code
+0x82109218 = {}  # built in code
+0x82109228 = {}  # from 0x82004E4C
+0x82116D70 = {}  # built in code
+0x8211C098 = {}  # from 0x82005FE8
+0x82123D70 = {}  # from 0x82006F2C
+0x821416B0 = {}  # from 0x82007C78
+0x82141958 = {}  # built in code
+0x82141968 = {}  # built in code
+0x82141978 = {}  # built in code
+0x82141988 = {}  # built in code
+0x82141998 = {}  # built in code
+0x821419A8 = {}  # built in code
+0x821419B8 = {}  # built in code
+0x821419C8 = {}  # built in code
+0x821419D8 = {}  # built in code
+0x82148F70 = {}  # from 0x82007E60
+0x82148F78 = {}  # from 0x82007E64
+0x82148F80 = {}  # from 0x82007E68
+0x82148F88 = {}  # from 0x82007E6C
+0x82148F90 = {}  # from 0x82007E70
+0x82148F98 = {}  # from 0x82007E78
+0x82148FA0 = {}  # from 0x82007E7C
+0x82148FA8 = {}  # from 0x82007E80
+0x82148FB0 = {}  # from 0x82007E84
+0x8214A6E0 = {}  # built in code
+0x8214A7B0 = {}  # from 0x820081C8
+0x8214A7C0 = {}  # from 0x820081D0
+0x8214A7C8 = {}  # from 0x820081D8
+0x8214A7D0 = {}  # from 0x820081DC
+0x8214A7F8 = {}  # from 0x82008164
+0x8214A800 = {}  # from 0x82008168
+0x8214A808 = {}  # from 0x8200816C
+0x8214A810 = {}  # from 0x82008170
+0x8214A818 = {}  # from 0x82008178
+0x8214A820 = {}  # from 0x8200817C
+0x8214A828 = {}  # from 0x82008184
+0x8214A850 = {}  # from 0x82008068
+0x8215F060 = {}  # from 0x82009D94
+0x821676B0 = {}  # from 0x8200A134
+0x821676E0 = {}  # from 0x8200A0F8
+0x821676E8 = {}  # from 0x8200A0FC
+0x821676F0 = {}  # from 0x8200A104
+0x821676F8 = {}  # from 0x8200A100
+0x82167700 = {}  # from 0x8200A108
+0x82167718 = {}  # from 0x8200A110
+0x821ECFA4 = {}  # from 0x82095C28
+0x821EE70C = {}  # from 0x82095C70
+0x821EE884 = {}  # from 0x82095C80
+# 0x82233C7C dropped (round 2): a label inside a function, codegen "Unresolved b target"
+0x82248438 = {}  # from 0x8201AFC0
+0x822487E8 = {}  # from 0x8201B184
+0x82248810 = {}  # from 0x8201B188
+0x82248838 = {}  # from 0x8201B18C
+0x82248860 = {}  # from 0x8201B190
+0x82248C88 = {}  # from 0x8201B1C4
+0x82248CA8 = {}  # from 0x8201AFD8
+0x82248CC0 = {}  # built in code
+0x82248CD0 = {}  # built in code
+0x82248CE0 = {}  # built in code
+0x82248CF0 = {}  # built in code
+0x82248D00 = {}  # built in code
+0x82248D10 = {}  # built in code
+0x82248D20 = {}  # built in code
+0x82248D30 = {}  # built in code
+0x82248D40 = {}  # built in code
+0x822B3CAC = {}  # from 0x82095D40
+0x822B7940 = {}  # from 0x82095E48
+# 0x822B84CC dropped (round 2): a label inside a function, codegen "Unresolved b target"
+0x822B84EC = {}  # from 0x82095EA0
+0x822B8634 = {}  # from 0x82095EC0
+0x822B89A0 = {}  # from 0x82095ED8
+0x822B8AE0 = {}  # from 0x82095EF0
+0x822B91B8 = {}  # from 0x82095F08
+0x822C3400 = {}  # from 0x82096068
+0x822C6E10 = {}  # from 0x820960F8
+0x822D82D0 = {}  # from 0x82034868
+0x822D82E0 = {}  # from 0x8203486C
+0x822D82F0 = {}  # from 0x82034870
+0x822D83B8 = {}  # from 0x820348C0
+0x822DD5B0 = {}  # from 0x820345CC
+0x822DD6A8 = {}  # from 0x820345A4
+0x822E1AD8 = {}  # from 0x820351C0
+0x822E9310 = {}  # from 0x820351D8
+0x823414C0 = {}  # from 0x8203884C
+0x823414D8 = {}  # from 0x82038850
+0x82342A60 = {}  # from 0x82038D10
+0x82342C10 = {}  # from 0x82038D4C
+0x82358ED8 = {}  # from 0x82002418
+0x823634D8 = {}  # from 0x8203A2D8
+0x823ABF78 = {}  # from 0x8203F030
+0x823ABF80 = {}  # from 0x8203F034
+0x823FD5D0 = {}  # from 0x82049130
+0x82409D98 = {}  # built in code
+0x82409DA8 = {}  # built in code
+0x82409DB8 = {}  # built in code
+0x82409DC8 = {}  # built in code
+0x82409DD8 = {}  # built in code
+0x82409DE8 = {}  # built in code
+0x82409DF8 = {}  # built in code
+0x82410E68 = {}  # built in code
+0x8241DB38 = {}  # from 0x8204A4E0
+0x824505D0 = {}  # from 0x8204BFAC
+0x82450A08 = {}  # from 0x8204BFE4
+0x82450A18 = {}  # from 0x8204BD7C
+0x82450A28 = {}  # from 0x8204BDA4
+0x82450A30 = {}  # from 0x8204BDB8
+0x82450A38 = {}  # from 0x8204BDBC
+0x82450A40 = {}  # from 0x8204BDD4
+0x82450A48 = {}  # from 0x8204BDDC
+0x82450A50 = {}  # from 0x8204BDEC
+0x82450A58 = {}  # from 0x8204BE28
+0x82450A60 = {}  # from 0x8204BE3C
+0x82450A70 = {}  # from 0x8204BEA0
+0x82450A78 = {}  # from 0x8204BF38
+0x82450A80 = {}  # from 0x8204BF3C
+0x82450A88 = {}  # from 0x8204C128
+0x8245F6A0 = {}  # from 0x8204E868
+0x8245F6B8 = {}  # from 0x8204BD98
+0x8245F6C0 = {}  # from 0x8204E890
+0x8245F6C8 = {}  # from 0x8204BDA8
+0x8245F6D0 = {}  # from 0x8204BDB0
+0x8245F6E8 = {}  # from 0x8204BDC8
+0x8245F6F8 = {}  # from 0x8204BDE4
+0x8245F700 = {}  # from 0x8204BDE8
+0x8245F710 = {}  # from 0x8204BDF4
+0x8245F718 = {}  # from 0x8204BDFC
+0x8245F720 = {}  # from 0x8204BE04
+0x8245F728 = {}  # from 0x8204BE08
+0x8245F730 = {}  # from 0x8204BE10
+0x8245F738 = {}  # from 0x8204BE18
+0x8245F740 = {}  # from 0x8204BE1C
+0x8245F748 = {}  # from 0x8204BE20
+0x8245F750 = {}  # from 0x8204BE24
+0x8245F758 = {}  # from 0x8204BD88
+0x8245F768 = {}  # from 0x8204BE30
+0x8245F770 = {}  # from 0x8204BE34
+0x8245F778 = {}  # from 0x8204BE38
+0x8245F780 = {}  # from 0x8204E92C
+0x8245F7B8 = {}  # from 0x8204BE00
+0x8246FC38 = {}  # from 0x8204D040
+0x8247DC90 = {}  # from 0x8204DD30
+0x82493D30 = {}  # from 0x8204F6B0
+0x8249F800 = {}  # from 0x8205028C
+0x8249F808 = {}  # from 0x82050324
+0x824AF2E8 = {}  # from 0x82049FD4
+0x82505360 = {}  # from 0x82059AE4
+0x825242D0 = {}  # from 0x8205C8C8
+0x82525AC0 = {}  # from 0x8205CC5C
+0x82547080 = {}  # from 0x8205F0FC
+0x82570EC0 = {}  # from 0x820623FC
+0x8257D9A8 = {}  # from 0x82063554
+0x82587E00 = {}  # from 0x82063918
+0x82592B68 = {}  # from 0x820649E4
+0x82592B70 = {}  # from 0x820649E8
+0x82592B78 = {}  # from 0x820649EC
+0x82592B80 = {}  # from 0x82064A68
+0x82592B88 = {}  # from 0x82064A6C
+0x82592B90 = {}  # from 0x82064988
+0x82592BB0 = {}  # from 0x820649A4
+0x82592BB8 = {}  # from 0x82064A90
+0x82592BC8 = {}  # from 0x82064A98
+0x82592BD8 = {}  # from 0x82064AA0
+0x82593FE8 = {}  # from 0x8206387C
+0x825A969C = {}  # from 0x82096128
+0x825AB098 = {}  # from 0x82096150
+0x825AB0EC = {}  # from 0x82096140
+0x825AB294 = {}  # from 0x82096178
+0x825AB2E0 = {}  # from 0x82096168
+0x825E4790 = {}  # built in code
+0x82626D20 = {}  # from 0x8206C29C
+0x82626D70 = {}  # from 0x8206C2A4
+0x82657220 = {}  # from 0x82070870
+0x82671F40 = {}  # from 0x82078940
+0x826B5030 = {}  # built in code
+0x826CC43C = {}  # from 0x820961C8
+0x826D21D0 = {}  # from 0x820852BC
+0x826E0FF0 = {}  # from 0x82085EE8
+0x826E9110 = {}  # from 0x82087C40
+0x82710E38 = {}  # built in code
+0x82710E50 = {}  # built in code
+0x82710E68 = {}  # built in code
+0x82710E80 = {}  # built in code
+0x82710E98 = {}  # built in code
+0x82723968 = {}  # from 0x820895DC
+0x827AE118 = {}  # from 0x827D1A18
+0x825C5A90 = {}  # qsort comparator, after a bl

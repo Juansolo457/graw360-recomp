@@ -8,21 +8,22 @@ to invalid or unregistered function". The output is [entrypoint.functions] lines
     python -I tools/find_missed_functions.py <image.bin> <generated/default folder>
 
 The image is the game's loaded executable (tools/xex_basic_decrypt.py (or a runtime dump)); the generated folder supplies the
-code range (graw_pch.h) and the known function starts (graw_init.cpp). It's a heuristic: a
+code range (<name>_pch.h) and the known function starts (<name>_init.cpp). It's a heuristic: a
 candidate that is really a label inside a function splits it, and codegen then warns "Unresolved
 conditional branch" across the split; drop that candidate.
 """
+import glob
 import re
 import struct
 import sys
 
 image = open(sys.argv[1], 'rb').read()
 gen = sys.argv[2]
-pch = open(gen + '/graw_pch.h', encoding='utf-8').read()
+pch = open(glob.glob(gen + '/*_pch.h')[0], encoding='utf-8').read()
 base = int(re.search(r'REX_IMAGE_BASE (0x[0-9A-Fa-f]+)', pch).group(1), 16)
 code_base = int(re.search(r'REX_CODE_BASE (0x[0-9A-Fa-f]+)', pch).group(1), 16)
 code_end = code_base + int(re.search(r'REX_CODE_SIZE (0x[0-9A-Fa-f]+)', pch).group(1), 16)
-known = {int(a, 16) for a in re.findall(r'\{ 0x([0-9A-F]+), ', open(gen + '/graw_init.cpp', encoding='utf-8').read())}
+known = {int(a, 16) for a in re.findall(r'\{ 0x([0-9A-F]+), ', open(glob.glob(gen + '/*_init.cpp')[0], encoding='utf-8').read())}
 
 
 def word(addr):

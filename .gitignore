@@ -8,13 +8,15 @@ private/
 *.bik
 *.big
 port/assets/
+port-sp/assets
 
 # Generated translation, build output, runtime state
 port/generated/default/
-port/out/
-port/logs/
-port/user*/
-port/cache*/
+port-sp/generated/gr3xenon_release/
+port*/out/
+port*/logs/
+port*/user*/
+port*/cache*/
 *.log
 *.pdb
 build/

@@ -12,13 +12,16 @@ param(
     [switch]$Windowed,
     [switch]$Trace,       # --log_level trace --log_noisy: every kernel call with its arguments (large log)
     [string]$Extra = '',
+    # port = the front end (graw.exe, what a player starts); port-sp = the campaign (grawsp.exe) alone
+    [ValidateSet('port', 'port-sp')][string]$Project = 'port',
     [ValidateSet('Debug','Release','RelWithDebInfo')][string]$Configuration = 'RelWithDebInfo'
 )
 $ErrorActionPreference = 'Stop'
-$port = Join-Path $PSScriptRoot '..\port' | Resolve-Path
-$running = Get-Process -Name graw -ErrorAction SilentlyContinue
-if ($running) { throw "graw.exe is already running (pid $($running.Id -join ', ')). Quit it first." }
-$executable = Join-Path $port "out\build\win-amd64-$($Configuration.ToLowerInvariant())\graw.exe"
+$port = Join-Path $PSScriptRoot "..\$Project" | Resolve-Path
+$exeName = if ($Project -eq 'port-sp') { 'grawsp' } else { 'graw' }
+$running = Get-Process -Name graw, grawsp -ErrorAction SilentlyContinue
+if ($running) { throw "GRAW is already running (pid $($running.Id -join ', ')). Quit it first." }
+$executable = Join-Path $port "out\build\win-amd64-$($Configuration.ToLowerInvariant())\$exeName.exe"
 New-Item -ItemType Directory -Force (Join-Path $port 'logs') | Out-Null
 $log = Join-Path $port ('logs\run-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.log')
 $fullscreen = if ($Windowed) { '--no-fullscreen' } else { '--fullscreen' }

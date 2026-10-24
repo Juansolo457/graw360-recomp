@@ -149,3 +149,33 @@ and something resolves them without a device. The SDK's `NtCreateFile` honours a
 handle, so the failing call is another path (`NtQueryFullAttributesFile` or the include handler
 itself); the shaders still compiled, so these may be first probes with a fallback. Check this in
 the trace run.
+
+## The disc's three programs: Campaign is a hand-off, not a crash (2026-10-23)
+Trace run `port/logs/run-20261023-203813.log` (66 MB, `tools/launch.ps1 -Trace`; the user went
+Start, Campaign). The last kernel calls are a 3.6 MB `MmAllocatePhysicalMemoryEx` (the loading
+screen), then `KernelState::TerminateTitle` 4 ms later: no file error, no exception. In ReXGlue
+only three things call `TerminateTitle`: closing the window (logs its own message, absent here),
+`XamLoaderTerminateTitle` and `XamLoaderLaunchTitle`, neither of which logs.
+
+`default.xex` calls `XamLoaderLaunchTitle` from one function, `sub_822012A8` (it also checks for
+the `XLNI_DET_MEDIA` / `XLNI_DASH_ARCADE` names), and its four callers pass:
+
+| Caller | After `XamLoaderSetLaunchData`? | Launches |
+|---|---|---|
+| `sub_82170EE0` | yes (twice) | `gr3xenon_release.exe`: the single-player **campaign** |
+| (call at `graw_recomp.82.cpp:3184`) | no | `Yeti_Final_Xenon.exe`: **multiplayer** |
+| `sub_820FB9D0`, `sub_82176230` | yes | `default.xex`: back to the front end |
+
+So **`default.xex` is the front end** (the "Launcher": `PressStartLaunch`, `magma_launcher.glb`,
+`L_MainMenu`), and the campaign is **`GR3Xenon_Release.exe`**, a separate program. The two are the
+same engine with the same 65 + 133 imports (`GR3Xenon_Release.exe` also reads launch data:
+`XamLoaderGetLaunchData`), but different builds: the decrypted images differ in 2,035,033 of
+2,555,904 words, with code shifted throughout. ReXGlue records the launch request in
+`XamModule::LoaderData::launch_path` and nothing reads it, so the process just ends.
+
+Fix: a second translation (`port-sp/`, `grawsp.exe`, same host code) and a hand-off in the host
+(`port/src/graw_loader.*`): when the main guest thread ends with a launch path, save the launch
+data to a file and start the program holding that executable's translation with the same
+arguments, after this process exits (`graw_process.*` from fear360); the new program loads the
+launch data back into its XAM loader data before its module starts. Multiplayer (Yeti) has no
+translation yet and returns to the front end.

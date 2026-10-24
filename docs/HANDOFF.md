@@ -139,54 +139,48 @@ Our files are MIT (`LICENSE`, `NOTICE`); ReXGlue is BSD-3-Clause with Xenia's no
 fear-nx's renderer is ever brought in, that directory and any build linking it are GPL-3.0.
 Never commit game data, generated translations, captures or saves. Releases are source only.
 
-## Current #2 handoff (2026-10-24, latest): overlap found, but NOT the root cause - read the correction at the end of CROSSCOM.md first
-**The black Cross-Com, narration and portrait panels come from overlapping guest memory, not
-from the renderer.** The Bink frame buffers of one video and the 160x120 output texture of
-another occupy the same physical pages, so each CPU-decoded frame overwrites a resolved
-picture. The full evidence chain, with addresses, is in [CROSSCOM.md](CROSSCOM.md) ("Root cause
-found"). In short:
+## Current #2 handoff (2026-10-24): root cause OPEN
 
-1. **The renderer was ruled out step by step.**
-   - January Canary 263e91b, the build ReXGlue forked from, shows the Cross-Com and the map.
-   - No renderer option fixes it.
-   - An instrumented build of the stock renderer (source `third_party/rexglue-sdk-bd833a2`,
-     patch `tools/patches/rexglue-bd833a2-graw-rtt-trace.patch`, option
-     `--graw_trace_rtt_max_width=200`) showed every step working:
-     - resolve, then invalidate, then reload, then bind, one for one;
-     - the Bink draw is issued, with colour writes on;
-     - the planes reload after every CPU write.
-2. **The cause.** One video's output texture sits 0x7000 into the other's 0x20000-byte Bink
-   plane block. Whatever placed it sized that block at 0x7000.
-   `MmAllocatePhysicalMemoryEx` is identical in ReXGlue and Canary, so the mistake is above
-   the kernel: in the game's or Bink's allocation or size code, which Canary runs through its
-   JIT and we run recompiled. **The likely cause is a codegen error in that code.**
-3. **In progress.** The user is playing a `-Trace` run started at 07:44
-   (`port/logs/run-20261024-074440*.log`; the campaign log is `...~grawyeti-*.log`) with the
-   renderer trace on. Read it once the game is closed:
-   - Find the allocation that returned the Bink plane block (the `10C7xxxx` region last run;
-     addresses change per run, so take them from this run's `GRAW trace ... samples fetch` and
-     `resolve ... to` lines). Note its requested size, and whether `MmAllocatePhysicalMemoryEx`
-     or the game's own heap returned it.
-   - Then follow the size back through the generated code
-     (`port-yeti/generated/yeti_final_xenon/`) to the instruction that computes it. Compare
-     with the PowerPC semantics. Suspects are 64-bit / 32-bit mix-ups, rotate/mask (`rlwinm`)
-     and carry handling.
-   - A fix is either a manifest hook or a `[[entrypoint...]]` override, or a ReXGlue codegen
-     fix if it's a translator bug.
+Latest test FAILED: user still sees black Cross-Com with scoped depth testing disabled.
+Log port/logs/run-20261024-083616~grawyeti-083633.log confirms three detailed overrides
+at physical 10C7F000: normalized depth 00700762 -> 00700760, followed by continued counts.
+This weakens simple depth rejection of that draw; does not exclude later overdraw or stencil.
 
-**Related findings, independent of the overlap:**
-- **Background compilation:** `--async_shader_compilation=false` stops ReXGlue from
-  permanently skipping some draws. On the instrumented build the HUD border (#1) then drew
-  correctly. On the stock build it was static again, probably from the same memory overlap.
-  Re-test #1 after the fix.
-- **Renderer DLL on disk:** `port-yeti/out/build/win-amd64-relwithdebinfo/rexgpu-xenosrd.dll`
-  is currently the **instrumented** build. The original is `rexgpu-xenosrd.dll.stock`, and a
-  port-yeti rebuild copies the prebuilt back.
-- **Canary for comparison:** `private/xenia-canary/9e03494/` and `.../263e91b/`, run with
-  `--config=graw-depth-clamp-off.toml --launch_module=Yeti_Final_Xenon.exe` on the ISO.
+Read the final sections of CROSSCOM.md for evidence. Earlier memory overlap was withdrawn.
+- Canary 263e91b displays Cross-Com/map on the same disc; recomp does not.
+- CPU staging first-page samples were nonzero and matched E0 virtual aliases (23/23).
+- GPU resolve readbacks contain substantial changing data.
+- Converted GPU host texture samples30/90 visibly contain the Cross-Com character. Sample1
+  was zero. Images are local ignored port/logs/graw-converted-10C7F000-{1,30,90}.ppm (and PNG).
+  Capture is before SRV swizzle; exact colour correctness is not proven.
+- Working menu and Cross-Com final draws share PS3445071A7FACCDE5, VS163102E6668FF616,
+  slot0 only, used mask1, swizzle A0A and bindless mode. No used PS float constants logged.
+  Their depth enable difference motivated the failed test. Cached descriptors are logged,
+  not independently read from the GPU heap. Vertex/UV data and actual packed constants absent.
+- Screenshot shows black video and green/blue patterned border/lower-left HUD corruption.
 
-The user's rules apply: ask before every launch, build or download, never stop their game, and
-commit by explicit path (another session shares this checkout).
+Next best investigation: capture a frame in RenderDoc and inspect the identified HUD draw's
+actual SRV, sampler, vertex positions/UVs, interpolants, target pixels before/after, stencil,
+blend/alpha and later overdraw. If capture unavailable, add bounded readback immediately after
+that draw and inspect actual descriptor indexing / VS constants / vertex data. Compare these
+specific paths against Canary263e91b; do not replace the whole renderer without isolating its
+runtime/memory integration differences. No fix exists yet; instrumentation is diagnostic only.
+
+Source: third_party/rexglue-sdk-bd833a2. Reproducible source-only changes in
+ tools/patches/rexglue-bd833a2-graw-rtt-trace.patch (reverse-apply check passed).
+Installed campaign DLL port-yeti/out/build/win-amd64-relwithdebinfo/rexgpu-xenosrd.dll is
+instrumented with opt-in --graw_video_no_depth=true. .before-depth-test preserves prior probe;
+.stock preserves original. Do not enable depth override for baseline tests.
+Other flags: --graw_trace_hud=true; --graw_readback_texture=true (asynchronous images);
+--graw_readback_video=true (synchronous GPU resolve samples, stalls); --graw_trace_rtt_max_width=200.
+Last launch: pwsh -NoProfile -File tools/launch.ps1 -Windowed -Scale 1
+"-Extra:--graw_video_no_depth=true --graw_trace_hud=true". Build passed. Game left untouched.
+
+Ask before every build/launch; never close/kill user's game. Downloads allowed. User tests.
+Read campaign logs yourself. Shared checkout: explicit-path commits only, identity
+juansolo457 <5344231+Juansolo457@users.noreply.github.com>. Audit before pushing, fetch first,
+ask before future pushes. Never commit game data, logs, captures or generated translations.
+Do not write to ../fear360-recomp.
 
 ## Earlier #2 handoff after Canary comparison (2026-10-24, superseded)
 **Cross-Com works in Xenia Canary 9e03494 with depth clamp ON and OFF.** The user also

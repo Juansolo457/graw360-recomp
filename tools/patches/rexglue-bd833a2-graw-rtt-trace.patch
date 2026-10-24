@@ -1,3 +1,33 @@
+diff --git a/include/rex/graphics/d3d12/texture_cache.h b/include/rex/graphics/d3d12/texture_cache.h
+index 4d845c7..364dfc7 100644
+--- a/include/rex/graphics/d3d12/texture_cache.h
++++ b/include/rex/graphics/d3d12/texture_cache.h
+@@ -113,6 +113,8 @@ class D3D12TextureCache final : public TextureCache {
+                                     D3D12_CPU_DESCRIPTOR_HANDLE handle);
+   uint32_t GetActiveTextureBindlessSRVIndex(const D3D12Shader::TextureBinding& host_shader_binding);
+ 
++  void GrawLogHudBindings(uint32_t used_mask);
++
+   SamplerParameters GetSamplerParameters(const D3D12Shader::SamplerBinding& binding) const;
+   void WriteSampler(SamplerParameters parameters, D3D12_CPU_DESCRIPTOR_HANDLE handle) const;
+ 
+@@ -455,6 +457,16 @@ class D3D12TextureCache final : public TextureCache {
+   static const HostFormat host_formats_[64];
+ 
+   D3D12CommandProcessor& command_processor_;
++  struct GrawTextureReadback {
++    Microsoft::WRL::ComPtr<ID3D12Resource> buffer;
++    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
++    uint64_t submission = 0;
++    uint32_t address = 0, sample = 0;
++    UINT64 bytes = 0;
++  };
++  std::vector<GrawTextureReadback> graw_texture_readbacks_;
++  uint32_t graw_texture_load_count_ = 0;
++
+   bool bindless_resources_used_;
+ 
+   Microsoft::WRL::ComPtr<ID3D12RootSignature> load_root_signature_;
 diff --git a/include/rex/graphics/graw_trace.h b/include/rex/graphics/graw_trace.h
 new file mode 100644
 index 0000000..0c3a3ac
@@ -80,7 +110,7 @@ index 0000000..0c3a3ac
 +
 +}  // namespace rex::graphics::graw_trace
 diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
-index 19874a5..9db3303 100644
+index 19874a5..79a778e 100644
 --- a/src/graphics/d3d12/command_processor.cpp
 +++ b/src/graphics/d3d12/command_processor.cpp
 @@ -20,6 +20,7 @@
@@ -91,7 +121,26 @@ index 19874a5..9db3303 100644
  #include <rex/graphics/d3d12/graphics_system.h>
  #include <rex/graphics/d3d12/shader.h>
  #include <rex/graphics/flags.h>
-@@ -2268,6 +2269,59 @@ Shader* D3D12CommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32_
+@@ -32,6 +33,18 @@
+ #include <rex/ui/d3d12/d3d12_presenter.h>
+ #include <rex/ui/d3d12/d3d12_util.h>
+ 
++REXCVAR_DEFINE_BOOL(graw_video_no_depth, false, "GPU/D3D12",
++                    "Diagnostic: disable depth for identified 160x120 video HUD draws")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
++REXCVAR_DEFINE_BOOL(graw_trace_hud, false, "GPU/D3D12",
++                    "Trace final draws sampling menu or Cross-Com-sized RGBA textures")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
++REXCVAR_DEFINE_BOOL(graw_readback_video, false, "GPU/D3D12",
++                    "Diagnostic: read back three 160-pitch RGBA video resolves at 1x; stalls GPU")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
+ REXCVAR_DEFINE_BOOL(d3d12_bindless, true, "GPU/D3D12", "Use bindless resources where available")
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ 
+@@ -2268,6 +2281,59 @@ Shader* D3D12CommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32_
    return pipeline_cache_->LoadShader(shader_type, host_address, dword_count);
  }
  
@@ -151,7 +200,7 @@ index 19874a5..9db3303 100644
  bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint32_t index_count,
                                        IndexBufferInfo* index_buffer_info,
                                        bool major_mode_explicit) {
-@@ -2285,6 +2339,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2285,6 +2351,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    }
  
    bool surface_pitch_is_zero = regs.Get<reg::RB_SURFACE_INFO>().surface_pitch == 0;
@@ -162,7 +211,7 @@ index 19874a5..9db3303 100644
  
    // Vertex shader analysis.
    auto vertex_shader = static_cast<D3D12Shader*>(active_vertex_shader());
-@@ -2321,6 +2379,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2321,6 +2391,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      // cache.
      if (!memexport_used_vertex) {
        // This draw has no effect.
@@ -170,7 +219,7 @@ index 19874a5..9db3303 100644
        return true;
      }
    }
-@@ -2338,6 +2397,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2338,10 +2409,27 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    }
    if (!primitive_processing_result.host_draw_vertex_count) {
      // Nothing to draw.
@@ -178,7 +227,27 @@ index 19874a5..9db3303 100644
      return true;
    }
  
-@@ -2366,6 +2426,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+   reg::RB_DEPTHCONTROL normalized_depth_control = draw_util::GetNormalizedDepthControl(regs);
++  // Diagnostic only: alter normalized host state, never guest registers.
++  if (REXCVAR_GET(graw_video_no_depth) && pixel_shader &&
++      pixel_shader->ucode_data_hash() == 0x3445071A7FACCDE5ull &&
++      vertex_shader->ucode_data_hash() == 0x163102E6668FF616ull) {
++    const auto f = regs.GetTextureFetch(0);
++    if (uint32_t(f.type) == 2 && uint32_t(f.format) == 6 &&
++        f.size_2d.width == 159 && f.size_2d.height == 119) {
++      const uint32_t original = normalized_depth_control.value;
++      normalized_depth_control.z_enable = 0;
++      normalized_depth_control.z_write_enable = 0;
++      if (graw_trace::Count("video no depth override", 3)) {
++        REXGPU_INFO("GRAW video no depth override base {:08X} depth {:08X} -> {:08X}",
++                    uint32_t(f.base_address) << 12, original, normalized_depth_control.value);
++      }
++    }
++  }
+ 
+   // Shader modifications.
+   uint32_t ps_param_gen_pos = UINT32_MAX;
+@@ -2366,6 +2454,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
                     : 0;
    if (!render_target_cache_->Update(is_rasterization_done, normalized_depth_control,
                                      normalized_color_mask, *vertex_shader)) {
@@ -187,7 +256,7 @@ index 19874a5..9db3303 100644
      return false;
    }
  
-@@ -2400,6 +2462,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2400,6 +2490,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    }
    if (REXCVAR_GET(async_shader_compilation) &&
        pipeline_cache_->GetD3D12PipelineByHandle(pipeline_handle) == nullptr) {
@@ -196,7 +265,58 @@ index 19874a5..9db3303 100644
      return true;
    }
  
-@@ -2628,6 +2692,9 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2617,6 +2709,50 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+   SetPrimitiveTopology(primitive_topology);
+   // Must not call anything that may change the primitive topology from now on!
+ 
++  // Inspect final draw state after texture and pipeline binding updates.
++  if (REXCVAR_GET(graw_trace_hud) && pixel_shader) {
++    uint32_t video_slot = UINT32_MAX;
++    for (uint32_t i = 0; i < 32; ++i) {
++      if (!(used_texture_mask & (1u << i))) continue;
++      const auto f = regs.GetTextureFetch(i);
++      const uint32_t w = f.size_2d.width + 1, h = f.size_2d.height + 1;
++      if (uint32_t(f.type) == 2 && uint32_t(f.format) == 6 &&
++          ((w == 160 && h == 120) || (w == 1280 && h == 720))) { video_slot = i; break; }
++    }
++    if (video_slot != UINT32_MAX) {
++      const auto f = regs.GetTextureFetch(video_slot);
++      const std::string key = fmt::format("HUD ps {:016X} base {:08X} {}x{}",
++          pixel_shader->ucode_data_hash(), uint32_t(f.base_address) << 12,
++          uint32_t(f.size_2d.width) + 1, uint32_t(f.size_2d.height) + 1);
++      if (graw_trace::Count(key, 3)) {
++        REXGPU_INFO("GRAW {} vs {:016X} slot {} used_mask {:08X} bindless {} PS_cbuffer {:016X}",
++                    key, vertex_shader->ucode_data_hash(), video_slot, used_texture_mask,
++                    bindless_resources_used_, cbuffer_binding_float_pixel_.address);
++        GrawNoteDraw(regs, key.c_str(), pixel_shader, normalized_color_mask,
++                     primitive_processing_result.host_draw_vertex_count);
++        texture_cache_->GrawLogHudBindings(used_texture_mask);
++        for (uint32_t i = 0; i < 32; ++i) {
++          if (i >= 16 && !(used_texture_mask & (1u << i))) continue;
++          const auto f = regs.GetTextureFetch(i);
++          REXGPU_INFO("GRAW HUD raw fetch {} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
++                      i, f.dword_0, f.dword_1, f.dword_2, f.dword_3, f.dword_4, f.dword_5);
++        }
++        const auto& constants = pixel_shader->constant_register_map();
++        for (uint32_t i = 0; i < 256; ++i) {
++          if (!(constants.float_bitmap[i / 64] & (uint64_t(1) << (i % 64)))) continue;
++          const uint32_t r = XE_GPU_REG_SHADER_CONSTANT_256_X + 4 * i;
++          REXGPU_INFO("GRAW HUD PS c{} {} {} {} {} raw {:08X} {:08X} {:08X} {:08X}",
++                      i, regs.Get<float>(r), regs.Get<float>(r+1), regs.Get<float>(r+2), regs.Get<float>(r+3),
++                      regs[r], regs[r+1], regs[r+2], regs[r+3]);
++        }
++        REXGPU_INFO("GRAW HUD stencil {:08X}/{:08X} blend_constant {} {} {} {}",
++                    regs[XE_GPU_REG_RB_STENCILREFMASK], regs[XE_GPU_REG_RB_STENCILREFMASK_BF],
++                    regs.Get<float>(XE_GPU_REG_RB_BLEND_RED), regs.Get<float>(XE_GPU_REG_RB_BLEND_GREEN),
++                    regs.Get<float>(XE_GPU_REG_RB_BLEND_BLUE), regs.Get<float>(XE_GPU_REG_RB_BLEND_ALPHA));
++      }
++    }
++  }
++
+   // Draw.
+   if (primitive_processing_result.index_buffer_type ==
+       PrimitiveProcessor::ProcessedIndexBufferType::kNone) {
+@@ -2628,6 +2764,9 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      SubmitBarriers();
      PROFILE_DRAW_CALL();
      PROFILE_VERTICES(primitive_processing_result.host_draw_vertex_count);
@@ -206,7 +326,7 @@ index 19874a5..9db3303 100644
      deferred_command_list_.D3DDrawInstanced(primitive_processing_result.host_draw_vertex_count, 1,
                                              0, 0);
    } else {
-@@ -2687,6 +2754,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2687,6 +2826,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      SubmitBarriers();
      PROFILE_DRAW_CALL();
      PROFILE_VERTICES(primitive_processing_result.host_draw_vertex_count);
@@ -215,6 +335,67 @@ index 19874a5..9db3303 100644
      deferred_command_list_.D3DDrawIndexedInstanced(
          primitive_processing_result.host_draw_vertex_count, 1, 0, 0, 0);
      if (scratch_index_buffer != nullptr) {
+@@ -2879,9 +3020,57 @@ bool D3D12CommandProcessor::IssueCopy() {
+   }
+   ReadbackResolveMode readback_mode = GetReadbackResolveMode(REXCVAR_GET(d3d12_readback_resolve));
+   if (readback_mode == ReadbackResolveMode::kDisabled) {
+-    uint32_t written_address, written_length;
+-    return render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
+-                                         written_address, written_length);
++    uint32_t written_address = 0, written_length = 0;
++    const bool resolved = render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
++                                                        written_address, written_length);
++    if (resolved && written_length && REXCVAR_GET(graw_readback_video) &&
++        !texture_cache_->IsDrawResolutionScaled() && written_length <= 1024 * 1024 &&
++        register_file_->Get<reg::RB_SURFACE_INFO>().surface_pitch == 160 &&
++        register_file_->Get<reg::RB_COLOR_INFO>().color_format == xenos::ColorRenderTargetFormat::k_8_8_8_8) {
++      // Sample across the clip instead of taking three adjacent startup frames.
++      static uint32_t video_resolves = 0;
++      if (video_resolves < 90) {
++        const uint32_t sample = ++video_resolves;
++        if (sample == 1 || sample == 30 || sample == 90) {
++          ID3D12Resource* readback = RequestReadbackBuffer(written_length);
++          if (readback) {
++            shared_memory_->UseAsCopySource();
++            SubmitBarriers();
++            deferred_command_list_.D3DCopyBufferRegion(readback, 0, shared_memory_->GetBuffer(),
++                                                       written_address, written_length);
++            if (AwaitAllQueueOperationsCompletion()) {
++              D3D12_RANGE range{0, written_length};
++              void* mapping = nullptr;
++              if (SUCCEEDED(readback->Map(0, &range, &mapping))) {
++                const auto* bytes = static_cast<const uint8_t*>(mapping);
++                uint64_t hash = 14695981039346656037ull;
++                uint32_t nonzero[4] = {};
++                uint8_t maximum[4] = {};
++                for (uint32_t i = 0; i < written_length; ++i) {
++                  hash = (hash ^ bytes[i]) * 1099511628211ull;
++                  nonzero[i & 3] += bytes[i] != 0;
++                  maximum[i & 3] = std::max(maximum[i & 3], bytes[i]);
++                }
++                REXGPU_INFO("GRAW GPU readback resolve #{} physical {:08X} bytes {} hash {:016X} "
++                            "nonzero lanes {}/{}/{}/{} max lanes {}/{}/{}/{} (raw tiled bytes incl padding)",
++                            sample, written_address, written_length, hash,
++                            nonzero[0], nonzero[1], nonzero[2], nonzero[3],
++                            maximum[0], maximum[1], maximum[2], maximum[3]);
++                D3D12_RANGE no_writes{0, 0};
++                readback->Unmap(0, &no_writes);
++              } else {
++                REXGPU_ERROR("GRAW GPU readback map failed");
++              }
++            } else {
++              REXGPU_ERROR("GRAW GPU readback queue wait failed");
++            }
++          } else {
++            REXGPU_ERROR("GRAW GPU readback allocation failed");
++          }
++        }
++      }
++    }
++    return resolved;
+   }
+   return IssueCopy_ReadbackResolvePath();
+ }
 diff --git a/src/graphics/d3d12/render_target_cache.cpp b/src/graphics/d3d12/render_target_cache.cpp
 index dd321a5..6784517 100644
 --- a/src/graphics/d3d12/render_target_cache.cpp
@@ -273,6 +454,201 @@ index dd321a5..6784517 100644
          }
        } else {
          REXGPU_ERROR(
+diff --git a/src/graphics/d3d12/shared_memory.cpp b/src/graphics/d3d12/shared_memory.cpp
+index a5c97a0..175ec55 100644
+--- a/src/graphics/d3d12/shared_memory.cpp
++++ b/src/graphics/d3d12/shared_memory.cpp
+@@ -17,6 +17,7 @@
+ #include <rex/cvar.h>
+ #include <rex/graphics/d3d12/command_processor.h>
+ #include <rex/graphics/d3d12/shared_memory.h>
++#include <rex/graphics/graw_trace.h>
+ #include <rex/logging.h>
+ #include <rex/math.h>
+ #include <rex/ui/d3d12/d3d12_util.h>
+@@ -327,6 +328,50 @@ bool D3D12SharedMemory::UploadRanges(
+       std::memcpy(upload_buffer_mapping,
+                   memory().TranslatePhysical(upload_range_start << page_size_log2()),
+                   upload_buffer_size);
++      // Diagnose the actual CPU bytes submitted to the GPU, not just cache events.
++      // Limit reads to the first page and output to three snapshots per physical range.
++      const uint32_t trace_address = upload_range_start << page_size_log2();
++      if (graw_trace::Enabled() && graw_trace::Tracked(trace_address, uint32_t(upload_buffer_size)) &&
++          graw_trace::Count(fmt::format("upload-bytes {:08X}", trace_address), 3)) {
++        const size_t sample_size = std::min<size_t>(upload_buffer_size, 4096);
++        uint64_t hash = 14695981039346656037ull;
++        uint32_t nonzero = 0;
++        uint8_t minimum = 255, maximum = 0;
++        for (size_t i = 0; i < sample_size; ++i) {
++          const uint8_t value = upload_buffer_mapping[i];
++          hash = (hash ^ value) * 1099511628211ull;
++          nonzero += value != 0;
++          minimum = std::min(minimum, value);
++          maximum = std::max(maximum, value);
++        }
++        REXGPU_INFO("GRAW trace upload-bytes physical {:08X} sample {} hash {:016X} "
++                    "nonzero {} min {} max {} (CPU staging, not GPU readback)",
++                    trace_address, sample_size, hash, nonzero, minimum, maximum);
++#if REX_PLATFORM_WIN32
++        // E0 virtual address corresponding to this physical page. Inspect only a
++        // readable committed alias; never fault in or change guest page protections.
++        if (trace_address >= 0x1000 && trace_address < 0x1FD01000) {
++          const uint32_t guest_virtual = 0xE0000000u + trace_address - 0x1000u;
++          const auto* alias = memory().TranslateVirtual<const uint8_t*>(guest_virtual);
++          MEMORY_BASIC_INFORMATION info{};
++          const DWORD readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
++                                 PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
++          if (VirtualQuery(alias, &info, sizeof(info)) && info.State == MEM_COMMIT &&
++              !(info.Protect & PAGE_GUARD) && (info.Protect & readable) &&
++              size_t(alias - static_cast<const uint8_t*>(info.BaseAddress)) + sample_size <= info.RegionSize) {
++            uint64_t alias_hash = 14695981039346656037ull;
++            for (size_t i = 0; i < sample_size; ++i) {
++              alias_hash = (alias_hash ^ alias[i]) * 1099511628211ull;
++            }
++            REXGPU_INFO("GRAW trace upload-alias virtual {:08X} physical {:08X} "
++                        "hash {:016X} matches_staging {} (sequential reads; CPU may race)",
++                        guest_virtual, trace_address, alias_hash, alias_hash == hash);
++          } else {
++            REXGPU_INFO("GRAW trace upload-alias virtual {:08X} unreadable; skipped", guest_virtual);
++          }
++        }
++#endif
++      }
+       command_list.D3DCopyBufferRegion(buffer_, upload_range_start << page_size_log2(),
+                                        upload_buffer, UINT64(upload_buffer_offset),
+                                        UINT64(upload_buffer_size));
+diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
+index 2be0e8e..59ad920 100644
+--- a/src/graphics/d3d12/texture_cache.cpp
++++ b/src/graphics/d3d12/texture_cache.cpp
+@@ -15,6 +15,8 @@
+ #include <cstddef>
+ #include <cstring>
+ #include <memory>
++#include <fstream>
++#include <filesystem>
+ #include <utility>
+ 
+ #include <rex/assert.h>
+@@ -32,6 +34,10 @@
+ #include <rex/ui/d3d12/d3d12_upload_buffer_pool.h>
+ #include <rex/ui/d3d12/d3d12_util.h>
+ 
++REXCVAR_DEFINE_BOOL(graw_readback_texture, false, "GPU/D3D12",
++                    "Diagnostic: asynchronously capture converted 160x120 RGBA textures to logs")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
+ namespace rex::graphics::d3d12 {
+ 
+ // Generated with `xb buildshaders`.
+@@ -1932,9 +1938,107 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+ 
+   command_processor_.ReleaseScratchGPUBuffer(copy_buffer, copy_buffer_state);
+ 
++  if (REXCVAR_GET(graw_readback_texture)) {
++    // Consume only completed submissions. Never flush/reset command state inside a draw.
++    for (auto it = graw_texture_readbacks_.begin(); it != graw_texture_readbacks_.end();) {
++      if (it->submission > command_processor_.GetCompletedSubmission()) { ++it; continue; }
++      D3D12_RANGE range{0, SIZE_T(it->bytes)};
++      void* mapping = nullptr;
++      if (SUCCEEDED(it->buffer->Map(0, &range, &mapping))) {
++        const auto* data = static_cast<const uint8_t*>(mapping) + it->footprint.Offset;
++        uint64_t hash = 14695981039346656037ull;
++        uint32_t nonzero[4] = {};
++        std::error_code ec;
++        std::filesystem::create_directories("logs", ec);
++        const std::string path = fmt::format("logs/graw-converted-{:08X}-{}.ppm", it->address, it->sample);
++        std::ofstream file(path, std::ios::binary);
++        file << "P6\n160 120\n255\n";
++        for (uint32_t y = 0; y < 120; ++y) {
++          const uint8_t* row = data + y * it->footprint.Footprint.RowPitch;
++          for (uint32_t x = 0; x < 160; ++x) {
++            for (uint32_t c = 0; c < 4; ++c) {
++              const uint8_t value = row[x * 4 + c];
++              hash = (hash ^ value) * 1099511628211ull;
++              nonzero[c] += value != 0;
++            }
++            file.write(reinterpret_cast<const char*>(row + x * 4), 3);
++          }
++        }
++        file.close();
++        REXGPU_INFO("GRAW converted texture #{} physical {:08X} hash {:016X} "
++                    "nonzero RGBA {}/{}/{}/{} file {} saved {} (before SRV swizzle)",
++                    it->sample, it->address, hash, nonzero[0], nonzero[1], nonzero[2], nonzero[3],
++                    path, bool(file));
++        D3D12_RANGE no_writes{0, 0};
++        it->buffer->Unmap(0, &no_writes);
++      } else {
++        REXGPU_ERROR("GRAW converted texture readback map failed");
++      }
++      it = graw_texture_readbacks_.erase(it);
++    }
++    const auto desc = texture_resource->GetDesc();
++    if (load_base && desc.Width == 160 && desc.Height == 120 &&
++        (desc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS || desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM ||
++         desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) && graw_texture_load_count_ < 90) {
++      const uint32_t sample = ++graw_texture_load_count_;
++      if (sample == 1 || sample == 30 || sample == 90) {
++        GrawTextureReadback readback;
++        device->GetCopyableFootprints(&desc, 0, 1, 0, &readback.footprint, nullptr, nullptr, &readback.bytes);
++        D3D12_RESOURCE_DESC buffer_desc;
++        ui::d3d12::util::FillBufferResourceDesc(buffer_desc, readback.bytes, D3D12_RESOURCE_FLAG_NONE);
++        if (SUCCEEDED(device->CreateCommittedResource(&ui::d3d12::util::kHeapPropertiesReadback,
++            D3D12_HEAP_FLAG_NONE, &buffer_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
++            IID_PPV_ARGS(&readback.buffer)))) {
++          const auto old_state = d3d12_texture.SetResourceState(D3D12_RESOURCE_STATE_COPY_SOURCE);
++          command_processor_.PushTransitionBarrier(texture_resource, old_state, D3D12_RESOURCE_STATE_COPY_SOURCE);
++          command_processor_.SubmitBarriers();
++          D3D12_TEXTURE_COPY_LOCATION from{}, to{};
++          from.pResource = texture_resource;
++          from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++          from.SubresourceIndex = 0;
++          to.pResource = readback.buffer.Get();
++          to.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
++          to.PlacedFootprint = readback.footprint;
++          command_list.D3DCopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
++          command_processor_.PushTransitionBarrier(texture_resource,
++              d3d12_texture.SetResourceState(old_state), old_state);
++          readback.submission = command_processor_.GetCurrentSubmission();
++          readback.address = texture_key.base_page << 12;
++          readback.sample = sample;
++          REXGPU_INFO("GRAW converted texture queued #{} physical {:08X} format {} submission {}",
++                      sample, readback.address, uint32_t(desc.Format), readback.submission);
++          graw_texture_readbacks_.push_back(std::move(readback));
++        } else {
++          REXGPU_ERROR("GRAW converted texture readback allocation failed");
++        }
++      }
++    }
++  }
++
+   return true;
+ }
+ 
++void D3D12TextureCache::GrawLogHudBindings(uint32_t used_mask) {
++  for (uint32_t i = 0; i < 32; ++i) {
++    if (i >= 16 && !(used_mask & (1u << i))) continue;
++    const TextureBinding* binding = GetValidTextureBinding(i);
++    if (!binding) {
++      REXGPU_INFO("GRAW HUD sampler {} used {} no valid cached binding", i, bool(used_mask & (1u << i)));
++      continue;
++    }
++    const auto& native = d3d12_texture_bindings_[i];
++    auto* texture = static_cast<D3D12Texture*>(binding->texture);
++    auto* signed_texture = static_cast<D3D12Texture*>(binding->texture_signed);
++    REXGPU_INFO("GRAW HUD sampler {} used {} physical {:08X} {}x{} host_swizzle {:X} "
++                "descriptor {} signed_descriptor {} resource {} signed_resource {}",
++                i, bool(used_mask & (1u << i)), uint32_t(binding->key.base_page) << 12,
++                binding->key.GetWidth(), binding->key.GetHeight(), binding->host_swizzle,
++                native.descriptor_index, native.descriptor_index_signed,
++                texture ? static_cast<void*>(texture->resource()) : nullptr,
++                signed_texture ? static_cast<void*>(signed_texture->resource()) : nullptr);
++  }
++}
++
+ void D3D12TextureCache::UpdateTextureBindingsImpl(uint32_t fetch_constant_mask) {
+   uint32_t bindings_remaining = fetch_constant_mask;
+   uint32_t binding_index;
 diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
 index 76f5600..783cfea 100644
 --- a/src/graphics/pipeline/texture/cache.cpp

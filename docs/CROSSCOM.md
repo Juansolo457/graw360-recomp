@@ -564,3 +564,153 @@ reused by the next (two videos, close together), so it's a side effect at most.
    output is black (a shader or constant problem: Bink's c0-c3 at pixel constant 0-3).
 3. Or a RenderDoc capture of one frame with the panel up (RenderDoc isn't installed; the user
    has allowed downloads).
+
+## Follow-up: E0 mapping inspection and staging-byte probe (2026-10-24)
+- Compared stock SDK bd833a2 with local Canary 263e91b: MapViews maps E0 with backing offset
+  0x100001000, rounded down by host allocation granularity; PhysicalHeap adds 0x1000 on Windows.
+  TranslateVirtual compensates for that offset; TranslatePhysical uses physical_membase plus
+  the masked physical address. The generated grawyeti_pch.h REX_RAW_ADDR and scalar load/store
+  macros also add 0x1000 for E0 addresses. No static inconsistency found in these paths.
+- This does not prove runtime bytes match, or cover every possible CPU memory access path.
+- Extended the existing tracked RTT patch with a D3D12 UploadRanges probe, after memcpy into
+  staging and before CopyBufferRegion. Reports first-page FNV-1a hash, nonzero byte count and
+  min/max, plus guarded hash of the corresponding TranslateVirtual E0 alias. Sequential reads
+  may race CPU writes; a mismatch is diagnostic evidence, not proof by itself.
+- Off unless existing RTT trace is enabled; first three samples per tracked physical address.
+  This samples CPU staging, NOT GPU resource readback, and produces no pixel dump files.
+- Not built or run yet. Need approved plugin-only build and user test before drawing conclusions.
+  Actual GPU readback/RenderDoc and Bink pixel constants remain next if upload bytes look valid.
+
+### Staging-byte probe build validation
+User approved building and automated testing. Plugin-only build succeeded (existing SDK header
+warnings). All 108 runtime imports resolve against the campaign runtime; probe marker is present.
+Reverse-apply check confirms the tracked patch matches the SDK changes. Repository audit and
+whitespace checks pass. Installed only after confirming no GRAW process running; previous traced
+DLL preserved as rexgpu-xenosrd.dll.before-upload-probe and stock backup untouched.
+No game launched and no runtime pixel result yet. Test with --graw_trace_rtt_max_width=200.
+
+### Staging-byte result (07:55 run): nonzero bytes, matching aliases
+User reports video still black and closed the game. Campaign log:
+port/logs/run-20261024-075444~grawyeti-075503.log.
+23 upload snapshots and 23 alias comparisons; every alias matched, none unreadable. Chroma
+plane starts 0FEE4000/0FEF4000 have 1280 nonzero bytes per sampled 4096, maxima 132-133 and
+changing hashes. A sampled page within Y (0FEFD000, Y starts 0FEFC000) has 2560 nonzero bytes,
+maximum 237. Samples cover only the first page of each upload chunk, not every entire plane.
+The output's initial CPU upload at 0FED0000 is zero; this does NOT show the GPU resolve is zero.
+No sampled evidence for the E0 4KB mismatch. GPU texture conversion, shader output and resolve
+contents remain unverified.
+
+Prepared a separate opt-in --graw_readback_video=true diagnostic in the same patch. At 1x,
+reads back shared GPU memory after 160-pitch RGBA resolves numbered 1, 30 and 90. Logs full
+raw-range hash and per-byte-lane nonzero/max counts; includes tiled padding, so nonzero bytes
+alone do not prove visible pixels. Uses existing readback allocation/barrier/queue-wait pattern;
+never writes readback into guest memory. GPU stalls can change timing. Not built/tested yet.
+
+### GPU resolve readback probe built and installed
+User approved build. Plugin-only build passed; all 108 runtime imports available and readback
+marker verified. Patch reverse-apply check and repository audit passed. Installed after checking
+no GRAW process; prior staging-only DLL saved as rexgpu-xenosrd.dll.before-gpu-readback.
+Installed SHA-256: 59DAFD98A62EA039326AD7BF12C2B31D9E32545DCBE13D889FCF728D438AA6FD.
+No game launched yet. Next approved test command:
+`pwsh -NoProfile -File tools/launch.ps1 -Windowed -Scale 1 "-Extra:--graw_trace_rtt_max_width=200 --graw_readback_video=true"`.
+
+## GPU readback result: resolved data is NOT all black (08:05 run)
+User reports Cross-Com still black while it is visible. Log:
+port/logs/run-20261024-080432~grawyeti-080447.log. No game was stopped by the agent.
+At 1x the three GPU readbacks of output physical 10C7F000 (81920-byte tiled range) show:
+
+| Resolve sample | Hash | Nonzero byte lanes | Maximum byte lanes |
+|---|---|---|---|
+| 1 | 6C5EB2BF33BE206C | 19200/19200/19200/19199 | 255/242/231/236 |
+| 30 | 21F81D6814BBF502 | 19200/19200/19200/19197 | 255/250/229/242 |
+| 90 | 66F048943A0314A2 | 19200/19200/19200/19200 | 255/233/225/231 |
+
+160*120 is 19200. Substantial changing data exists in GPU shared memory immediately after
+resolve, despite the initial CPU contents being zero. This overturns the earlier inference
+that a fresh texture reload necessarily meant the resolve was itself black. These are raw
+counts including padding, NOT an inspected/untiled picture, so correct video colours/content
+are not yet proven. Readback stalls can affect timing; black remained visible in this run.
+
+The following HUD bind uses the SAME physical 10C7F000, 160x120, format 6, tiled, pitch 160,
+scaled 0, swizzle A0A, outdated_mask 1; raw fetch is
+8142C802 10C7F086 000EE09F 01281414 00000003 00000210.
+Next localize between resolved shared memory and displayed HUD: inspect converted host texture
+contents and final HUD pixel shader, samplers, constants, blend state and UVs. Prefer one
+RenderDoc frame or bounded post-texture-load readback plus HUD-draw trace. Do not treat bind/
+reload logs alone as proof the converted host texture or descriptor is correct.
+
+### Converted host texture inspection prepared and launched (08:08)
+User authorized build and launch. Added --graw_readback_texture=true: copies subresource 0 of
+160x120 R8G8B8A8 host textures after conversion/copy, on eligible loads 1, 30 and 90. Dedicated
+readback buffers are retained until GetCompletedSubmission reaches their submission; no wait
+or submission reset inside the draw. Excludes row padding from RGBA counts/hash, writes RGB PPM
+images to local logs/graw-converted-<physical>-<sample>.ppm (before SRV swizzle, alpha counted
+but not stored in PPM). Only maps completed buffers; restores original texture resource state.
+Build and 108 runtime-import checks passed; patch reverse-apply and repository audit passed.
+Previous DLL backed up as rexgpu-xenosrd.dll.before-texture-readback. Launched at 1x with trace
+and converted-texture readback, WITHOUT the synchronous resolve readback option. Front-end log:
+port/logs/run-20261024-080834.log. Awaiting campaign clip, then inspect PPMs and matching log.
+
+## Converted texture confirmed: recognizable Cross-Com image (08:18 run)
+User reports Cross-Com still invisible/black on screen. Campaign log:
+port/logs/run-20261024-080834~grawyeti-081749.log.
+Converted resource at physical 10C7F000 is DXGI format 27 (R8G8B8A8_TYPELESS).
+Sample 1 is all zero, but samples 30 and 90 contain changing, recognizable Cross-Com character
+images (face, goggles, headgear and background). Both PPMs were decoded and visually inspected.
+Sample 30 RGBA nonzero counts: 19197/19200/19200/19200; sample 90: 19200 in every channel.
+Local captures: port/logs/graw-converted-10C7F000-{1,30,90}.ppm; inspection PNGs alongside.
+These files are private/ignored and must never be committed.
+
+This is stronger than raw resolve statistics: the actual converted host texture contains the
+video. Exact colour/channel correctness is not yet established (capture is before SRV swizzle),
+and the first sampled load is black, but later loads are clearly populated. The probe is
+asynchronous and does not flush submissions inside a draw. User still sees a black panel.
+
+Next investigate final HUD consumption: SRV component mapping and descriptor binding, the actual
+HUD draw's PS/hash and all sampler bindings, constants, blend/alpha/depth state and UVs. Compare
+the working menu video with Cross-Com. Do not restart decoding/allocation/resolve speculation
+without new contradictory evidence. No fix identified; game left untouched.
+
+### Final HUD-draw probe built/launched (08:30; result pending)
+--graw_trace_hud=true records candidate final draws using format-6 RGBA textures at 160x120
+or 1280x720, limited to three per PS hash/base/size. Trigger is a used sampler, not the old
+incorrect D3DTexture header decode. Logged immediately before draw emission after binding
+updates: VS/PS microcode hashes, used sampler mask, bindless mode, PS constant-buffer address,
+all first 16 fetch slots plus any higher used slots, cached host resource pointers/descriptor
+indices and swizzles, used pixel float constants and blend/depth/scissor/stencil state.
+It captures successful draw paths, not all early pipeline skips; raw vertex/UV data and actual
+constant-buffer contents are not dumped. Descriptor logs show cached binding identities, not
+an independent GPU descriptor-heap readback. These limits matter when interpreting the trace.
+User asked to finish this test before committing/pushing progress for Claude. Build, runtime
+import verification, marker check, patch reverse-apply and repository audit passed. Previous
+DLL saved as rexgpu-xenosrd.dll.before-hud-probe. Launched 1x with HUD trace and converted-texture
+capture, no synchronous GPU resolve readback. Front-end log port/logs/run-20261024-083033.log.
+Await campaign menu and Cross-Com, then inspect logs and record outcome before push.
+
+## HUD comparison and scoped depth diagnostic (2026-10-24)
+Campaign log run-20261024-083033~grawyeti-083057.log: user confirms black Cross-Com;
+screenshot also shows patterned green/blue HUD border and lower-left panel corruption.
+Menu video (1D735000,1280x720) and Cross-Com (10C7F000,160x120) use the same PS
+3445071A7FACCDE5 and VS 163102E6668FF616, slot0, used mask1, bindless, swizzle A0A.
+No used PS float constants logged. Menu descriptor168, video descriptor501.
+Depth control differs: menu 00700760, Cross-Com 00700762 (bit1 z_enable).
+This is a lead, not a root cause. Converted texture samples30/90 again contain video.
+
+User approved a build and launch of --graw_video_no_depth=true. Diagnostic matches BOTH
+shader hashes above and slot0 type2 format6 160x120. Clears normalized host z_enable and
+z_write_enable before shader modifications/render-target/pipeline setup; guest registers
+unchanged, stencil unchanged, default off. Logs first three overrides including address and
+before/after depth. Plugin build passed; patch reverse check passed. Installed campaign DLL,
+previous version backed up as .before-depth-test. Launched 1x with --graw_trace_hud=true,
+front log port/logs/run-20261024-083616.log. Runtime result pending. This is not a permanent fix.
+
+### Scoped depth-disable result: FAILED (08:36 run)
+User reports Cross-Com came up but remains black. Campaign log:
+port/logs/run-20261024-083616~grawyeti-083633.log.
+At 08:36:53.790/.805/.815 the override logs physical10C7F000 depth00700762 -> 00700760.
+Subsequent aggregate counts confirm it continued matching. Thus the diagnostic did execute;
+simple depth rejection of this identified HUD draw is not sufficient to explain the symptom.
+Stencil, clipping/UVs, descriptor contents/indexing, blending and later overdraw remain open.
+No permanent fix. Next inspect an actual frame's draw output and subsequent pixel history,
+preferably RenderDoc, or bounded after-HUD-draw readback plus vertex/descriptor inspection.
+Game not stopped. Latest installed DLL is diagnostic; flag defaults off. Source patch retained.

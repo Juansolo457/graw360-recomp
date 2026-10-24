@@ -1028,3 +1028,52 @@ video), the following HUD draws and the guest's RB_BLENDCONTROL0 writes were log
   back chain, `Load32(Load32(r1) - 8)`, because hooks can't read LR. It shows which values the
   engine passes, and from which engine code. Needs a port-yeti build, which also restores the
   stock renderer DLL.
+
+### Blend-setter probe result (2026-10-24)
+
+The port-yeti run with `--graw_debug_blend=true`, played until a narration video panel showed
+(campaign log `port/logs/run-20261024-103146~grawyeti-103205.log`, kept private), logged 337
+distinct (field, value, caller, caller's caller) tuples.
+
+- **Every factor value the engine passed:**
+
+  | Field | Values seen |
+  |---|---|
+  | SrcBlend | 1 One, 6 SrcAlpha, 8 DestColor |
+  | DestBlend | 0 Zero, 1 One, 4 SrcColor, 6 SrcAlpha, 7 InvSrcAlpha |
+  | BlendOp | 0 Add only |
+  | SrcBlendAlpha / DestBlendAlpha / BlendOpAlpha | 1 / 0 / 0, once, from the D3D reset path (`824DE2D4`) |
+  | SeparateAlphaBlendEnable | 0 only |
+
+- **The engine never asks for the factors Canary draws the overlays with.** DestBlend 5
+  (InvSrcColor) never appears, and neither does SrcBlend 0 (Zero). So One/InvSrcColor and
+  Zero/InvSrcColor are never requested. The only SrcBlend 1 + DestBlend 1 (One/One) comes from
+  the 3D pass code (`sub_8217FAD8`, the frame's pass loop), not from the HUD.
+- **No other path writes the blend state.** Every store to the blend shadow (device+11448)
+  and to the per-target values (device+11640/11672/11676/11680) in the generated code is
+  inside the eight hooked setters. The engine reaches them only through the render-state
+  table (no direct `bl` to a setter). The GPU register value 0x07060706 is therefore what the
+  engine asked for.
+- **Conclusion:** the wrong blend is decided in engine code before D3D. The HUD overlay path
+  never selects its "screen"/"multiply" modes, and falls back to plain alpha blending. In
+  Canary the same guest code does select them, so something upstream differs: a mistranslated
+  instruction, or a value (material/HUD data, a flag) that reads differently in the recomp.
+- **Callers seen** (return address → containing function), for the next step:
+
+  | Values | From | Function |
+  |---|---|---|
+  | 6/7, Dest 1 | `82140820` ← `821F3CD4` | `sub_82140180` ← `sub_821F3CC0` |
+  | 6/7 | `821B9550` ← `8234FCB8` | `sub_821B8FF8` ← `sub_8234FB00` |
+  | 6/7 | `8211A548` ← `821864B8` | `sub_82119858` ← `sub_82186400` |
+  | 6/7, Dest 1 | `8217DA70` ← `82180590` | `sub_8217DA00` ← `sub_8217FF90` |
+  | 8/4, 1/0, 6/1, 6/7, 1/1 | `8217FDB4` ← `82180014` | `sub_8217FAD8` ← `sub_8217FF90` |
+  | 8/4 | `82186718` ← `821F3BBC` | `sub_82186400` ← `sub_821F3A90` |
+
+  The back chain gives the caller of the setter's caller. The engine calls blend states
+  through a state-cache object (`*(0x82658034)+4`, vtable slots 136/140/144/...), so the real
+  decision is one or two frames above these addresses.
+- **Next probe (proposed):** tie the guest-side blend call to the overlay draws themselves.
+  Hook the D3D draw entry used for the HUD sprites (4-vertex, vertex colour 0xFF000000), log
+  the blend shadow and a 6-frame back chain per such draw, plus the last SrcBlend/DestBlend
+  caller. That names the HUD renderer function, whose blend-mode switch can then be compared
+  with its PowerPC.

@@ -130,6 +130,22 @@ includes = []
 0x82502C90 = {}  # qsort comparator, after a bl
 0x823E2F90 = {}  # round 3: getter, tail-called from the new thunk at 0x823D3A10
 
+# Jump tables the analyser reads wrongly (tools/check_switch_tables.py audits all 388). The HUD
+# sprite blend switch in sub_821B8FF8 (blend mode byte at sprite+64, 26 modes) was generated as
+# `switch (r8)` with one case: r8 is always 0 there, so every HUD sprite drew SrcAlpha/InvSrcAlpha.
+# The Cross-Com and narration overlays need One/InvSrcColor, Zero/InvSrcColor and One/One, and
+# drew opaque black instead (#2; also the HUD border static, #1). docs/CROSSCOM.md, "Root cause".
+[[entrypoint.switch_tables]]   # in sub_821B8FF8, table 821B91E0
+address = 0x821B91DC
+register = 7
+labels = [
+  0x821B924C, 0x821B9248, 0x821B9258, 0x821B9264, 0x821B9274, 0x821B9284,
+  0x821B9280, 0x821B9290, 0x821B92A4, 0x821B92A0, 0x821B92B0, 0x821B92C4,
+  0x821B92C0, 0x821B92D0, 0x821B92E4, 0x821B92E0, 0x821B92F0, 0x821B9300,
+  0x821B930C, 0x821B9318, 0x821B9324, 0x821B9330, 0x821B924C, 0x821B924C,
+  0x821B924C, 0x821B924C,
+]
+
 # Keep FP exceptions masked across the game's FPSCR writes (src/fpscr_guard.cpp): one hook
 # before each mtfsf, the C runtime's floating-point environment functions.
 [[entrypoint.midasm_hook]]
@@ -280,3 +296,35 @@ registers = ["r3", "r4", "r1"]
 name = "GrawBlendSeparate"       # SeparateAlphaBlendEnable (bit 30)
 address = 0x824CE480
 registers = ["r3", "r4", "r1"]
+
+# Per-draw blend probe (src/blend_probe.cpp, #2; --graw_debug_blend): one instruction in, after
+# `mflr r12`, so r12 holds the caller. SetTexture arms on a 160x120 bind; the draws log.
+[[entrypoint.midasm_hook]]
+name = "GrawDrawSetTexture"      # D3D SetTexture(device, sampler, texture), after mflr
+address = 0x824C6F8C
+registers = ["r3", "r4", "r5"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawDraw4578"
+address = 0x824C457C
+registers = ["r1", "r3", "r4", "r5", "r12"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawDraw4838"            # DrawPrimitiveUP
+address = 0x824C483C
+registers = ["r1", "r3", "r4", "r5", "r12"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawDraw48C0"
+address = 0x824C48C4
+registers = ["r1", "r3", "r4", "r5", "r12"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawDraw4BF8"
+address = 0x824C4BFC
+registers = ["r1", "r3", "r4", "r5", "r12"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawDraw4E38"
+address = 0x824C4E3C
+registers = ["r1", "r3", "r4", "r5", "r12"]

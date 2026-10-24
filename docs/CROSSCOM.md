@@ -1,5 +1,7 @@
 # Cross-Com and video panels: plan and handoff (#2)
 
+> **FIXED 2026-10-24: a mistranslated jump table.** See "Root cause: the HUD sprite blend switch" at the end.
+
 Written 2026-10-24 for the next model picking this up. Read this, then the "Cross-Com" section
 of [FINDINGS.md](FINDINGS.md) for the raw evidence and [HANDOFF.md](HANDOFF.md) for building and
 running. Issue: [#2](https://github.com/Juansolo457/graw360-recomp/issues/2).
@@ -1077,3 +1079,58 @@ distinct (field, value, caller, caller's caller) tuples.
   the blend shadow and a 6-frame back chain per such draw, plus the last SrcBlend/DestBlend
   caller. That names the HUD renderer function, whose blend-mode switch can then be compared
   with its PowerPC.
+
+
+## Root cause: the HUD sprite blend switch (FIXED 2026-10-24)
+
+- **Where:** `sub_821B8FF8` queues one HUD sprite. It reads the sprite's blend mode, a signed
+  byte at sprite+64 (0-25), and jumps through a 26-entry table at `0x821B91E0` (the `bctr` is at
+  `0x821B91DC`, the table follows it inline). Each case sets the Src/Dest factors that go into
+  the HUD batch record (+4/+6), which `sub_821B8B48` passes to the state cache's SrcBlend
+  (slot 168) and DestBlend (slot 172) when the batch flushes.
+- **The bug:** ReXGlue generated `switch (ctx.r8.u32)` with one case. The PowerPC indexes the
+  table with r7 (`extsb r7,r4; cmplwi cr6,r7,25; rlwinm r0,r7,2,0,29; lwzx r0,r12,r0`). r8 is
+  `mr r8,r31` = 0 there, so every sprite took case 0, SrcAlpha/InvSrcAlpha. The other 25 cases
+  (`0x821B9248`-`0x821B9338`) were never translated.
+- **Why it made the panels black:** the overlays Canary draws with One/InvSrcColor,
+  Zero/InvSrcColor and One/One have vertex colour (0,0,0,1). With those factors a black sprite
+  leaves the screen unchanged; with SrcAlpha/InvSrcAlpha it paints opaque black over the video.
+- **The 26 modes** (Src/Dest, Xenos factors; r8, the other value each case sets, goes to
+  batch record +1):
+
+  | Mode | Factors |
+  |---|---|
+  | 0, 1, 22-25 | SrcAlpha / InvSrcAlpha |
+  | 2 | One / Zero |
+  | 3 | One / InvSrcAlpha |
+  | 4 | Zero / InvSrcAlpha |
+  | 5-7 | InvSrcColor / InvSrcColor |
+  | 8-10 | DestColor / One |
+  | 11-13 | Zero / InvSrcColor |
+  | 14-16 | One / InvSrcColor |
+  | 17 | One / One |
+  | 18 | SrcColor / InvSrcColor |
+  | 19 | InvDestColor / InvSrcColor |
+  | 20 | Zero / SrcColor |
+  | 21 | DestColor / SrcColor |
+
+- **The fix:** an `[[entrypoint.switch_tables]]` override in `port-yeti/grawyeti_manifest.toml`
+  (address `0x821B91DC`, register 7, the 26 labels from the image). The regenerated code
+  switches on r7 with all 26 cases.
+- **Why the audit missed it:** `tools/check_switch_tables.py` sized each table from the
+  generated cases, and didn't check the register. It now also checks that the switch register is
+  the one the PowerPC scales and loads with, and that the case count matches the `cmplwi` bound.
+  Over all three programs (388 + 466 + 466 switches) this is the only switch it flags.
+- **How it was found:** the per-draw probe (`port/src/blend_probe.cpp`, `--graw_debug_blend`)
+  hooks SetTexture and the five D3D draw functions one instruction in, after `mflr r12`, so r12
+  is the exact caller. It catalogued every draw site with an 8-frame back chain and the last
+  blend setter. All HUD sprite draws went through `sub_821B8B48`, and their blend was set in
+  `sub_821B8FF8`, whose listing showed the one-case switch.
+- **Verified:** the autopilot run (`tools/smoke.ps1 -Project port-yeti -FreshProfile -Autopilot
+  tools/autopilot/campaign-newgame.txt`) before the fix shows both opaque black boxes in the
+  tutorial (Cross-Com top left, narration top right). After the fix, neither box appears; the
+  Cross-Com shows its animated icon over translucent static, with the world behind it.
+- **Still to check:** the narration video's own content in the top-right panel, by a player.
+  Any other HUD effect that uses these modes may change too: #13 (screen black under fire) and
+  #3 (tactical map) are worth retesting. #1 (the HUD border and the static's own texels look like
+  coloured noise) is NOT fixed by this; that's a texture problem, not blending.

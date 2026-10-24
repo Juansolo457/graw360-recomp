@@ -3,7 +3,7 @@
 Read [PLAN.md](PLAN.md) for the phases and exit criteria and [FINDINGS.md](FINDINGS.md) for the
 disc and executable facts. This file is the state, the build/run detail and where things live.
 Update it at the end of every session; the next model starts here, not from chat history.
-**Top task #2 (black video panels) is PAUSED and still the #1 issue: read "Paused" at the end of [CROSSCOM.md](CROSSCOM.md) first. The campaign renderer DLL may still be an experiment; restore `rexgpu-xenosrd.dll.stock` before normal play.**
+**#2 (black video panels) is FIXED (2026-10-24): a mistranslated jump table in the HUD sprite blend switch, see "Root cause" at the end of [CROSSCOM.md](CROSSCOM.md). Retest #13 and #3 with it; #1 (border noise) is a separate texture bug. The campaign renderer DLL may still be an experiment; restore `rexgpu-xenosrd.dll.stock` before normal play.**
 
 ## Where it stands
 **The game plays.** The front end hands over to the campaign and to Instant Action, as the
@@ -19,8 +19,8 @@ fine. At a 240 Hz guest refresh, the campaign's frame rate is "fantastic" in the
 
 Rendering in the campaign is the open front. These issues are filed on
 [GitHub](https://github.com/Juansolo457/graw360-recomp/issues):
-- **#2 video panels black (Cross-Com, narration panel)**: top priority, see
-  [CROSSCOM.md](CROSSCOM.md).
+- **#2 video panels black (Cross-Com, narration panel)**: fixed 2026-10-24 (switch override in
+  the campaign manifest), see [CROSSCOM.md](CROSSCOM.md).
 - **#3 tactical map empty**: next priority.
 - #1 HUD border, #4 window checkerboard, #5 speckle and shadows, #6 textures and bump maps, #7
   allies' weapons, #13 black screen under fire.

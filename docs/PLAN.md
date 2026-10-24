@@ -57,7 +57,7 @@ Disc listed and extracted with `tools/xdvdfs.py`, both executables inspected
 (`tools/xexinfo.py`), the main image decrypted (`tools/xex_basic_decrypt.py`) and its imports
 checked against the SDK (`tools/xeximports.py`). Results in [FINDINGS.md](FINDINGS.md).
 
-### Phase 1: first translation and build — done (2026-10-23)
+### Phase 1: first translation and build â€” done (2026-10-23)
 1. `rexglue init` scaffold in `port/` (done), `tools/build.ps1` runs codegen then the build.
 2. **Manifest iteration:** the analyser's `UnresolvedCall` errors become `[entrypoint.functions]`
    entries after checking each target is a function start (`powerpc-none-elf-objdump` on the
@@ -66,7 +66,7 @@ checked against the SDK (`tools/xeximports.py`). Results in [FINDINGS.md](FINDIN
    ~100 MB of C++ and a shorter compile).
 - **Exit:** `graw.exe` links; codegen reports no analysis errors or warnings.
 
-### Phase 2: boot to Press Start — done (2026-10-23)
+### Phase 2: boot to Press Start â€” done (2026-10-23)
 Reached in round 5: the start screen, and the campaign as far as its loading screen. The two
 real blockers were not in this list: missed function entries (205 in all) and a jump table the
 analyser misread (FINDINGS.md, "Round 5"). The list below stays as the checklist for later stops.

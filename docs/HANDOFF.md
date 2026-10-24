@@ -39,8 +39,9 @@ What is in place:
 - **Video probe:** `bink_probe.cpp`.
 
 ### Next steps
-1. [CROSSCOM.md](CROSSCOM.md), its plan, step 1: find the code that renders the video into its
-   texture and resolves it. This needs no build.
+1. [CROSSCOM.md](CROSSCOM.md): step 1 (the static trace of the render-to-texture path) is done,
+   2026-10-24. Next is step 2, the render-target/resolve probe, and the hand-off section there
+   says how. The first build needs the user's OK.
 2. The tactical map (#3), which is likely the same render-to-texture path.
 3. FOV 90 (#14): find the campaign's projection setup, then add a hook and a launch option.
 

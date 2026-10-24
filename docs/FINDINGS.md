@@ -278,3 +278,69 @@ Two related things did show up:
   video's size, `sub_82194720(164, 0)` then `sub_821947D8(tex, w, h, 4, 0, 1, 1, 0)`, kept at
   video+68. The video object's vtable is `0x8209A5CC` (`sub_82171A70` sets it; draw = slot 1).
   Plan and next steps: [CROSSCOM.md](CROSSCOM.md).
+
+### The render-to-texture path, found statically (2026-10-24, no build)
+Read from `private/xex/yeti.bin` with the SDK's `powerpc-none-elf-objdump` and a caller index
+built from the generated code. Every address is in Yeti_Final_Xenon.exe; "renderer" is the
+engine's renderer object at `*0x8265803C` (`lis r11,-32154; lwz r3,-32716(r11)`), whose +4 is
+the D3D device.
+
+- **The per-frame video pass is `sub_821D6838`** (reached through a function-pointer table,
+  entry at `0x820A0B60`; no direct caller). Under a critical section it calls `sub_82140840`,
+  walks the global list at `0x820F13F0` (node+0 = first, node+4 = next), calls
+  `sub_821BB8F0(node)` for each, then `sub_821408A8`.
+- **`sub_821BB8F0(node)` renders one video into its texture.** node+12 = the video object,
+  node+16 = a table of 32-byte entries whose entry (index node+21, clamped to the count at +2)
+  must have byte +77 set, or nothing happens. Then, with `tex = video+68`:
+  1. `sub_8211E750(renderer, tex+40, 0, 0)`: push the render target (below).
+  2. `video->vtable[1](video, tex)` = `sub_823400A0`: the Bink draw (`sub_82340EE8`) or Clear.
+  3. `sub_82194CC0(tex, 1, 0, 1)`: resolve (below).
+  4. `sub_8211E7E8(renderer)`: pop and restore the previous render target.
+  Flag byte tex+33 (0 for the video) selects a cube/array variant (`sub_821958A8`) for step 1.
+- **The engine texture (52 bytes, from `sub_82194720`):** +0 refcount, +2 flags, +4 the D3D
+  texture (a 52-byte `D3DTexture`; its 24-byte fetch constant is at D3DTexture+28), +8 size,
+  +12/+14 width/height, +28/+30 again, +32 depth format, +33 cube flag, +36 the last resolved
+  surface, **+40 the render-target descriptor** (180 bytes): rt+0 color surface, rt+4 depth
+  surface (each an engine wrapper whose +4 is the D3D surface), rt+8 mode byte (0 here; 1 = a
+  sub-rect resolve, >=2 = tiled with a clear), rt+12.. a rect, rt+172..178 = viewport rect
+  (0, 0, w, h). +44 and +48 are optional depth textures.
+- **`sub_821947D8(tex, w, h, fmt, depthFmt, ?, 1, mode)`**: `sub_8211EBC8` creates the D3D
+  texture (`sub_8211D168` → `0x824C6A98`, 1 level, usage 3) when mode is 0, then
+  `sub_8211DC18(renderer, rt, w, h, fmt, depthFmt, 0, 1, ...)` creates the EDRAM surfaces:
+  width and height rounded up to 32 (160x120 → 160x128), `sub_821147A8` allocates the EDRAM
+  tiles, `sub_8211D080` → `0x824C6BB8` creates the color surface and `0x824C6EC0` reads its
+  desc. A depth surface is made only when depthFmt != 0; the video passes 0. So every texture
+  made by `sub_821947D8` is a render-target texture, and video+68 is one.
+- **Engine formats** (`sub_8211F458`, a 39-case switch at `0x8211F47C` on fmt-2):
+  2 = `0x28280144` R5G6B5, 3 = `0x28280143` X1R5G5B5, **4 = `0x28280186` D3DFMT_X8R8G8B8
+  (tiled)**, 5 = `0x18280186` A8R8G8B8, 31 = `0x1A20015A` A16B16G16R16, 32 = `0x1A22AB60`
+  A16B16G16R16F, 20 = `0x2D20AB4A` (the depth-stencil format; name unverified). So the
+  Cross-Com texture is a 160x120 X8R8G8B8 render-target texture, no depth, one level.
+- **Push render target, `sub_8211E750` → `sub_8211E870(renderer, rt)`:** keeps a stack of
+  180-byte copies at renderer+15052 (count at +0). `sub_8211E870` calls D3D
+  `SetRenderTarget(device, 0, rt+0->+4)` = `0x824D1188`, `SetDepthStencilSurface(device,
+  rt+4->+4 or 0)` = `0x824D0FB8`, and when rt+8 < 2 sets the viewport from rt+172
+  (`sub_82113880`); when rt+8 > 1 it clears (`0x824D2868`). `sub_8211E7E8` pops the stack and
+  calls `sub_8211E870` on the previous entry.
+- **Resolve, `sub_82194CC0(tex, clearRT, rect, flag)`:** with tex+44 == 0 and tex+48 == 0 it
+  calls `sub_82114588(renderer, tex, rt, 1, 0, 0, 0, rect=0)`. That reads the D3D texture's
+  format (`0x824C6A88`, level 0), builds the flags (bit 0 → `0x100`
+  D3DRESOLVE_CLEARRENDERTARGET, bit 1 → `0x200`, A16B16G16R16 → `| 0xEC000000`, float formats →
+  `| 4`), and because rt+8 != 1 calls **`sub_824D2CA0(device, 0x100, NULL, D3Dtex, NULL, 0, 0,
+  clear colour, 0.0, 0, 0)`**, the public `D3DDevice_Resolve` (it iterates the device's tiling
+  rects at device+12996/+13000 and calls the per-rect `sub_824D1960`, which writes
+  RB_COPY_CONTROL `0x2318`). Flag bit 3 (not set here) would add a Clear afterwards.
+- **The HUD side:** `sub_821BBAB0(widget, ...)` stores `video+68` into a material texture slot
+  (28-byte entries at table+72, slot+12 = the engine texture), so the HUD draws it through the
+  generic material path with the fetch constant from D3DTexture+28. The HUD draw call itself
+  was not isolated statically; the probe in CROSSCOM.md finds it by texture address.
+- Other users of the same begin/draw/resolve path, for cross-checking: `sub_821A4040`
+  (`sub_821A3C28`, `sub_821A6440`), `sub_821A5110`, `sub_8214DED8` (`sub_821F3680/38D0/3A90`),
+  `sub_82120BA8`, `sub_82140090`. `sub_82194CC0`'s other callers are the scene renderer
+  (`sub_82119858` and its helpers, under `sub_82186400`).
+
+**What this means:** the game renders the Bink frame into a real EDRAM render target and
+resolves it into a tiled X8R8G8B8 texture that the HUD samples. Nothing in that path is
+video-specific; it is the engine's standard render-to-texture, so #3 (map) and #13 probably
+share it. The open question is which of the three steps the renderer drops: the draw into the
+160x128 surface, the resolve into the texture, or the HUD's fetch of the resolved pages.

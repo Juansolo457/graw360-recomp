@@ -59,34 +59,47 @@ C++.
 | `sub_823409C8` | start-up: compiles Bink's three shaders from HLSL text at `0x82041CD0` / `0x82041EF8` / `0x82042318` |
 | `*0x828F18B0` | the D3D device. Its vtable-style function pointers sit at offsets 136-504 |
 
-Not yet found: **the code that binds the video+68 texture as a render target, calls vtable slot
-1, and then resolves**, and the HUD draw that samples the result. They are the next step.
+### The render-to-texture path (found 2026-10-24, static, see FINDINGS.md for the evidence)
+| Address | What it is |
+|---|---|
+| `sub_821D6838` | the per-frame video pass (function-pointer table entry `0x820A0B60`): walks the list at `0x820F13F0` and calls `sub_821BB8F0` per node |
+| `sub_821BB8F0(node)` | **renders one video into its texture.** node+12 = video, `tex = video+68`. Push RT `sub_8211E750(renderer, tex+40, 0, 0)` → `video->vtable[1](video, tex)` (`sub_823400A0`) → resolve `sub_82194CC0(tex, 1, 0, 1)` → pop `sub_8211E7E8(renderer)` |
+| `sub_8211E870(renderer, rt)` | binds a render-target descriptor: D3D `SetRenderTarget(dev, 0, rt+0->+4)` = `0x824D1188`, `SetDepthStencilSurface(dev, rt+4->+4)` = `0x824D0FB8`, viewport from rt+172 (`sub_82113880`). The RT stack is at renderer+15052 |
+| `sub_82194CC0` → `sub_82114588` | the resolve: `D3DDevice_Resolve` = **`sub_824D2CA0(dev, 0x100, NULL, D3Dtex, NULL, 0, 0, clear, 0.0, 0, 0)`** at `0x821146DC`; the per-rect worker is `sub_824D1960` |
+| `sub_821947D8` | engine format 4 = `D3DFMT_X8R8G8B8` `0x28280186` (tiled); args `(tex, w, h, fmt, depthFmt=0, ?, 1, mode=0)`. Every texture it makes gets EDRAM surfaces at tex+40 (180-byte descriptor), sized up to 32: 160x128 for 160x120 |
+| engine texture | 52 bytes: +4 D3DTexture (fetch constant at D3DTexture+28), +12/+14 w/h, +33 cube flag, +40 RT descriptor (rt+0 color surface, rt+4 depth, rt+8 mode, rt+172 viewport rect) |
+| `sub_821BBAB0` | HUD side: stores video+68 into a material texture slot (slot+12), so the HUD samples it through the generic material path |
+
+So the whole chain exists and runs: bind the 160x128 EDRAM target, Bink draws a pixel-space
+quad into it, resolve to the tiled X8R8G8B8 texture, restore, and the HUD samples that texture.
+No step is video-specific. What is not known is which step the renderer loses.
 
 ## Plan
 Work in order. Every step that builds or opens a game window needs the user's OK first (see the
 rules below).
 
-### 1. Static: find the render-to-texture path (no build)
-- Find the readers of video+68: `lwz rX,68(rY)` where rY is a video object, in functions that
-  also call through the vtable at +4 (`lwz r11,4(r11)` / `mtctr` / `bctrl`). Start from
-  `sub_821720C8` and its callers, and from the Yeti texture class around `sub_82194720` and
-  `sub_821947D8`.
-- In that path, identify the guest D3D calls that set and restore the render target
-  (`SetRenderTarget`/`SetDepthStencilSurface`), the viewport, and the `Resolve` (on the 360 a
-  render target lives in EDRAM and only reaches the texture through a resolve).
-- Decode engine format 4 and the flags `1, 1` in `sub_821947D8`: the D3D format and whether it
-  is a render target, tiled or linear.
-- Find the HUD draw that samples video+68's texture, and which fetch constant it uses.
+### 1. Static: find the render-to-texture path (done 2026-10-24)
+Done, see the table above and FINDINGS.md. Not done statically: the exact HUD draw call that
+samples the texture (the probe finds it by address).
 
 ### 2. Probe: what the renderer sees (one build, ask first)
-Add midasm hooks, as in `bink_probe.cpp` (port-yeti manifest, off unless a cvar is set), at the
-calls found in step 1. Log:
-- the render-target surface, its EDRAM base, pitch, format and MSAA when the Bink draw runs;
-- the `Resolve` source rectangle and destination (texture base address, pitch, format,
-  exponent bias);
-- the guest address and format of the texture the HUD then samples.
+Add midasm hooks, as in `bink_probe.cpp` (port-yeti manifest, off unless `--graw_debug_rtt`
+or similar is set). Hook addresses and the registers live there:
 
-Then compare against the stock renderer's resolve path. Either:
+| Hook at | Where | Registers | Log |
+|---|---|---|---|
+| `0x821BB988` | `sub_821BB8F0`, after the push, before the virtual draw | r29 = node, r31 = tex | tex, tex+4 (D3DTexture), tex+12/+14, tex+40 (rt), rt+0/+4 (surfaces; their +4 = D3D surface), rt+8, rt+172..178. Only for tex == the Cross-Com's video+68 (video `0x420E39E0` last run; read it from node+12 → +68 rather than hard-coding) |
+| `0x8211E8A8` | `sub_8211E870`, the `bl` to `SetRenderTarget` | r3 = device, r5 = D3D color surface | the surface's header dwords (dump 40 bytes; the EDRAM colour info sits after the 20-byte D3DResource header: base tile, pitch, format, MSAA) |
+| `0x821146DC` | `sub_82114588`, the `bl` to `D3DDevice_Resolve` | r3 = device, r4 = flags, r6 = D3DTexture | flags, and the 6-dword fetch constant at D3DTexture+28: base address, pitch, size, format, endian, tiled. Also log at the function's `blr` to prove it returned |
+| `0x821BB9B4` | `sub_821BB8F0`, after the resolve | r31 = tex | a per-second count; pairs each draw with its resolve |
+| the HUD fetch | at a D3D `SetTexture` in the HUD draw, found by matching the D3DTexture pointer logged above (identify the D3D `SetTexture` from the vtable-style device pointers at offsets 136-504 used by `sub_82340EE8`, or by xref of the material slot `sub_821BBAB0` writes) | | the sampler index, the fetch constant, the draw that follows |
+
+Decode the fetch constant with the Xenos definitions in the SDK headers
+(`xenos.h`, `GPUTEXTURE_FETCH_CONSTANT`) rather than by hand. A hook that reads guest memory
+must check the page is committed (`shader_debug.cpp`, `Readable`).
+
+With the probe lines in `port/logs/run-*~grawyeti-*.log`, compare against the renderer's own
+trace (`--log_level trace` shows resolves and texture uploads with addresses). Either:
 - the resolve never happens or targets another address (a game-side cause: a missed function,
   wrong switch, or an alias the translation got wrong); or
 - the resolve happens but the texture cache never picks it up for the HUD's fetch (a renderer
@@ -106,6 +119,10 @@ stock nightly, so first confirm the bug reproduces there.
   - Resolves to a format or endianness the HUD fetch reads differently.
   - Resolves skipped because the render target was never "used" in the renderer's view, for
     example after a `DrawPrimitiveUP` with the viewport transform off.
+  - The EDRAM surface is 160x128 but the resolve and the viewport are 160x120; a scaled
+    (2x) resolve of a non-tile-aligned height may be clipped or mis-sized. `-Scale 1` tests it.
+  - The resolve flag `0x100` (clear the render target after resolve) with a 0.0 clear value:
+    if the renderer clears before it copies, the texture is black every frame.
 - **Cheap A/B runs** (the user runs them, no build), front end with `-Extra`:
   - `--readback_resolve` was already tried and didn't help.
   - Still to try: `--render_target_path_d3d12 rov`, `--gamma_render_target_as_unorm16=false`,
@@ -116,6 +133,25 @@ The same render-to-texture path may explain other campaign bugs, so check them a
 - the HUD border noise (#1)
 - the empty tactical map (#3, a rendered texture too)
 - the black screen under fire (#13, a full-screen effect)
+
+## Hand-off for the implementing model (2026-10-24)
+Step 1 is done and no code was changed. Your job is steps 2 to 4. In order:
+1. Write `port/src/rtt_probe.cpp` with the five hooks in the step 2 table (copy the pattern and
+   the manifest wiring of `bink_probe.cpp`; one cvar, off by default). Restrict the per-draw
+   logging to the Cross-Com texture, and print the fetch constant decoded.
+2. Ask the user before building (`tools/build.ps1 -Project port-yeti`) and give them the launch
+   line (`tools/launch.ps1 -Windowed "-Extra:--graw_debug_rtt=true"`); they test. Ask for the
+   log file and read it yourself.
+3. Decide game side or renderer side from the log:
+   - no `SetRenderTarget`/`Resolve` lines for the texture: a game-side miss (re-check the
+     function list for `sub_821D6838` and its table, and the switch tables).
+   - lines present and sane: renderer side. Try the cheap A/B runs first (`-Scale 1`,
+     `--render_target_path_d3d12=rov`, `--gamma_render_target_as_unorm16=false`), then step 3
+     with the source-level `port-yeti-nx --nx_renderer xenos` build.
+4. Whatever the fix is, check #3 (map) and #13 (black under fire) afterwards: they most likely
+   use the same `sub_8211E750` / `sub_82194CC0` path (`sub_8214DED8`, `sub_821A4040`,
+   `sub_821A5110` are its other users).
+Record every result in FINDINGS.md and the state in HANDOFF.md before ending the session.
 
 ## Tools added for this
 - `port/src/bink_probe.cpp`: the video-object probe (`--graw_debug_bink=true`). Six hooks in

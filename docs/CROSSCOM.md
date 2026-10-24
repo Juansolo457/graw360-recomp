@@ -259,3 +259,75 @@ At the HUD's `SetTexture` of a video texture, keep a flag, then at the next draw
 
 Compare that between the menu video's draw and the Cross-Com's draw. Also dump the D3DTexture's
 first 64 bytes, to fix the fetch-constant offset.
+
+## Canary comparison history (2026-10-24)
+
+**Final result: Cross-Com works in Canary 9e03494 with depth clamp ON and OFF.**
+The OFF run also has a correct-looking crosshair and tactical map per the user. No recomp
+fix has been made. The preparation/pending entries below are historical; see the last A/B
+entry and HANDOFF.md for the current state.
+
+### Preparation (before tests)
+- User approved downloading Canary, not launching it. Downloaded official release
+  `9e03494`: https://github.com/xenia-canary/xenia-canary/releases/tag/9e03494.
+- Windows archive SHA-256 verified against GitHub's asset digest:
+  `6b8dce0dada1948b6b053eb43c9ead033e560735f224661f7e9ff3bc4e58d2f0`.
+- Extracted under ignored `private/xenia-canary/9e03494/`; portable.txt and an explicit
+  `graw-comparison.toml` override set `[GPU] force_depth_clamp = true`.
+- No emulator launched and no build run. User tests their ISO from
+  `D:\x360-recomps\GRAW 1\` through the front end to the first campaign Cross-Com clip.
+- Pending: compare Cross-Com visibility (also note HUD border and tactical map).
+  If visible, compare Canary GPU code with the local patched SDK; otherwise finish the HUD
+  draw probe. No conclusion about Canary rendering yet.
+
+### Canary first run: campaign handoff failed (2026-10-24)
+User authorized launch. Front end ran, but selecting Campaign closed Canary. Log loads only
+`GAME:\default.xex`; no Yeti module load is recorded. Its tail repeats
+`Execute(82216540): failed to find function` and also reports `Execute(82593CA0)` failures.
+Both addresses exist in the front-end translation. This suggests a failure during the
+handoff/teardown, but the log does not establish its exact cause. No Cross-Com comparison
+was reached. Config still confirms `force_depth_clamp = true`.
+Preserved log and 134-byte launch_data.bin under the ignored Canary directory as
+`frontend-handoff-failed-20261024.log` and `frontend-launch-data-20261024.bin`.
+Proposed next test, pending user launch approval: same ISO and config with
+`--launch_module=Yeti_Final_Xenon.exe` to bypass the front-end handoff. Canary's release source
+and generated config document this option. Direct campaign startup is not yet tested.
+
+### Canary campaign comparison: Cross-Com WORKS (2026-10-24)
+- Direct ISO launch with `--launch_module=Yeti_Final_Xenon.exe` reached campaign.
+  User confirms Cross-Com video displays and the recomp's UI problems appear absent.
+  User also sees twitching/missing environment textures in Canary that are absent in the
+  recomp. This is a reference for specific passes, not evidence to replace the whole renderer.
+- Log confirms Yeti module load, RTX 4090, resolution scale 1x1, and
+  `force_depth_clamp = true`. It also contains invalid GPU upload ranges and failed resolve
+  destination allocations; those messages alone do not identify the Cross-Com cause.
+- Preserved log/config privately as `campaign-crosscom-working-20261024.log/.toml` in
+  `private/xenia-canary/9e03494/`. User's visual observation is the evidence of video visibility.
+- First concrete source difference: Canary 9e03494
+  `src/xenia/gpu/d3d12/pipeline_cache.cc` sets
+  `depth_clip = !clip_disable && !cvars::force_depth_clamp`; SDK 11c330cf
+  `src/graphics/d3d12/pipeline_cache.cpp:1431` only sets `depth_clip = !clip_disable`.
+  SDK source has no force_depth_clamp option. Canary's comment describes passes losing alpha
+  inputs to near-plane clipping in other titles; it is not proof of this game's root cause.
+- Prepared `graw-depth-clamp-off.toml`, identical to the working config except this option is
+  false. Pending user approval: launch the same direct campaign with this config. If Cross-Com
+  goes black, backport the opt-in D3D12 clamp behavior and test in the source-built Xenos path.
+  If it stays visible, continue shader/texture/resolve comparison and HUD draw probe.
+- #1/#3/#13 are not individually verified as fixed; no recomp fix has been tested.
+
+### Lost Odyssey comparison method reference
+User suggested the recent Lost Odyssey recomp. Reviewed freefrank/LostOdysseyRecomp:
+https://github.com/freefrank/LostOdysseyRecomp/blob/main/docs/archive/notes/xenia-render-comparison.md
+and docs/notes/rendering-validation.md. Its historical comparison aligned scenes with Xenia,
+kept original-resolution reference captures, distinguished animation/camera differences, and
+isolated indexing, resolve stride, and material gamma/channel issues. These are methodological
+references, not evidence that Lost Odyssey's specific fixes apply to GRAW. No code copied.
+
+### Canary clamp-off A/B: video still works (2026-10-24)
+User confirms Cross-Com video displays with force_depth_clamp=false. Also reports crosshair
+and tactical map look fixed and the run is smooth. This was Canary, not the recompilation.
+Log/config preserved privately as campaign-clamp-off-working-20261024.log/.toml.
+Depth clamp is therefore not required for the working Cross-Com in this Canary test; do not
+backport it as the presumed #2 fix. Continue comparison of Canary GPU and SDK texture/resolve/
+HUD state paths. User said crosshair, not specifically the HUD border, so #1 remains unverified;
+#13 was not tested. Recomp fixes remain unimplemented/unverified.

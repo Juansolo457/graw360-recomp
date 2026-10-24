@@ -139,3 +139,34 @@ pwsh -NoProfile -File tools/capture_window.ps1 -ProcessName graw  # screenshot e
 Our files are MIT (`LICENSE`, `NOTICE`); ReXGlue is BSD-3-Clause with Xenia's notices; if
 fear-nx's renderer is ever brought in, that directory and any build linking it are GPL-3.0.
 Never commit game data, generated translations, captures or saves. Releases are source only.
+
+## Current #2 handoff after Canary comparison (2026-10-24)
+**Cross-Com works in Xenia Canary 9e03494 with depth clamp ON and OFF.** The user also
+confirmed a correct-looking crosshair and tactical map in the OFF run. These were Canary
+runs, not recompilation builds. No recomp code was changed or built; no fix is claimed.
+Canary also showed environment twitching/missing textures absent in the recomp, so use it
+as a reference for specific passes rather than assuming its entire renderer is preferable.
+
+The older Next steps and HANDOFF-ASTRA.md comparison proposal are superseded by this result.
+The RTT probe already established matching game-side passes for menu and Cross-Com.
+Next: compare Canary 9e03494 GPU code with third_party/rexglue-sdk-nx (11c330cf), especially
+texture cache, resolve, shared-memory invalidation and HUD draw state. Depth clamp is not
+the demonstrated cause. Finish the HUD-draw probe if needed; its D3DTexture+28 fetch decode
+is known wrong. Record evidence in CROSSCOM.md, then propose a targeted fix and ask before
+building. User confirms in game; afterward test #3, #1 and #13 individually.
+
+Canary's front-end-to-campaign handoff failed with function lookup errors. Direct launch of
+Yeti_Final_Xenon.exe from the ISO worked. Local Canary is in ignored
+private/xenia-canary/9e03494/. Configs: graw-comparison.toml (clamp on),
+graw-depth-clamp-off.toml (off). Launch from that directory with:
+
+```powershell
+.\xenia_canary.exe "D:\x360-recomps\GRAW 1\Tom Clancy's Ghost Recon - Advanced Warfighter (USA, Europe) (En,Fr,De,Es,It).iso" --config=graw-depth-clamp-off.toml --launch_module=Yeti_Final_Xenon.exe
+```
+
+Ask before every launch/build/download; never stop the user's game. Logs and config snapshots
+are private, not committed: campaign-crosscom-working-20261024.log/.toml (on),
+campaign-clamp-off-working-20261024.log/.toml (off), frontend-handoff-failed-20261024.log.
+See CROSSCOM.md for details and the Lost Odyssey comparison-method reference. Crosshair
+visibility does not specifically verify the HUD border (#1); under-fire black screen (#13)
+was not tested. The root cause remains unknown.

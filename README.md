@@ -17,8 +17,9 @@ from [Lost Odyssey Recomp](https://github.com/freefrank/LostOdysseyRecomp).
 
 ## Status
 
-**Phase 1: first build.** The disc is mapped, the executable analysed, the project scaffolded
-and the first translation generated. Next milestone: the Press Start screen.
+**Phase 2: booting.** The disc is mapped, the executable analysed and translated; `graw.exe`
+builds and runs the game's start-up until it crashes inside the game's own HLSL shader compiler.
+Next milestone: the Press Start screen.
 
 - [docs/PLAN.md](docs/PLAN.md): the plan to the title screen, phases, exit criteria, risks
 - [docs/FINDINGS.md](docs/FINDINGS.md): what the disc and the executable are

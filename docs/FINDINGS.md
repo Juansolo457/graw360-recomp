@@ -63,5 +63,34 @@ Added to `[entrypoint.functions]` in `port/graw_manifest.toml`. Round 2 result: 
   so Direct3D is initialising), looks for the debug flag file `d:\CompareBackEnds`, then faults:
   `Unhandled guest access violation: read of guest 0x00000008` (a null-object dereference) with
   no stack in the log. Added fear360's crash reporter (`port/src/crash_report.*`) so the next
-  fault names the recompiled function. Round 4 (the two splitters dropped) may already change
-  this: `0x821F116C` is in the same engine region as the crash site's neighbours.
+  fault names the recompiled function. Round 4 (the two splitters dropped) did not change the
+  fault, so the splitters were not its cause.
+
+## Round 4: the first real crash is inside the HLSL compiler (2026-10-23)
+With the two splitters dropped and fear360's crash reporter linked in (`port/src/crash_report.*`),
+the same fault gets a guest stack (`port/logs/crash-20261023-195041.txt`):
+
+| Frame | Function | What it is (strings it references, disassembly) |
+|---|---|---|
+| #0 | `sub_822AC1E8` +0x37BE, generated line `graw_recomp.99.cpp:10890` | the parser's **semantic-action dispatcher**: a `switch` over 300 grammar rules through a 16-bit offset table at `0x82030000` (base `0x822AC2BC`); the rule's values are popped from a list at `8(r30)` into a 16-slot array at `176(r1)` after a `memset` to zero. Faulting instruction `0x822ACA00 lwz r11,8(r4)` in the case for **rule 79** (`li r4,79; li r5,2`: two values expected) with `r4 = value 0 = NULL`: the value list held fewer than two entries |
+| #1 | `sub_822AD650` | the **yacc parser** ("syntax error", "yacc stack overflow"; its signed-halfword `lhax` table lookups are translated correctly, as `int16_t`) |
+| #2 | `sub_822AE690` | parse driver |
+| #3 | `sub_822498A0` | **D3DX shader compile**: "'%s': entrypoint not found", "unrecognized compiler target '%s'", "New back end failed: %08x. Old back end used instead", `d:\TestOldBE`, "Microcode comparison failed. Please send your HLSL code to " |
+| #4 | `sub_8224A808` | compile wrapper |
+| #5 | `sub_82226928` | the game's call into the compiler, with the macros `_XBOX_CPU`, `_XBOX_GPU_FINAL` |
+| #6–#9 | `sub_82226B00`, `sub_82226F98`, `sub_82227010`, `sub_822272F0` | the game's shader/material setup |
+| #10–#13 | `sub_823840D0` … `sub_82345B58` | renderer initialisation |
+| #14–#19 | `sub_820DBA20` … `sub_820D0438` | engine start-up from `main` (`xstart`) |
+
+So the game's first act after reading `data\strings_x.res` and `strings_x.txt` is to compile an
+HLSL shader **held in memory** (no `.hlsl` or `.h` file was opened: trace log
+`port/logs/trace-test.log`, run with `--log_level trace --log_noisy`), probing
+`d:\CompareBackEnds` first and allocating a 1 MB arena. The parser then reduces rule 79 with an
+empty value stack. On the console this path cannot crash, so either (a) the source text handed
+to the compiler is not what the console sees (a pointer or length built from something our
+runtime returns differently), or (b) an earlier semantic action failed silently here (an
+allocation, a symbol lookup) and pushed nothing, or (c) a translation fault in the compiler's
+code (the dispatcher and `lhax` are right; the lexer was not checked). Next: look at the text by
+hooking `sub_82226928`'s entry and dumping its arguments (recipe in HANDOFF.md).
+
+Also fixed this round: the crash reporter's log line still said "F.E.A.R."; renamed.

@@ -18,6 +18,7 @@
 // shadow and per-target value, the textures on samplers 0-1, and who last set SrcBlend, DestBlend
 // and AlphaBlendEnable. That ties the wrong overlay blend to the engine code that chose it.
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -191,7 +192,32 @@ void Draw(const char* name, uint32_t device, uint32_t a4, uint32_t a5, uint32_t 
 
 void GrawDrawSetTexture(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) { (void)r3; SetTexture(r4.u32, r5.u32); }
 void GrawDraw4578(PPCRegister& r1, PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r12) { Draw("draw4578", r3.u32, r4.u32, r5.u32, r12.u32, r1.u32); }
-void GrawDraw4838(PPCRegister& r1, PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r12) { Draw("drawUP4838", r3.u32, r4.u32, r5.u32, r12.u32, r1.u32); }
+// DrawPrimitiveUP(device, type, count, data, stride): also log each distinct site's vertex
+// positions once (the first two floats of up to 4 vertices), to find full-screen quads.
+void GrawDraw4838(PPCRegister& r1, PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6,
+                  PPCRegister& r7, PPCRegister& r12) {
+  Draw("drawUP4838", r3.u32, r4.u32, r5.u32, r12.u32, r1.u32);
+  if (!REXCVAR_GET(graw_debug_blend) || !r6.u32 || r7.u32 < 8 || r7.u32 > 256) return;
+  const uint32_t n = std::min<uint32_t>(4, r5.u32 + 2);
+  if (!Readable(r6.u32, n * r7.u32)) return;
+  std::string verts;
+  for (uint32_t i = 0; i < n; ++i) {
+    verts += " (";
+    for (uint32_t k = 0; k < std::min<uint32_t>(r7.u32 / 4, 14); ++k) {
+      const uint32_t v = Load32(r6.u32 + i * r7.u32 + 4 * k);
+      float f;
+      std::memcpy(&f, &v, 4);
+      verts += fmt::format("{}{:g}", k ? "," : "", f);
+    }
+    verts += ")";
+  }
+  std::lock_guard<std::mutex> lock(g_mutex);
+  static std::map<std::string, int> seen;
+  const std::string key = fmt::format("{:08X}{}", r12.u32, verts);
+  if (seen.size() >= 3000 || seen[key]++) return;
+  REXLOG_INFO("GRAW d3dUP from {:08X} <-{} type {} count {} stride {}:{}", r12.u32, Chain(r1.u32, 4),
+              r4.u32, r5.u32, r7.u32, verts);
+}
 void GrawDraw48C0(PPCRegister& r1, PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r12) { Draw("draw48C0", r3.u32, r4.u32, r5.u32, r12.u32, r1.u32); }
 void GrawDraw4BF8(PPCRegister& r1, PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r12) { Draw("draw4BF8", r3.u32, r4.u32, r5.u32, r12.u32, r1.u32); }
 void GrawDraw4E38(PPCRegister& r1, PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r12) { Draw("draw4E38", r3.u32, r4.u32, r5.u32, r12.u32, r1.u32); }

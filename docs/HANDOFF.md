@@ -3,7 +3,7 @@
 Read [PLAN.md](PLAN.md) for the phases and exit criteria and [FINDINGS.md](FINDINGS.md) for the
 disc and executable facts. This file is the state, the build/run detail and where things live.
 Update it at the end of every session; the next model starts here, not from chat history.
-**#2 (black video panels) is FIXED (2026-10-24): a mistranslated jump table in the HUD sprite blend switch, see "Root cause" at the end of [CROSSCOM.md](CROSSCOM.md). Retest #13 and #3 with it; #1 (border noise) is a separate texture bug. The campaign renderer DLL may still be an experiment; restore `rexgpu-xenosrd.dll.stock` before normal play.**
+**#2 (black video panels) is FIXED (2026-10-24): a mistranslated jump table in the HUD sprite blend switch, see "Root cause" at the end of [CROSSCOM.md](CROSSCOM.md). Retest #13 and #3 with it. #1 (tutorial border noise) is open, narrowed in [BORDER.md](BORDER.md): the 3D image is composited inset and the margin is stale render memory. The campaign renderer DLL may still be an experiment; restore `rexgpu-xenosrd.dll.stock` before normal play.**
 
 ## Where it stands
 **The game plays.** The front end hands over to the campaign and to Instant Action, as the

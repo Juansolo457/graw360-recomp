@@ -310,9 +310,9 @@ address = 0x824C457C
 registers = ["r1", "r3", "r4", "r5", "r12"]
 
 [[entrypoint.midasm_hook]]
-name = "GrawDraw4838"            # DrawPrimitiveUP
+name = "GrawDraw4838"            # DrawPrimitiveUP(device, type, count, data, stride)
 address = 0x824C483C
-registers = ["r1", "r3", "r4", "r5", "r12"]
+registers = ["r1", "r3", "r4", "r5", "r6", "r7", "r12"]
 
 [[entrypoint.midasm_hook]]
 name = "GrawDraw48C0"
@@ -328,3 +328,14 @@ registers = ["r1", "r3", "r4", "r5", "r12"]
 name = "GrawDraw4E38"
 address = 0x824C4E3C
 registers = ["r1", "r3", "r4", "r5", "r12"]
+
+# D3D Resolve / Clear probe (src/resolve_probe.cpp, #1; logs only with --graw_debug_resolve).
+[[entrypoint.midasm_hook]]
+name = "GrawResolveCall"         # D3DDevice_Resolve, after mflr r12
+address = 0x824D2CA4
+registers = ["r4", "r5", "r6", "r7", "r10", "r12"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawClearCall"           # D3DDevice_Clear, after mflr r12
+address = 0x824CDCCC
+registers = ["r4", "r5", "r6", "r7", "r12"]

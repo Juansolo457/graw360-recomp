@@ -32,6 +32,7 @@ set(GRAWYETI_SOURCES
     ${GRAW_SHARED_SRC}/bink_probe.cpp
     ${GRAW_SHARED_SRC}/rtt_probe.cpp
     ${GRAW_SHARED_SRC}/blend_probe.cpp
+    ${GRAW_SHARED_SRC}/resolve_probe.cpp
     ${GRAW_SHARED_SRC}/cpu_check.cpp
 )
 

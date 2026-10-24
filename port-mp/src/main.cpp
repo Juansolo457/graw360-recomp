@@ -5,6 +5,7 @@
 #include "generated/gr3xenon_release/grawmp_init.h"
 
 #define GRAW_APP_NAME "grawmp"
+#define GRAW_MODE_TITLE "Instant Action and Multiplayer"
 #define GRAW_XEX_IMAGE "game:\\GR3Xenon_Release.exe"
 #include "graw_app.h"
 

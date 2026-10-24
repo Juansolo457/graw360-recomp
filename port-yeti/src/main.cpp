@@ -4,6 +4,7 @@
 #include "generated/yeti_final_xenon/grawyeti_init.h"
 
 #define GRAW_APP_NAME "grawyeti"
+#define GRAW_MODE_TITLE "Campaign"
 #define GRAW_XEX_IMAGE "game:\\Yeti_Final_Xenon.exe"
 #include "graw_app.h"
 

@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include <string>
+
 #include <rex/cvar.h>
 #include <rex/input/device_assignment.h>
 #include <rex/input/input_system.h>
@@ -15,6 +17,7 @@
 #include <rex/rex_app.h>
 #include <rex/system/xthread.h>
 #include <rex/ui/imgui_dialog.h>
+#include <rex/ui/window.h>
 
 #include "autopilot.h"
 #include "crash_report.h"
@@ -28,6 +31,10 @@
 #endif
 // The executable on the disc this program is the translation of (the runtime loads
 // game:\default.xex unless told otherwise).
+// What the window title says this program is (the SDK's title is the app name and build stamp).
+#ifndef GRAW_MODE_TITLE
+#define GRAW_MODE_TITLE ""
+#endif
 #ifndef GRAW_XEX_IMAGE
 #define GRAW_XEX_IMAGE "game:\\default.xex"
 #endif
@@ -86,6 +93,15 @@ class GrawApp : public rex::ReXApp {
   }
 
   void OnLoadXexImage(std::string& xex_image) override { xex_image = GRAW_XEX_IMAGE; }
+
+  // "Ghost Recon Advanced Warfighter - Campaign" instead of "grawyeti [rexglue-v0.10...]".
+  void OnPostSetup() override {
+    if (auto* w = window()) {
+      std::string title = "Ghost Recon Advanced Warfighter";
+      if (*GRAW_MODE_TITLE) title += std::string(" - ") + GRAW_MODE_TITLE;
+      w->SetTitle(title);
+    }
+  }
 
   // A readable font for the runtime's own dialogs (save name, message boxes; ui_style.h, #8).
   void OnConfigureFonts(ImFontAtlas* atlas) override { graw::ui::AddFonts(atlas); }

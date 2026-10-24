@@ -55,7 +55,13 @@ class PadBridge final : public rex::ui::ImGuiDialog {
     auto* input = dynamic_cast<rex::input::InputSystem*>(state->emulator()->input_system());
     if (!input) return 0;
     rex::input::X_INPUT_STATE pad{};
+#if defined(GRAW_NX)
+    // fear-nx's SDK (port-yeti-nx) has no GetStateForUI; its GetState doesn't block while a
+    // dialog is open, so it reads the same thing.
+    if (input->GetState(0, &pad) != 0) return 0;
+#else
     if (input->GetStateForUI(0, &pad) != 0) return 0;
+#endif
     return pad.gamepad.buttons;
   }
 

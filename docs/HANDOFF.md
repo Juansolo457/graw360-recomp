@@ -40,6 +40,24 @@ Play-test issues are on GitHub: [#1–#10](https://github.com/Juansolo457/graw36
    sign-in, storage and Live").
 4. Multiplayer menus: system link only; Live calls should fail cleanly.
 
+### port-yeti-nx: the campaign on fear-nx's renderer (#2, 2026-10-23)
+The Cross-Com box and the narration panel are black on the stock renderer although the game
+reads and decodes the Bink videos (their audio plays). fear-nx's native Vulkan renderer fixed the
+same class of bug in F.E.A.R., so `port-yeti-nx/` builds the campaign the way fear360's `port-nx`
+builds F.E.A.R.: same manifest and host code as `port-yeti`, `GRAW_NX` defined, fear-nx's
+renderer in `src/native/` (GPL-3.0-or-later, see NOTICE) and the Xenos plugin linked in.
+- SDK: `third_party/rexglue-sdk-nx` (not tracked), a **copy** of
+  `../fear360-recomp/third_party/rexglue-sdk-nx` (11c330c) without its `out/`. Not a junction:
+  the SDK builds its libraries into its own `out/`, so a junction overwrote fear360's.
+- `pwsh -NoProfile -File tools/build.ps1 -Project port-yeti-nx`: first build ~5 minutes (SDK
+  from source). 388 switches, 0 wrong (`check_switch_tables.py private/xex/yeti.bin ...`).
+- `pwsh -NoProfile -File tools/launch.ps1 -Windowed -Nx`: the front end hands Campaign to it
+  (`--graw_campaign_exe`) with `--nx_renderer native --nx_native_resolution_scale <Scale>`.
+  `-Extra '--nx_renderer xenos'` runs the stock plugin inside the same executable, to compare.
+- Its SDK lacks `InputSystem::GetStateForUI`; `ui_pad.cpp` uses `GetState` under `GRAW_NX`.
+- Built; not yet play-tested. Check: Cross-Com, narration panel, black border (#1), map (#3),
+  the damage black screen (#13), frame rate against the stock build.
+
 ## How it is built and run
 ```
 pwsh -NoProfile -File tools/extract.ps1 -Iso 'D:\x360-recomps\GRAW 1\<disc>.iso'   # once, ~4.8 GB

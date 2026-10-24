@@ -4,8 +4,9 @@
 # never shows the Cross-Com videos, which the game decodes; fear-nx's renderer fixed the same
 # class of bug in F.E.A.R.).
 #
-# The SDK is built from source (REXSDK_DIR, tools/build.ps1 -Project port-yeti-nx): a junction
-# third_party/rexglue-sdk-nx -> ../fear360-recomp/third_party/rexglue-sdk-nx (ReXGlue c94f5eb +
+# The SDK is built from source (REXSDK_DIR, tools/build.ps1 -Project port-yeti-nx): a copy in
+# third_party/rexglue-sdk-nx of ../fear360-recomp/third_party/rexglue-sdk-nx (11c330c; a copy, not a
+# junction, because the SDK builds into its own out/ folder and would overwrite fear360's) (ReXGlue c94f5eb +
 # fear-nx's native-vulkan patch + fear360's patches). The Xenos plugin is linked into the
 # executable whole instead of loaded as a DLL. src/native/ is GPL-3.0-or-later (fear-nx), so
 # builds of this program are GPL; see NOTICE.

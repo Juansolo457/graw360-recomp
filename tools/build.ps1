@@ -50,7 +50,7 @@ if ($Project -like '*-nx') {
     # tools/build-nx.ps1). fear-nx's clock patch divides an unsigned __int128 (__udivti3), which
     # MSVC's runtime lacks: link compiler-rt's builtins from the LLVM in .tools by path.
     $sdk = Join-Path $root 'third_party/rexglue-sdk-nx'
-    if (!(Test-Path "$sdk/src/graphics/plugin_main.cpp")) { throw "Patched SDK missing at $sdk (a junction to ../fear360-recomp/third_party/rexglue-sdk-nx)." }
+    if (!(Test-Path "$sdk/src/graphics/plugin_main.cpp")) { throw "Patched SDK missing at $sdk (copy ../fear360-recomp/third_party/rexglue-sdk-nx without its out folder; not a junction: the SDK writes its libraries into its own out folder, which would overwrite fear360's)." }
     $builtins = Get-ChildItem "$tools/llvm/lib/clang/*/lib/windows/clang_rt.builtins-x86_64.lib" | Select-Object -First 1
     if (!$builtins) { throw 'clang_rt.builtins-x86_64.lib not found in the LLVM toolchain.' }
     $builtinsPath = ($builtins.FullName -replace '\\', '/')

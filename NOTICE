@@ -25,6 +25,6 @@ adapted from Project8Recomp (https://github.com/R-drg/project8-sw) and nfsmw-nx
 distributed under the GNU GPL v3 or later. port-yeti-nx/src/display_vblank.* and
 texture_pack.* come from fear360-recomp (MIT, same author).
 
-third_party/rexglue-sdk-nx (not tracked) is a junction to fear360-recomp's copy of ReXGlue
+third_party/rexglue-sdk-nx (not tracked) is a copy of fear360-recomp's checkout of ReXGlue
 c94f5eb with fear-nx's native-vulkan SDK patch and fear360's patches applied; ReXGlue's
 BSD-3-Clause license and Xenia's notices apply to it.

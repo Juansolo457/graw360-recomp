@@ -238,3 +238,45 @@ registers = ["r31"]
 name = "GrawRttSetTexture"       # D3D SetTexture(device, sampler, texture) entry
 address = 0x824C6F88
 registers = ["r3", "r4", "r5"]
+
+# D3D blend render-state probe (src/blend_probe.cpp, #2; logs only with --graw_debug_blend).
+# The game's blend setters from the render-state table at 0x825F3930, hooked at entry.
+[[entrypoint.midasm_hook]]
+name = "GrawBlendSrc"            # SrcBlend, bits 0-4
+address = 0x824CE1E8
+registers = ["r3", "r4", "r1"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawBlendOp"             # BlendOp, bits 5-7
+address = 0x824CE150
+registers = ["r3", "r4", "r1"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawBlendDest"           # DestBlend, bits 8-12
+address = 0x824CE280
+registers = ["r3", "r4", "r1"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawBlendSrcAlpha"       # SrcBlendAlpha, bits 16-20
+address = 0x824CE390
+registers = ["r3", "r4", "r1"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawBlendOpAlpha"        # BlendOpAlpha, bits 21-23
+address = 0x824CE318
+registers = ["r3", "r4", "r1"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawBlendDestAlpha"      # DestBlendAlpha, bits 24-28
+address = 0x824CE408
+registers = ["r3", "r4", "r1"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawBlendEnable"         # AlphaBlendEnable (device+11452 bit 31)
+address = 0x824CE0B0
+registers = ["r3", "r4", "r1"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawBlendSeparate"       # SeparateAlphaBlendEnable (bit 30)
+address = 0x824CE480
+registers = ["r3", "r4", "r1"]

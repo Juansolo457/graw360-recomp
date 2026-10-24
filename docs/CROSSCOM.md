@@ -1003,3 +1003,28 @@ video), the following HUD draws and the guest's RB_BLENDCONTROL0 writes were log
   3. Shortcut: hook the D3D blend setter and log the caller (LR) and arguments for the overlay
      draws. On the 360 the D3D render-state setters are small functions near `0x824C...`,
      next to the draw functions found earlier.
+- **The game's D3D blend path, mapped statically:**
+  - Render-state table at `0x825F3930`, entries `{default, getter, setter}`.
+  - Setters (each a leaf: insert the field into the blend shadow at device+11448; if
+    device+11452 bit 31, alpha-blend enable, is set, copy it to the per-target values at
+    device+11640/11672/11676/11680 and set dirty bits at device+40):
+
+    | Setter | Field (bits) |
+    |---|---|
+    | `824CE1E8` | SrcBlend (0-4) |
+    | `824CE150` | BlendOp (5-7) |
+    | `824CE280` | DestBlend (8-12) |
+    | `824CE390` | SrcBlendAlpha (16-20) |
+    | `824CE318` | BlendOpAlpha (21-23) |
+    | `824CE408` | DestBlendAlpha (24-28) |
+    | `824CE0B0` | AlphaBlendEnable (rebuilds the per-target values from the shadow; One/Zero when disabled) |
+    | `824CE480` | SeparateAlphaBlendEnable |
+
+  - The generated C++ of `824CE280` checks out against the PowerPC (wrap-around masks, the
+    64-bit dirty bit), so the D3D layer looks right.
+- **Probe:** `port/src/blend_probe.cpp` hooks all eight setters' entries in the port-yeti
+  manifest (off unless `--graw_debug_blend=true`). It logs each distinct
+  (field, value, caller, caller's caller) once, plus 5 s counts. Callers come from the stack
+  back chain, `Load32(Load32(r1) - 8)`, because hooks can't read LR. It shows which values the
+  engine passes, and from which engine code. Needs a port-yeti build, which also restores the
+  stock renderer DLL.

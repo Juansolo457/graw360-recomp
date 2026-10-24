@@ -27,6 +27,7 @@ launch data, its own log (`<first log>~<program>-<time>.log`) and the same argum
 | 7 | `GrawGuardFpscr` (seed FP state on the audio worker); shared controllers | Yeti boots to its **Campaign menu** |
 
 ### Next steps
+Play-test issues are on GitHub: [#1–#10](https://github.com/Juansolo457/graw360-recomp/issues) (2026-10-23).
 1. **Campaign through the front end.** Ask the user to run
    `pwsh -NoProfile -File tools/launch.ps1 -Windowed -Scale 1` (from the repo folder), go Start,
    Campaign, New game. Check the chain of logs in `port/logs/run-*~grawyeti-*.log`.
@@ -45,6 +46,7 @@ pwsh -NoProfile -File tools/extract.ps1 -Iso 'D:\x360-recomps\GRAW 1\<disc>.iso'
 pwsh -NoProfile -File tools/build.ps1 [-Project port|port-mp|port-yeti] [-Jobs 14]   # codegen when needed, then build; build all three
 pwsh -NoProfile -File tools/smoke.ps1 -Seconds 75 [-Captures 3]   # its window shows on the user's screen; log in port/logs/smoke-*.log
 pwsh -NoProfile -File tools/smoke.ps1 -Seconds 30 -Extra '--log_level trace --log_noisy'  # every kernel call with arguments
+pwsh -NoProfile -File tools/smoke.ps1 -Project port-yeti -Seconds 60 -CaptureEvery 3 -FreshProfile -Autopilot tools/autopilot/campaign-menu-probe.txt
 pwsh -NoProfile -File tools/launch.ps1 -Windowed -Scale 1 [-Trace] # a window on the user's screen: say so first; log port/logs/run-*.log
 pwsh -NoProfile -File tools/capture_window.ps1 -ProcessName graw  # screenshot even when covered
 ```
@@ -80,6 +82,7 @@ pwsh -NoProfile -File tools/capture_window.ps1 -ProcessName graw  # screenshot e
 | `port/src/graw_app.h`, `src/main.cpp` | host app: Xenos plugin, crash reporter; game-specific host code goes next to them (fear360's `fear_*.cpp` are the pattern: controller sharing, settings panel) |
 | `port/src/shader_debug.cpp` | two debug hooks (`--graw_debug_shader_compile`, off by default): the HLSL compile call's arguments, and every parser reduction into `logs/parser-trace.txt` |
 | `port/src/graw_loader.*`, `graw_process.*` | the hand-off between the three programs (launch data, own log per program, wait for the previous run) |
+| `port/src/autopilot.*`, `tools/autopilot/*.txt` | scripted virtual controller (`--graw_autopilot <script>`, `tools/smoke.ps1 -Autopilot`): button and stick timetables, no window focus needed. The window still opens on the user's screen: ask before unattended runs |
 | `port/src/fpscr_guard.cpp` | seeds the FP state of the audio worker's context (hooks in all three manifests) |
 | `port-mp/`, `port-yeti/` | the GR3 and Yeti projects: own manifest, `src/main.cpp`, `generated/rexglue.cmake`; `assets` is a junction to `port/assets` |
 | `port/src/crash_report.*` | from fear360 (MIT): `logs/crash-<time>.txt` with the exception, registers and the guest stack (`sub_<360 address>` with the generated file and line), plus a minidump |

@@ -1,0 +1,15 @@
+# Probe: from the campaign program's own menu (grawyeti.exe started alone), press A once a second
+# for a while to see where it leads (New game is the second item; Play game is greyed out).
+# Times are seconds from start-up; the menu is up after ~8 s.
+12 DOWN
+14 A
+18 A
+20 A
+22 A
+24 A
+26 A
+28 A
+30 A
+34 A
+38 A
+42 A

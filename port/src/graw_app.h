@@ -15,6 +15,7 @@
 #include <rex/rex_app.h>
 #include <rex/system/xthread.h>
 
+#include "autopilot.h"
 #include "crash_report.h"
 #include "graw_loader.h"
 #include "graw_process.h"
@@ -64,12 +65,16 @@ class GrawApp : public rex::ReXApp {
     // --gpu_plugin on the command line still takes precedence.
     if (config.gpu_plugin.empty()) config.gpu_plugin = "xenos";
 
-    if (REXCVAR_GET(graw_shared_controllers) && config.input_factory) {
+    // Shared controllers, and the scripted controller for unattended tests (autopilot.h).
+    if (config.input_factory) {
       config.input_factory = [base = config.input_factory](bool tool_mode) {
         auto input = base(tool_mode);
         if (auto* system = dynamic_cast<rex::input::InputSystem*>(input.get())) {
-          system->SetDeviceAssignment(std::make_unique<rex::input::SharedAssignment>());
-          REXLOG_INFO("GRAW: every controller drives player 1 (the signed-in profile)");
+          if (REXCVAR_GET(graw_shared_controllers)) {
+            system->SetDeviceAssignment(std::make_unique<rex::input::SharedAssignment>());
+            REXLOG_INFO("GRAW: every controller drives player 1 (the signed-in profile)");
+          }
+          if (auto autopilot = graw::autopilot::Create()) system->AddDriver(std::move(autopilot));
         }
         return input;
       };

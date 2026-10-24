@@ -17,6 +17,7 @@ set(GRAW_SOURCES
     src/graw_loader.cpp
     src/graw_process.cpp
     src/fpscr_guard.cpp
+    src/autopilot.cpp
 )
 
 if(WIN32)

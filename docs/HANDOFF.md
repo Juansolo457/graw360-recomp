@@ -3,7 +3,8 @@
 Read [PLAN.md](PLAN.md) for the phases and exit criteria and [FINDINGS.md](FINDINGS.md) for the
 disc and executable facts. This file is the state, the build/run detail and where things live.
 Update it at the end of every session; the next model starts here, not from chat history.
-**The current top task has its own plan and handoff: [CROSSCOM.md](CROSSCOM.md) (#2).**
+**The current top task has its own handoff: [HANDOFF-ASTRA.md](HANDOFF-ASTRA.md) (start there),
+with the full evidence in [CROSSCOM.md](CROSSCOM.md) (#2).**
 
 ## Where it stands
 **The game plays.** The front end hands over to the campaign and to Instant Action, as the

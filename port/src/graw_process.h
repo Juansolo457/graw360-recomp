@@ -18,8 +18,9 @@ namespace graw::process {
 std::filesystem::path OwnExecutable();
 std::vector<std::string> OwnArguments();
 
-// The arguments without the given flags (as --name value, --name=value, --name or --no-name) and
-// with the log file renamed "<name>-restart", so the new run doesn't write over this one's log.
+// The arguments without the given flags (as --name value, --name=value, --name or --no-name).
+// The caller names the next run's log (graw_loader.cpp, RenameLog), so it doesn't write over this
+// one's.
 std::vector<std::string> WithoutFlags(const std::vector<std::string>& arguments,
                                       const std::vector<std::string>& flags);
 

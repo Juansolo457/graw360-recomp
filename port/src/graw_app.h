@@ -14,11 +14,14 @@
 #include <rex/logging.h>
 #include <rex/rex_app.h>
 #include <rex/system/xthread.h>
+#include <rex/ui/imgui_dialog.h>
 
 #include "autopilot.h"
 #include "crash_report.h"
 #include "graw_loader.h"
 #include "graw_process.h"
+#include "ui_pad.h"
+#include "ui_style.h"
 
 #ifndef GRAW_APP_NAME
 #define GRAW_APP_NAME "graw"
@@ -84,6 +87,20 @@ class GrawApp : public rex::ReXApp {
 
   void OnLoadXexImage(std::string& xex_image) override { xex_image = GRAW_XEX_IMAGE; }
 
+  // A readable font for the runtime's own dialogs (save name, message boxes; ui_style.h, #8).
+  void OnConfigureFonts(ImFontAtlas* atlas) override { graw::ui::AddFonts(atlas); }
+  void OnConfigureStyle(ImGuiStyle& imgui_style, rex::ui::Style& ui_style) override {
+    (void)ui_style;
+    graw::ui::ScaleStyle(imgui_style);
+  }
+
+  // The controller confirms and navigates the runtime's dialogs (ui_pad.h, #8). Released in
+  // OnShutdown, before the runtime destroys its ImGui drawer.
+  void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
+    pad_bridge_ = graw::ui::CreatePadBridge(drawer);
+  }
+  void OnShutdown() override { pad_bridge_.reset(); }
+
   // The launch data the previous program set (XamLoaderSetLaunchData), for this one to read.
   void OnPreLaunchModule() override { graw::loader::RestoreLaunchData(); }
 
@@ -91,4 +108,7 @@ class GrawApp : public rex::ReXApp {
   void OnGuestThreadExit(rex::system::XThread* thread) override {
     if (thread && thread->main_thread()) graw::loader::HandOff();
   }
+
+ private:
+  std::unique_ptr<rex::ui::ImGuiDialog> pad_bridge_;
 };

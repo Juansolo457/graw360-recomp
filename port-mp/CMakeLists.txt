@@ -20,6 +20,8 @@ set(GRAWMP_SOURCES
     ${GRAW_SHARED_SRC}/graw_process.cpp
     ${GRAW_SHARED_SRC}/fpscr_guard.cpp
     ${GRAW_SHARED_SRC}/autopilot.cpp
+    ${GRAW_SHARED_SRC}/ui_style.cpp
+    ${GRAW_SHARED_SRC}/ui_pad.cpp
 )
 
 if(WIN32)

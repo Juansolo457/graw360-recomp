@@ -97,7 +97,6 @@ void RenameLog(std::vector<std::string>& arguments, const fs::path& program) {
     fs::path log = fs::u8path(arguments[i + 1]);
     std::string base = log.stem().string();
     base = base.substr(0, base.find('~'));
-    if (base.size() > 8 && base.ends_with("-restart")) base.resize(base.size() - 8);
     char stamp[16];
     const std::time_t now = std::time(nullptr);
     std::strftime(stamp, sizeof(stamp), "%H%M%S", std::localtime(&now));

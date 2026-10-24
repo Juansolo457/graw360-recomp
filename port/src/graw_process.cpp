@@ -106,15 +106,6 @@ std::vector<std::string> WithoutFlags(const std::vector<std::string>& arguments,
         if (takes_value) ++i;
         continue;
       }
-      if (name == "log_file" && takes_value) {
-        std::filesystem::path log(arguments[++i]);
-        std::string stem = log.stem().string();
-        if (!stem.ends_with("-restart")) stem += "-restart";
-        log.replace_filename(stem + log.extension().string());
-        out.push_back(argument);
-        out.push_back(log.string());
-        continue;
-      }
     }
     out.push_back(argument);
   }

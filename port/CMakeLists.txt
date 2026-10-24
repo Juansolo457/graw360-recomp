@@ -18,6 +18,8 @@ set(GRAW_SOURCES
     src/graw_process.cpp
     src/fpscr_guard.cpp
     src/autopilot.cpp
+    src/ui_style.cpp
+    src/ui_pad.cpp
 )
 
 if(WIN32)

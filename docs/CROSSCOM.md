@@ -1130,7 +1130,11 @@ distinct (field, value, caller, caller's caller) tuples.
   tools/autopilot/campaign-newgame.txt`) before the fix shows both opaque black boxes in the
   tutorial (Cross-Com top left, narration top right). After the fix, neither box appears; the
   Cross-Com shows its animated icon over translucent static, with the world behind it.
-- **Still to check:** the narration video's own content in the top-right panel, by a player.
-  Any other HUD effect that uses these modes may change too: #13 (screen black under fire) and
-  #3 (tactical map) are worth retesting. #1 (the HUD border and the static's own texels look like
-  coloured noise) is NOT fixed by this; that's a texture problem, not blending.
+- **Video content verified by screenshots (autopilot, same day):** a new campaign's intro shows
+  the narration video (the helicopter pilot) in the top-right panel; the user's "GRAW" save
+  (profile copied into the test profile, Load game) plays the Mission 1 news broadcast there for
+  the whole helicopter flight (reporter, NAUSA logo, map, tanks). In Mission 1 the HUD border is
+  the clean thin cyan frame; the green coloured noise (#1) shows in the tutorial only, and the
+  Cross-Com static's texels look the same there, so #1 looks like a texture bug of that HUD skin.
+- **Still to check:** #13 (screen black under fire) and #3 (tactical map) may use these blend
+  modes too and are worth retesting.

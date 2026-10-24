@@ -219,3 +219,43 @@ What it logs, in the campaign's log (`GRAW rtt ...`):
     the destination is the engine texture's own.
 - The first two `SetTexture` binds of each result.
 - Every 2 s: passes, SetRenderTargets, resolves, ends and HUD binds per texture.
+
+## Step 2 result (run 2026-10-24 06:13; Cross-Com still black, as expected for a probe)
+- **The menu background video uses the same render-to-texture path and is visible.** Engine
+  texture `0x409B43B0`, 1280x720, D3D `0x409B44D0`, render-target descriptor mode **1**,
+  colour surface `0x5D4E4680`.
+- **The Cross-Com uses that path the same way.** Engine texture `0x420F2640`, 160x120, D3D
+  `0x429C3650`, mode 1, colour surface `0x5EAED8D0`, viewport 0,0 160x120.
+- **For both, per pass:**
+  - one `SetRenderTarget` of their own surface;
+  - one **per-rect** resolve (`sub_824D1960`; mode 1, so not `D3DDevice_Resolve`, and Fable's
+    "mode 0" was wrong);
+  - one end;
+  - about one HUD `SetTexture` of the result, always on sampler 0.
+
+  The `+77` gate skips about one pass per 2 s.
+- So the game side is the same for a working and a broken panel. It is not a missing resolve
+  and not a missing bind. What is left:
+  1. **The HUD draw for the Cross-Com box itself.** Its pixel shader, its other samplers and its
+     blend state may differ from the full-screen video's. A second texture that is missing or
+     invalid (#6: 213 "invalid texture fetch constant" warnings) would make it black.
+  2. **The size:** 160x120 is not a multiple of 32 (the EDRAM surface is 160x128), and the
+     menu's 1280x720 is. A renderer bug in small or unaligned resolves would hit only the panels.
+- **Probe bug:** the fetch-constant decode is wrong. D3DTexture+28 is not the fetch constant in
+  this XDK (2.0.2417). The texture and the colour surface both read `00001414 00000000
+  00000200` there, a shared header field. Find the real offset before decoding.
+  - Raw colour surface: `01040001 <seq> FFFF0000 00000000 80000000 00000086 000FE09F 00001414
+    00000000 00000200 00014000 00000000 028000A0 000002E0`. Dword 12 packs height-1 and
+    width-1? (`028000A0`: 0x280 = 640 and 0xA0 = 160; the menu's is `14000500`.)
+  - D3D textures: menu `[00001414 00000000 00000200 AE000D02 B0000E02 B0000D02]`, Cross-Com
+    `[00001414 00000000 00000200 5E68D8A0 00000010 82658488]` from +28.
+
+## Next probe (step 2b)
+At the HUD's `SetTexture` of a video texture, keep a flag, then at the next draw (the D3D
+`DrawPrimitive`/`DrawIndexedPrimitive` the HUD uses, to be found) log:
+- the bound pixel shader;
+- every sampler's texture (device+(3176+i)*4, i = 0..15);
+- the blend and alpha-test state.
+
+Compare that between the menu video's draw and the Cross-Com's draw. Also dump the D3DTexture's
+first 64 bytes, to fix the fetch-constant offset.

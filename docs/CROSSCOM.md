@@ -425,3 +425,18 @@ HUD state paths. User said crosshair, not specifically the HUD border, so #1 rem
   - Option `--graw_trace_rtt_max_width=<px>`: resolves at most that wide, and texture-cache
     bind/load/invalidate events on their destinations, logged as `GRAW trace ...` with 2 s
     summaries.
+- **Trace run 1 (2026-10-24 07:23), Cross-Com still black:** the texture side works.
+  - Every frame: `resolve 160x120 to 0FECB000` (dest format 6 = k_8_8_8_8, from EDRAM
+    color_base 736, not scaled), then the watch fires (`invalidate 0FECB000 by_gpu`), then
+    `load base 0FECB000 160x120`, then the HUD binds `fetch 0 base 0FECB000 160x120 fmt 6`
+    (tiled, pitch 160, swizzle ZYX1). All four happen one for one, about 75 a second.
+  - So the HUD samples a freshly reloaded copy of a resolve that is itself black. The picture is
+    lost before the resolve, in the Bink draw into the 160-wide render target, or in what that
+    target holds in EDRAM.
+  - Every other panel that is black for the user resolves from the same EDRAM `color_base 736`
+    with a narrow pitch: 64x80 at `1F99E000` / `10F5D000`, and 128x80 and 128x760 at
+    `1FAEC000` / `1FAF8000`. The visible menu video renders full width (1280).
+- **Trace build 2:** `IssueDraw` now logs each draw into a render target no wider than the
+  limit: its outcome (no rasterization, no host vertices, render-target update failed, pipeline
+  not ready, drawn), plus colour mask, normalised mask, VTE/clip/mode registers, blend, depth,
+  window offset, scissors, viewport and vertex count.

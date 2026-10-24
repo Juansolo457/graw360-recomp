@@ -79,6 +79,117 @@ index 0000000..0c3a3ac
 +}
 +
 +}  // namespace rex::graphics::graw_trace
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index 19874a5..3aee8df 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -20,6 +20,7 @@
+ #include <rex/dbg.h>
+ #include <rex/perf/counter.h>
+ #include <rex/graphics/d3d12/command_processor.h>
++#include <rex/graphics/graw_trace.h>
+ #include <rex/graphics/d3d12/graphics_system.h>
+ #include <rex/graphics/d3d12/shader.h>
+ #include <rex/graphics/flags.h>
+@@ -2268,6 +2269,35 @@ Shader* D3D12CommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32_
+   return pipeline_cache_->LoadShader(shader_type, host_address, dword_count);
+ }
+ 
++
++namespace {
++// GRAW #2 trace: what happens to draws into narrow render targets (the video panels).
++void GrawNoteDraw(const RegisterFile& regs, const char* outcome, const void* pixel_shader,
++                  uint32_t normalized_color_mask, uint32_t vertices) {
++  auto si = regs.Get<reg::RB_SURFACE_INFO>();
++  auto ci = regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[0]);
++  std::string key = fmt::format("draw pitch {} base {} fmt {} msaa {}: {}",
++                                uint32_t(si.surface_pitch), uint32_t(ci.color_base),
++                                uint32_t(ci.color_format), uint32_t(si.msaa_samples), outcome);
++  if (!graw_trace::Count(key, 3)) return;
++  REXGPU_INFO(
++      "GRAW trace {}: ps {} color_mask {:08X} normalized {:X} vte {:08X} clip {:08X} "
++      "mode_cntl {:08X} blend0 {:08X} colorcontrol {:08X} depthctl {:08X} modecontrol {:08X} "
++      "window_offset {:08X} window_scissor {:08X} {:08X} screen_scissor {:08X} {:08X} "
++      "vport scale {} {} offset {} {} verts {}",
++      key, pixel_shader, regs[XE_GPU_REG_RB_COLOR_MASK], normalized_color_mask,
++      regs[XE_GPU_REG_PA_CL_VTE_CNTL], regs[XE_GPU_REG_PA_CL_CLIP_CNTL],
++      regs[XE_GPU_REG_PA_SU_SC_MODE_CNTL], regs[XE_GPU_REG_RB_BLENDCONTROL0],
++      regs[XE_GPU_REG_RB_COLORCONTROL], regs[XE_GPU_REG_RB_DEPTHCONTROL],
++      regs[XE_GPU_REG_RB_MODECONTROL], regs[XE_GPU_REG_PA_SC_WINDOW_OFFSET],
++      regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL], regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR],
++      regs[XE_GPU_REG_PA_SC_SCREEN_SCISSOR_TL], regs[XE_GPU_REG_PA_SC_SCREEN_SCISSOR_BR],
++      regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XSCALE), regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YSCALE),
++      regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XOFFSET),
++      regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YOFFSET), vertices);
++}
++}  // namespace
++
+ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint32_t index_count,
+                                       IndexBufferInfo* index_buffer_info,
+                                       bool major_mode_explicit) {
+@@ -2285,6 +2315,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+   }
+ 
+   bool surface_pitch_is_zero = regs.Get<reg::RB_SURFACE_INFO>().surface_pitch == 0;
++  const bool graw_rt = graw_trace::Enabled() &&
++                       regs.Get<reg::RB_SURFACE_INFO>().surface_pitch <=
++                           REXCVAR_GET(graw_trace_rtt_max_width) &&
++                       !surface_pitch_is_zero;
+ 
+   // Vertex shader analysis.
+   auto vertex_shader = static_cast<D3D12Shader*>(active_vertex_shader());
+@@ -2321,6 +2355,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+     // cache.
+     if (!memexport_used_vertex) {
+       // This draw has no effect.
++      if (graw_rt) GrawNoteDraw(regs, "skipped: no rasterization", nullptr, 0, 0);
+       return true;
+     }
+   }
+@@ -2338,6 +2373,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+   }
+   if (!primitive_processing_result.host_draw_vertex_count) {
+     // Nothing to draw.
++    if (graw_rt) GrawNoteDraw(regs, "skipped: no host vertices", pixel_shader, 0, 0);
+     return true;
+   }
+ 
+@@ -2366,6 +2402,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+                    : 0;
+   if (!render_target_cache_->Update(is_rasterization_done, normalized_depth_control,
+                                     normalized_color_mask, *vertex_shader)) {
++    if (graw_rt) GrawNoteDraw(regs, "failed: render target update", pixel_shader,
++                              normalized_color_mask, 0);
+     return false;
+   }
+ 
+@@ -2400,6 +2438,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+   }
+   if (REXCVAR_GET(async_shader_compilation) &&
+       pipeline_cache_->GetD3D12PipelineByHandle(pipeline_handle) == nullptr) {
++    if (graw_rt) GrawNoteDraw(regs, "skipped: pipeline not ready", pixel_shader,
++                              normalized_color_mask, 0);
+     return true;
+   }
+ 
+@@ -2628,6 +2668,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+     SubmitBarriers();
+     PROFILE_DRAW_CALL();
+     PROFILE_VERTICES(primitive_processing_result.host_draw_vertex_count);
++    if (graw_rt) GrawNoteDraw(regs, "drawn", pixel_shader, normalized_color_mask,
++                              primitive_processing_result.host_draw_vertex_count);
+     deferred_command_list_.D3DDrawInstanced(primitive_processing_result.host_draw_vertex_count, 1,
+                                             0, 0);
+   } else {
+@@ -2687,6 +2729,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+     SubmitBarriers();
+     PROFILE_DRAW_CALL();
+     PROFILE_VERTICES(primitive_processing_result.host_draw_vertex_count);
++    if (graw_rt) GrawNoteDraw(regs, "drawn indexed", pixel_shader, normalized_color_mask,
++                              primitive_processing_result.host_draw_vertex_count);
+     deferred_command_list_.D3DDrawIndexedInstanced(
+         primitive_processing_result.host_draw_vertex_count, 1, 0, 0, 0);
+     if (scratch_index_buffer != nullptr) {
 diff --git a/src/graphics/d3d12/render_target_cache.cpp b/src/graphics/d3d12/render_target_cache.cpp
 index dd321a5..6784517 100644
 --- a/src/graphics/d3d12/render_target_cache.cpp

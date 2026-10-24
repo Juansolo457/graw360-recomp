@@ -485,3 +485,14 @@ HUD state paths. User said crosshair, not specifically the HUD border, so #1 rem
 - The stock DLL is back in place (`rexgpu-xenosrd.dll`; the traced build is kept as
   `rexgpu-xenosrd.dll.traced`). Next is a clean A/B: stock DLL with async off, to confirm the
   border fix and the pink cast come from the option and not from the instrumented build.
+- **Stock DLL, `--async_shader_compilation=false` (07:37):** the colours are normal, the border
+  is back to green static (#1), and the Cross-Com is still black. The instrumented build with
+  the same option gave a correct border and a pink scene. Different builds give different
+  garbage, so passes that sample resolved textures are reading undefined data.
+  - **Hypothesis:** the texture upload (`SharedMemory::RequestRanges`) treats resolved pages
+    as invalid and re-uploads them from guest memory over the GPU's resolve result. Guest memory
+    is zero there for the Cross-Com (black) and holds stale data for the border (static).
+  - The barrier handling (`CommitUAVWritesAndTransitionBuffer`, `UseForReading` in the
+    texture load) matches January Canary.
+  - **Trace build 4:** logs any `RequestRanges` upload that overlaps a traced resolve
+    destination ("UPLOAD from guest memory over traced ...").

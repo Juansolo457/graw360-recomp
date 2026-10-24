@@ -348,3 +348,34 @@ index 76f5600..783cfea 100644
    texture.texture_cache().texture_became_outdated_.store(true, std::memory_order_release);
  }
  
+diff --git a/src/graphics/shared_memory.cpp b/src/graphics/shared_memory.cpp
+index ec0df7c..d0f7d5a 100644
+--- a/src/graphics/shared_memory.cpp
++++ b/src/graphics/shared_memory.cpp
+@@ -17,6 +17,7 @@
+ #include <rex/bit.h>
+ #include <rex/dbg.h>
+ #include <rex/graphics/shared_memory.h>
++#include <rex/graphics/graw_trace.h>
+ #include <rex/math.h>
+ #include <rex/memory.h>
+ 
+@@ -461,6 +462,18 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
+   COUNT_profile_set("gpu/shared_memory/request_ranges_upload_count",
+                     uint32_t(upload_ranges_.size()));
+ 
++  if (graw_trace::Enabled()) {
++    for (const auto& r : upload_ranges_) {
++      uint32_t start = r.first << page_size_log2_, length = r.second << page_size_log2_;
++      if (graw_trace::Tracked(start, length)) {
++        std::string key = fmt::format("UPLOAD from guest memory over traced {:08X}+{:X}", start,
++                                      length);
++        if (graw_trace::Count(key, 3)) {
++          REXGPU_INFO("GRAW trace {}", key);
++        }
++      }
++    }
++  }
+   if (upload_ranges_.empty()) {
+     return true;
+   }

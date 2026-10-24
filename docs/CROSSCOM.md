@@ -769,3 +769,31 @@ from the working tree are saved separately in the ignored
 - **Test:** `tools/launch.ps1 -Windowed "-Extra:--async_shader_compilation=false"`. If the
   Cross-Com shows, bisect the nine. If not, hand-merge the conflicting seven, starting with the
   D3D12 backend port e6407f3 and the shared shader/pipeline port 8b2672d.
+- **Revert step 1 result (08:46): still black.** None of the nine clean reverts is the cause.
+
+## Renderer revert, step 2: the March imports undone (built 08:53, not yet tested)
+On branch `graw-revert-to-january` (18 commits over bd833a2; full diff in
+`tools/patches/rexglue-bd833a2-revert-partial.patch`), with the plugin **built with Vulkan off**
+(`-DREXGLUE_USE_VULKAN=OFF`; GRAW runs on D3D12), additionally reverted:
+- **e6407f3 (the D3D12 backend port).** `d3d12/command_processor.{h,cpp}` was rebuilt from
+  `e6407f3^` plus only the later plumbing (3bce420 DRED, ed9fd43 markers, 42e01f9 perf
+  counters, 8cbc4c4 null guards, 71782a3 trace removal). This also removes the March
+  occlusion-query, memexport-readback and vertex-buffer-residency code. The frame-end
+  `clear_memory_page_state` call is restored as in Canary.
+- **8b2672d (the shared pipeline port: texture cache, shared memory, render-target cache).**
+  Shared memory is back to January's `SystemPageFlagsBlock` layout, plus a
+  `SetSystemPageBlocksValidWithGpuDataWritten` with Canary semantics. The leftover Vulkan
+  32-bit index pre-conversion is removed.
+- **f20b3b2 (xenia-edge registers/PM4).** WAIT_REG_MEM polls through a volatile reference
+  again.
+- **dc9cece (fuzzy alpha epsilon, swizzle lookup cache).**
+- A duplicate `gamma_render_target_as_unorm16` definition is removed.
+
+Kept on purpose:
+- 0bd3521: its `LOAD_ALU_CONSTANT` change routes through `WriteRegistersFromMem`, which matches
+  Canary's bulk path.
+- 4d3abf6: gamma, ported from Xenia itself.
+- 38cbd30: Vulkan only.
+
+All 107 runtime imports resolve. Installed; step 1's DLL is `rexgpu-xenosrd.dll.revert-step1`.
+Test: `tools/launch.ps1 -Windowed "-Extra:--async_shader_compilation=false"`.

@@ -7,9 +7,12 @@ recompiled with ReXGlue, the same way as `../fear360-recomp`. Plan: [docs/PLAN.m
 for everything here), `../n3-360-recomp` (parked; owns the `.tools` toolchain), `../quake4-360-recomp`.
 
 ## Hard rules
-- Never commit game data: ISOs, XEX/EXE files, extracted assets (`port/assets/`), decrypted
-  images, captures, generated translations (`port/generated/default/`), logs or saves. All are
-  gitignored; `private/` holds the local ones.
+- Never commit game data: ISOs, XEX/EXE files, extracted assets (`port*/assets/`), decrypted
+  images, captures, generated translations (`port*/generated/<name>/`), keys, logs or saves.
+  All are gitignored; `private/` holds the local ones. Run `python -I tools/audit_repo.py`
+  before every commit and push (CI runs it too).
+- `tools/xex_basic_decrypt.py` reads the retail key from `GRAW_XEX_KEY` or `tools/xex_key.txt`
+  (ignored). Never print the key, write it into a file that is tracked, or put it in a doc or log.
 - The user's disc image is at `D:\x360-recomps\GRAW 1\` (read-only). Never modify it.
 - Never close or kill the user's running game. Ask them to quit it. `tools/launch.ps1` and
   `tools/smoke.ps1 -Captures` put windows on the user's screen; say so before running them.

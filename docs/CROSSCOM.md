@@ -875,3 +875,39 @@ renderer DLL is back in place for this.
       bindless hides per-draw bindings;
     - `tools/rdoc_pixel_history.py`: every event that touched a pixel in the Cross-Com box, on
       every large colour target.
+
+## Found: the video IS drawn, then opaque black HUD overlays cover it (RenderDoc, 09:28 capture)
+Capture `port/logs/renderdoc/graw-20261024-092823_frame4990.rdc` (60 Hz, a full guest frame:
+2,597 draws). Analysed with `tools/rdoc_count_draws.py`, `rdoc_pixel_history.py` and
+`rdoc_events.py`, inside RenderDoc. The guest's final colour target is 1663, 1280x2048
+R8G8B8A8 (1x); the HUD draws are events 17778-18205.
+- **The narration panel (top right), pixel 1054,172:**
+  - ev **18106** draws the 160x120 video texture (bindless index 876, swizzle BGR1, vertex
+    alpha 0.784). After it the pixel holds video colour (0.616 0.545 0.463).
+  - Then ev **18110** and ev **18114** draw the HUD atlas (1024x1024 BC2) at UVs that are a
+    **solid white, fully opaque** fill sprite, with **vertex colour (0,0,0,1)** and SrcAlpha
+    blending. The output is opaque black, and the video is gone.
+- **The Cross-Com box (top left), pixel 192,180:**
+  - ev **18122**: 32x256 BC2, vertex colour (0,0,0,1);
+  - ev **18126**: a 128x128 BC2 **TV-static** texture, fully opaque, vertex colour (0,0,0,1).
+  - Then ev 18131 writes depth only (colour mask 0).
+  - This frame had no Cross-Com video draw in that box; the narration video was the one
+    playing.
+- The textures and blending are fine. The overlays' **vertex colour/alpha is stuck at opaque**
+  where the console presumably fades them: alpha near 0 while a video plays, static only
+  during the intro/outro. The game computes that value; the renderer just draws it.
+- **This likely explains #1 as well:** the noisy/static HUD border is the same static texture
+  drawn opaque. #3 (empty map) may be an opaque overlay too.
+- So the cause is probably **game-side, in recompiled code**: the HUD element fade/colour
+  computation, for example a float-to-int or vector conversion (fctiwz, vctuxs, vcfux, vpkd3d,
+  ...) or a saturate that ReXGlue translates differently from Canary's JIT. This fits our
+  renderer matching January Canary and still showing black.
+
+**Next:**
+1. Capture Canary (`tools/renderdoc_canary.ps1`, using the RenderDoc UI's Trigger Capture) at
+   the same moment, find the draws with the same atlas UVs / static texture, and read their
+   vertex colour. Expect alpha near 0.
+2. Find where the HUD writes those vertex colours. Watch the vertex buffer (vertex data comes
+   through shared memory; the VS reads `ResourceId::317`), or trace from the game's HUD sprite
+   code (Yeti `sub_821BBAB0` stores the panel material; the fade lives near there). Then
+   compare the generated C++ of the colour/alpha computation with the PowerPC semantics.

@@ -1,5 +1,6 @@
 # Run inside RenderDoc (qrenderdoc --python tools/rdoc_pixel_history.py) with env vars:
 #   GRAW_RDC = capture path, GRAW_OUT = output folder (private),
+#   GRAW_X, GRAW_Y = absolute pixel (optional; overrides the fractions)
 #   GRAW_PX, GRAW_PY = pixel position as fractions of the target (default: centre of the
 #   Cross-Com box, 0.145 x 0.24 of the 16:9 frame)
 # Lists the colour render targets of the frame with their draw ranges, then runs pixel history at
@@ -72,8 +73,11 @@ try:
 
     ctl.SetFrameEvent(last_event, True)
     for rid, t in big:
-        x = int(t.width * fx)
-        y = int(t.height * fy)
+        x = int(os.environ["GRAW_X"]) if os.environ.get("GRAW_X") else int(t.width * fx)
+        y = int(os.environ["GRAW_Y"]) if os.environ.get("GRAW_Y") else int(t.height * fy)
+        if x >= t.width or y >= t.height:
+            p("skip", rid, "%dx%d" % (t.width, t.height), "pixel outside")
+            continue
         p("=" * 100)
         p("pixel history", rid, "%dx%d" % (t.width, t.height), "at", x, y)
         sub = rd.Subresource(0, 0, 0)

@@ -1,0 +1,19 @@
+graw360-recomp: licensing notice
+
+The MIT license in LICENSE covers this repository's own files: tools/, docs/, port/src/,
+port/CMakeLists.txt, port/graw_manifest.toml and the top-level files.
+
+port/generated/rexglue.cmake, port/CMakePresets.json and the initial port/src files were
+produced by `rexglue init` from the ReXGlue SDK (https://github.com/rexglue/rexglue-sdk,
+BSD-3-Clause, derived in part from Xenia). The SDK itself is not included; the build uses a
+local copy.
+
+tools/xdvdfs.py, tools/xexinfo.py, tools/xex_basic_decrypt.py and tools/capture_window.ps1
+come from the sibling fear360-recomp and n3-360-recomp projects (MIT, same author).
+
+No game assets, executables, generated translations or data from Ghost Recon Advanced
+Warfighter are distributed here. Tools operate on the user's own copy, and their outputs stay
+local.
+
+Ghost Recon is a trademark of Ubisoft Entertainment. This project is not affiliated with or
+endorsed by Ubisoft, Red Storm Entertainment, Ubisoft Paris or Microsoft.

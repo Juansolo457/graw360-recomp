@@ -1,0 +1,33 @@
+# Game data: never commit (ISOs, executables, extracted discs, decrypted images, captures)
+private/
+*.iso
+*.xex
+*.xbe
+*.god
+*.stfs
+*.bik
+*.big
+port/assets/
+
+# Generated translation, build output, runtime state
+port/generated/default/
+port/out/
+port/logs/
+port/user*/
+port/cache*/
+*.log
+*.pdb
+build/
+out/
+
+# Toolchain junction (../n3-360-recomp/reference/N3-Recomp/.tools) and local SDK copies
+.tools/
+third_party/
+
+# Editor / OS
+.vscode/
+.vs/
+.idea/
+__pycache__/
+Thumbs.db
+.DS_Store

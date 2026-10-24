@@ -834,3 +834,24 @@ Renderer DLLs in `port-yeti/out/build/win-amd64-relwithdebinfo/`:
   `cp rexgpu-xenosrd.dll.stock rexgpu-xenosrd.dll` (game closed), or by rebuilding port-yeti.
 - The revert branch is `graw-revert-to-january` in `third_party/rexglue-sdk-bd833a2`; the
   patches are in `tools/patches/`.
+
+## Resumed: recomp as the main program, Canary as the reference (Lost Odyssey method)
+Decision (user, 2026-10-24): keep the recompilation as the product and use Xenia Canary as the
+visual reference, comparing the same frame draw by draw, as Lost Odyssey Recomp did. The stock
+renderer DLL is back in place for this.
+- **Tools:** RenderDoc 1.46 (portable) in the ignored `private/tools/renderdoc/`.
+  - `tools/launch.ps1 -RenderDoc`: runs the recomp under RenderDoc with `--opt-hook-children`,
+    so the campaign spawned by the front end is captured. Captures go to `port/logs/renderdoc/`.
+  - `tools/renderdoc_canary.ps1 [-Build 263e91b]`: Canary on the user's ISO under RenderDoc.
+    Captures go to `private/xenia-canary/<build>/renderdoc/`.
+  - Press Print Screen in the game window to capture; F12 is Canary's own screenshot key.
+- **Procedure:**
+  1. Capture one frame with the Cross-Com clip up in each program, at the same point of the
+     first mission.
+  2. In each capture, find the HUD draw that samples the 160x120 panel texture: Canary's
+     equivalent of our PS `3445071A7FACCDE5` / VS `163102E6668FF616` draw.
+  3. Compare its vertex positions and UVs, its bound texture (contents in Texture Viewer), its
+     viewport/scissor, blend and depth state, and the render target before and after. Then
+     check the later draws over that screen area for overdraw.
+  4. The first difference names the cause: host-side (runtime) or game-side (recompiled code).
+- Captures and logs contain game imagery: private, never committed.

@@ -28,6 +28,11 @@ param(
     # The campaign on fear-nx's native Vulkan renderer (port-yeti-nx, #2): the front end hands
     # Campaign to that build instead of port-yeti. Built with tools/build.ps1 -Project port-yeti-nx.
     [switch]$Nx,
+    # Run under RenderDoc (private/tools/renderdoc, or -RenderDocPath) with child-process hooking,
+    # so the campaign started by the front end is captured too. Press F12 or Print Screen in the
+    # game window to capture a frame; captures go to <project>/logs/renderdoc/ (#2 comparison).
+    [switch]$RenderDoc,
+    [string]$RenderDocPath = '',
     [string]$Extra = '',
     # port = the front end (graw.exe, what a player starts); port-mp = Instant Action/multiplayer (grawmp.exe), port-yeti = the campaign (grawyeti.exe), alone; port-yeti-nx = the campaign on the native renderer, alone
     [ValidateSet('port', 'port-mp', 'port-yeti', 'port-yeti-nx')][string]$Project = 'port',
@@ -61,5 +66,17 @@ $arguments = @($fullscreen,
     $(if ($PerfLog) { @('--graw_frame_log', $perfCsv) } else { @() }) +
     $(if ($RefreshRate -gt 0) { @('--video_mode_refresh_rate', "$RefreshRate") } else { @() }) + $nxArguments +
     $(if ($Trace) { @('--log_level', 'trace', '--log_noisy') } else { @('--log_level', 'debug') }) + @($Extra -split '\s+' | Where-Object { $_ })
-$process = Start-Process -FilePath $executable -WorkingDirectory $port -ArgumentList $arguments -PassThru
+if ($RenderDoc) {
+    $rdoc = if ($RenderDocPath) { $RenderDocPath } else {
+        Get-ChildItem (Join-Path $PSScriptRoot '../private/tools/renderdoc') -Recurse -Filter renderdoccmd.exe -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty FullName }
+    if (!$rdoc -or !(Test-Path $rdoc)) { throw 'renderdoccmd.exe not found: put RenderDoc in private/tools/renderdoc or pass -RenderDocPath.' }
+    $captureDir = Join-Path $port 'logs/renderdoc'
+    New-Item -ItemType Directory -Force $captureDir | Out-Null
+    $rdocArguments = @('capture', '--opt-hook-children', '-d', $port, '-c', (Join-Path $captureDir "graw-$stamp"), $executable) + $arguments
+    $process = Start-Process -FilePath $rdoc -WorkingDirectory $port -ArgumentList $rdocArguments -PassThru
+    "RenderDoc: captures go to $captureDir (F12 or Print Screen in the game window)"
+} else {
+    $process = Start-Process -FilePath $executable -WorkingDirectory $port -ArgumentList $arguments -PassThru
+}
 "pid $($process.Id), log $log"

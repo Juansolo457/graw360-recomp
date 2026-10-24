@@ -472,3 +472,16 @@ HUD state paths. User said crosshair, not specifically the HUD border, so #1 rem
 - **Next, no build needed:** `--async_shader_compilation=false`. The option is ReXGlue-only and
   on by default, and a913a8e moved vertex-shader translation to background threads. Run B
   didn't include it.
+- **`--async_shader_compilation=false` (07:34, instrumented DLL, trace off):**
+  - The **HUD border draws correctly** (#1).
+  - The 3D scene gets a strong **pink/magenta cast**: red and blue kept, green lost.
+  - The Cross-Com is still black. No GPU errors in the log.
+
+  With async on, `IssueDraw` skips any draw whose pipeline isn't ready, and some draws evidently
+  never become ready: the border is one. The pink cast looks like a full-screen colour pass
+  (the campaign has `HDRColorRemap` shaders) that async had been skipping, and that reads a
+  wrong texture now it runs. That is the same class of fault as the Cross-Com: a GPU-produced
+  texture read by a later pass.
+- The stock DLL is back in place (`rexgpu-xenosrd.dll`; the traced build is kept as
+  `rexgpu-xenosrd.dll.traced`). Next is a clean A/B: stock DLL with async off, to confirm the
+  border fix and the pink cast come from the option and not from the instrumented build.

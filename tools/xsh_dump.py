@@ -1,7 +1,7 @@
 # Decode the renderer's shader storage (port/cache/shaders/shareable/555307D5.xsh): every guest
-# shader the stock Xenos plugin has translated, as raw Xenos microcode. --dump_shaders writes
-# nothing for shaders loaded from this storage, so read it here instead (the game must be
-# closed: the file is locked while it runs).
+# shader the stock Xenos plugin has translated, as raw Xenos microcode. No game run is needed
+# (--dump_shaders=<dir> is the in-game way; it needs the '='). The game must be closed: the file
+# is locked while it runs.
 #   python -I tools/xsh_dump.py port/cache/shaders/shareable/555307D5.xsh            # Bink-like pixel shaders
 #   python -I tools/xsh_dump.py <file.xsh> --hash E4F08314542740C2                   # one shader
 # Format: 8-byte header ('XESH', version), then per shader: u64 ucode hash, u32 dword count

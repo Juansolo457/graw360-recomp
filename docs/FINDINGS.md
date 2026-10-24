@@ -247,9 +247,9 @@ Two related things did show up:
   front end's) compiles at runtime. The pixel shader samples `.x` of each plane into
   `c = (Y, Cr, Cb, consts.x)` and outputs `dot(tor|tog|tob, c)` with constants `c0`-`c3`. Black
   means the planes sample as 0, the constants are 0, or the compiled microcode is wrong.
-- The compiled Bink shader is correct. `--dump_shaders` wrote nothing (the renderer loads its
-  shaders from `port/cache/shaders/shareable/555307D5.xsh` instead), so the stored microcode was
-  read from that file (big-endian dwords after a 12-byte header per shader). Pixel shader
+- The compiled Bink shader is correct. The stored microcode was read from the renderer's
+  shader storage, `port/cache/shaders/shareable/555307D5.xsh`. (`--dump_shaders` needs
+  `=<dir>`: the bare form wrote to `port/true/`) (big-endian dwords after a 12-byte header per shader). Pixel shader
   `E4F08314542740C2`: `tfetch` tf0/tf1/tf2 into r1.x/y/z, `maxs` puts c3.x in r1.w and c3.w in
   oC0.w, `dp4` c0/c1/c2 with r1 into oC0.x/y/z. That matches the HLSL, so the game's recompiled
   D3DX compiler is not the fault.

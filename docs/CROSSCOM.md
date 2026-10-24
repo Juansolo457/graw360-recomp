@@ -122,7 +122,9 @@ The same render-to-texture path may explain other campaign bugs, so check them a
   `port-yeti/grawyeti_manifest.toml`, under "Bink video probe".
 - `tools/xsh_dump.py`: decodes the renderer's shader storage
   (`port/cache/shaders/shareable/555307D5.xsh`; only readable while the game is closed).
-  `--dump_shaders` writes nothing for shaders loaded from storage.
+  `--dump_shaders=<dir>` also works and writes every shader's microcode and disassembly: it
+  needs the `=`. A bare `--dump_shaders <dir>` reads as `true`, so the 2026-10-23 run wrote to
+  `port/true/` (2,288 files, ignored, still there).
 - `tools/check_switch_tables.py private/xex/yeti.bin port-yeti/generated/yeti_final_xenon`:
   rerun after every codegen. It reported 388 switches, 0 wrong, on 2026-10-24.
 

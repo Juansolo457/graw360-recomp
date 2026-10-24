@@ -37,3 +37,7 @@ third_party/
 __pycache__/
 Thumbs.db
 .DS_Store
+
+# Shader dumps (--dump_shaders=<dir>, a bare --dump_shaders writes to port*/true/): game-derived
+port*/true/
+port*/logs/shaders*/

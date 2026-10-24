@@ -359,3 +359,32 @@ HUD state paths. User said crosshair, not specifically the HUD border, so #1 rem
     release builds (a list is in the ignored scratch notes; older ones are in
     `xenia-canary/xenia-canary-releases`, newer ones in `xenia-canary/xenia-canary` releases).
     About 8 runs pin one commit, which can then be ported.
+
+## Bisect result: January Canary works, so ReXGlue broke it (2026-10-24)
+- **Canary 263e91b (2026-01-20, just after the fork point) shows the Cross-Com and the map**
+  (user's run, clamp off). So the fault came in with ReXGlue's changes to its copy. Later Canary
+  fixes are not the answer.
+- ReXGlue's first commit is 96bf707, 2026-01-22. Since then, 60 of its commits touch
+  `src/graphics`. Suspects, in order:
+  1. **`clear_memory_page_state`.** ReXGlue's default is **true**, Canary's is **false** (an
+     opt-in "Team Ninja" hack there). When true, each frame end runs
+     `SetSystemPageBlocksValidWithGpuDataWritten`: pages valid only from CPU uploads lose
+     their valid bit, and only GPU-written pages stay valid. 6124b36 (2026-08-13) rewrote that
+     refresh. It decides which copy of a texture the HUD reads.
+  2. **Other defaults that differ from Canary:**
+     - `execute_unclipped_draw_vs_on_cpu`: false here, true in Canary;
+     - `gpu_allow_invalid_fetch_constants`: false here, true in Canary;
+     - `readback_memexport`: true here, false in Canary;
+     - `primitive_processor_cache_min_indices`: 0 here, 4096 in Canary.
+
+     And ReXGlue-only options: `pre_mask_resolve_l2_block` (6379943/bb4a536, resolve
+     pre-masking), plus `mrt_edram_used_range_clamp_to_min`,
+     `snorm16_render_target_full_range` and
+     `execute_unclipped_draw_vs_on_cpu_for_psi_render_backend`, which 7a2a2fc set to true.
+  3. **Not it:** `direct_host_resolve`. `TryResolveCopyDirectly` only runs preflight checks and
+     then calls the same `DumpRenderTargets` path Canary uses.
+- All of these are options in the stock plugin (checked in `rexgpu-xenosrd.dll`), so they
+  can be tested with launch options and **no build**:
+  - Run A: `--clear_memory_page_state=false` alone.
+  - Run B, if A is black: every Canary-matching value at once, plus `-Scale 1`, as Canary ran
+    at 1x.

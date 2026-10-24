@@ -1,30 +1,49 @@
 graw360-recomp: licensing notice
 
-The MIT license in LICENSE covers this repository's own files: tools/, docs/, port/src/,
-port/CMakeLists.txt, port/graw_manifest.toml and the top-level files.
+This repository mixes code under three sets of terms. The full license texts are in LICENSE
+(MIT) and LICENSES/; LICENSES/PROVENANCE.md says where each text comes from. Copied GPL and
+BSD code keeps its own terms: it isn't relicensed as MIT.
 
-port/generated/rexglue.cmake, port/CMakePresets.json and the initial port/src files were
-produced by `rexglue init` from the ReXGlue SDK (https://github.com/rexglue/rexglue-sdk,
-BSD-3-Clause, derived in part from Xenia). The SDK itself is not included; the build uses a
-local copy.
+1. This project's own code: MIT (LICENSE)
+   tools/ (except tools/patches/), docs/, port/src/, port-mp/src/, port-yeti/src/,
+   port-yeti-nx/src/ outside port-yeti-nx/src/native/, the CMakeLists.txt files and manifests
+   of port/, port-mp/, port-yeti/ and port-yeti-nx/, and the top-level files, except where a
+   file's header says otherwise. tools/xdvdfs.py, tools/xexinfo.py, tools/xex_basic_decrypt.py,
+   tools/capture_window.ps1, port-yeti-nx/src/display_vblank.* and port-yeti-nx/src/texture_pack.*
+   come from the sibling fear360-recomp and n3-360-recomp projects (MIT, same author).
 
-tools/xdvdfs.py, tools/xexinfo.py, tools/xex_basic_decrypt.py and tools/capture_window.ps1
-come from the sibling fear360-recomp and n3-360-recomp projects (MIT, same author).
+2. GNU GPL version 3 or later (LICENSES/GPL-3.0.txt)
+   - port-yeti-nx/src/native/ is a copy (see its UPSTREAM.md) of fear360-recomp's
+     port-nx/src/native/, itself from fear-nx (https://github.com/infriker/fear-nx, commit
+     acad80d), which fear-nx licenses GPL-3.0-or-later. fear-nx adapted it from Project8Recomp
+     (https://github.com/R-drg/project8-sw) and nfsmw-nx (https://github.com/StevensND/nfsmw-nx),
+     both GPL-3.0. Most files carry "SPDX-License-Identifier: GPL-3.0-or-later"; the rest of that
+     directory (headers without one, shaders/*.glsl, adapted from Project8Recomp, and the SPIR-V
+     headers generated from them) is under the same terms, and so are our changes to them.
+   - The program port-yeti-nx builds links it, so that build is distributed under the GNU GPL v3
+     or later.
 
-No game assets, executables, generated translations or data from Ghost Recon Advanced
-Warfighter are distributed here. Tools operate on the user's own copy, and their outputs stay
-local.
+3. BSD-3-Clause (LICENSES/ReXGlue-BSD-3-Clause.txt, LICENSES/Xenia-BSD-3-Clause.txt)
+   - port*/generated/rexglue.cmake, the CMakePresets.json files and the initial port*/src files
+     were produced by `rexglue init` from the ReXGlue SDK (https://github.com/rexglue/rexglue-sdk,
+     BSD-3-Clause, derived in part from Xenia). This is SDK build scaffolding, not a translation
+     of game code.
+   - tools/patches/*.patch are this project's changes to the SDK, under the SDK's BSD-3-Clause
+     license; their context lines are ReXGlue and Xenia code.
+   - Parts of port-yeti-nx/src/native/ originate in Xenia (https://github.com/xenia-project/xenia,
+     BSD-3-Clause), reached through ReXGlue and fear-nx; Xenia's notice applies to those parts as
+     well as the GPL.
+   - third_party/rexglue-sdk-nx (not tracked) is a copy of fear360-recomp's checkout of ReXGlue
+     c94f5eb with fear-nx's native-vulkan SDK patch (GPL-3.0-or-later) and fear360's patches
+     applied; ReXGlue's license and Xenia's notices apply, and the libraries in its thirdparty/
+     keep their own licenses.
+
+Game material
+No game assets, executables, extracted or decrypted images, generated translations, keys or
+other data from Ghost Recon Advanced Warfighter are distributed here. Tools operate on the
+user's own copy and their outputs stay local: .gitignore keeps them out, and
+tools/audit_repo.py checks every commit. tools/xex_basic_decrypt.py needs a key the user
+supplies; none is included.
 
 Ghost Recon is a trademark of Ubisoft Entertainment. This project is not affiliated with or
 endorsed by Ubisoft, Red Storm Entertainment, Ubisoft Paris or Microsoft.
-
-port-yeti-nx/src/native/ is a copy (see its UPSTREAM.md) of fear360-recomp's port-nx/src/native,
-itself from fear-nx (https://github.com/infriker/fear-nx, commit acad80d), GPL-3.0-or-later,
-adapted from Project8Recomp (https://github.com/R-drg/project8-sw) and nfsmw-nx
-(https://github.com/StevensND/nfsmw-nx). The port-yeti-nx build that links it is therefore
-distributed under the GNU GPL v3 or later. port-yeti-nx/src/display_vblank.* and
-texture_pack.* come from fear360-recomp (MIT, same author).
-
-third_party/rexglue-sdk-nx (not tracked) is a copy of fear360-recomp's checkout of ReXGlue
-c94f5eb with fear-nx's native-vulkan SDK patch and fear360's patches applied; ReXGlue's
-BSD-3-Clause license and Xenia's notices apply to it.

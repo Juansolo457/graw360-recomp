@@ -57,9 +57,16 @@ private/     your captures, logs and decrypted images (ignored)
 
 ## Legal
 
-- No assets, executables, generated code or proprietary code are distributed.
-- Our own tools, docs and glue are MIT ([LICENSE](LICENSE), [NOTICE](NOTICE)). ReXGlue is
-  BSD-3-Clause with Xenia's notices.
+- No assets, executables, generated code, keys or proprietary code are distributed. Never
+  attach builds or game files to a release. Before pushing, run `python -I tools/audit_repo.py`
+  (CI runs it too).
+- Three sets of terms, file by file in [NOTICE](NOTICE), full texts in [LICENSES/](LICENSES/):
+  - **MIT** ([LICENSE](LICENSE)): our own tools, docs and glue.
+  - **GPL-3.0-or-later** ([LICENSES/GPL-3.0.txt](LICENSES/GPL-3.0.txt)):
+    `port-yeti-nx/src/native/` (fear-nx ← Project8Recomp ← nfsmw-nx); the port-yeti-nx build
+    that links it is GPL.
+  - **BSD-3-Clause**: ReXGlue (with Xenia's notices), its `rexglue init` scaffolding and our SDK
+    patches in `tools/patches/`.
 - Ghost Recon is a trademark of Ubisoft Entertainment. Not affiliated with Ubisoft, Red Storm
   Entertainment, Ubisoft Paris or Microsoft.
 

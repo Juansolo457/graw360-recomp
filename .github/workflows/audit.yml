@@ -1,0 +1,20 @@
+# No game material in what is pushed: tools/audit_repo.py on every push and pull request.
+# It reads the commit's blobs (tracked files only) and fails on game files, executables or
+# archives, generated translations of the game's code, shader warm-up lists and known keys.
+# It catches common accidents, not every copyright question (see the script's header).
+name: audit
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check tracked files for game material
+        run: python3 -I tools/audit_repo.py

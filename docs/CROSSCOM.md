@@ -452,3 +452,23 @@ HUD state paths. User said crosshair, not specifically the HUD border, so #1 rem
 - **Trace build 3:** traced draws also log the textures they sample, with decoded fetch
   constants, and add their ranges to the texture-cache trace, so CPU-write invalidations and
   reloads of the planes show up.
+- **Trace run 3 (07:30), still no video.** The user saw the Cross-Com intro/outro animation (a
+  blue flash) for the first time, the HUD border turned noisy again, and animations looked
+  slightly fast. The heavier logging changed what reached the screen, which points to a race.
+  - The Bink planes are fine. Each video draw samples `k_8`, linear, pitch 256 textures: a
+    160x120 Y and two 80x64 chroma planes, rotating through frame buffers at
+    `0x10C7C000`-`0x10CAB000`. Every CPU write invalidates them (`invalidate ... by_gpu
+    false`), and they reload before the next draw.
+  - In the same frame, EDRAM tile 736 is reused by colour targets of pitch 80/128/160 in formats
+    0 (8_8_8_8) and 2 (2_10_10_10), and by depth-only passes (`modecontrol 5`, 32x32 shadow
+    resolves from `depth_base 736`).
+- **Ruled out by reading:** these match January Canary function for function.
+  - `RequestTextures` reload logic: `ResetTextureBindings` clears the keys, so outdated
+    textures reload.
+  - `MarkRangeAsResolved` and `RangeWrittenByGpu`.
+  - The accumulated-render-target validity check (a loop condition instead of an `if`, but the
+    same effect).
+  - Float constant dirty marking: both gate on `frame_open_`.
+- **Next, no build needed:** `--async_shader_compilation=false`. The option is ReXGlue-only and
+  on by default, and a913a8e moved vertex-shader translation to background threads. Run B
+  didn't include it.

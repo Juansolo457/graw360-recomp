@@ -1,5 +1,14 @@
-# Game data: never commit (ISOs, executables, extracted discs, decrypted images, captures)
+# What must never be committed: anything from the game (its files, executables, images,
+# translations of its code, data derived from it, keys) and anything built from it. .gitignore
+# only keeps untracked files out: it doesn't untrack files or clean history. tools/audit_repo.py
+# checks what is tracked and staged, and CI runs it on every push (README.md, "Legal").
+# Port folders: port/ (front end), port-mp/ (Instant Action, co-op, multiplayer), port-yeti/ and
+# port-yeti-nx/ (the campaign); the /port*/ rules cover any later one too.
+
+# --- The game: your disc and everything extracted, decrypted, dumped or captured from it ---
+# private/ holds the disc, decrypted images, captures and logs kept for analysis.
 private/
+/port*/assets
 *.iso
 *.xex
 *.xbe
@@ -7,37 +16,50 @@ private/
 *.stfs
 *.bik
 *.big
-port/assets/
-port-mp/assets
-port-yeti/assets
-port-yeti-nx/assets
+# Shader dumps (--dump_shaders=<dir>; a bare --dump_shaders writes to <port>/true/)
+/port*/true/
+/port*/logs/shaders*/
 
-# Generated translation, build output, runtime state
-port/generated/default/
-port-mp/generated/gr3xenon_release/
-port-yeti/generated/yeti_final_xenon/
-port-yeti-nx/generated/yeti_final_xenon/
-port*/out/
-port*/logs/
-port*/user*/
-port*/cache*/
+# --- Generated translations of the game's code ---
+# generated/<name>/ is the recompiled game (rexglue codegen output: default/, gr3xenon_release/,
+# yeti_final_xenon/). generated/rexglue.cmake beside it is the SDK's build scaffolding
+# (BSD-3-Clause, NOTICE) and stays tracked.
+/port*/generated/*/
+
+# --- Local keys and secrets ---
+# tools/xex_basic_decrypt.py reads its key from GRAW_XEX_KEY or this file; never commit a key.
+/tools/xex_key.txt
+*.key
+
+# --- Runtime state: logs, saves, settings, shader and pipeline caches, crash dumps ---
+/port*/logs/
+/port*/user*/
+/port*/cache*/
 *.log
-*.pdb
+*.dmp
+
+# --- Build output (programs built from the game's code) and packages ---
+/port*/out/
 build/
 out/
+*.exe
+*.dll
+*.lib
+*.obj
+*.pdb
+*.ilk
+*.zip
+*.7z
+*.rar
 
-# Toolchain junction (../n3-360-recomp/reference/N3-Recomp/.tools) and local SDK copies
+# --- Toolchain junction (../n3-360-recomp/reference/N3-Recomp/.tools) and SDK copies ---
 .tools/
 third_party/
 
-# Editor / OS
+# --- Editor / OS ---
 .vscode/
 .vs/
 .idea/
 __pycache__/
 Thumbs.db
 .DS_Store
-
-# Shader dumps (--dump_shaders=<dir>, a bare --dump_shaders writes to port*/true/): game-derived
-port*/true/
-port*/logs/shaders*/

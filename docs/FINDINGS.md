@@ -40,3 +40,28 @@ here applies to `default.xex` SHA-256 `295ac4ded72c95bb86e9d9441828bb5b193f863af
 All four are function starts the scanner skipped because nothing but a tail call reaches them.
 Added to `[entrypoint.functions]` in `port/graw_manifest.toml`. Round 2 result: see
 [HANDOFF.md](HANDOFF.md).
+
+## Codegen rounds 2–3 and the first runs (2026-10-23)
+- **Round 2** (the 4 entries added): codegen clean, 237 files, 121 MB of C++, 29,483 functions
+  registered at start-up. First headless run: the runtime mounts `port/assets` as
+  `\Device\Harddisk0\Partition1` with `game:` and `d:` symlinks, loads the XEX (probes for
+  `default.xexp`, a title update, harmless), binds 65 + 133 imports, loads 38 achievement
+  entries, prepares the module, then dies 1.7 s in: `[FATAL] Call to invalid or unregistered
+  function at guest address 0x827AE040`. That address is a 5-instruction thunk in the static
+  initialiser region (two `lis/addi` address loads and a tail call), reached through a pointer.
+- `tools/find_missed_functions.py` on the decrypted image (method-table slots pointing at
+  function boundaries, plus `lis/addi` address pairs built in code) listed **200 candidates**,
+  `0x827AE040` among them (from a table at `0x827D1A14`).
+- **Round 3** (all 200 added): codegen warned twice, `Unresolved b target 0x821F10E0 from
+  0x821F1188` and `Unresolved conditional branch to 0x8224A284 from 0x8224A6B4`. Both mean a
+  candidate landed *inside* a function and cut it: `0x821F116C` (pointed to from data at
+  `0x82095D98`) and `0x8224A2DC` (from `0x820960D8`). The two words are data that happen to
+  equal code addresses at instruction boundaries, not entries; dropped. 29,678 functions.
+- Round 3 run: the game got further. It probes `game:\mods\origmiss\` and `game:\mods\dlc_cert\`
+  (DLC/mod folders not on the disc: `NtCreateFile` fails cleanly), enumerates content (0 items),
+  creates a notification listener, registers its GPU interrupt callback (`SetInterruptCallback`,
+  so Direct3D is initialising), looks for the debug flag file `d:\CompareBackEnds`, then faults:
+  `Unhandled guest access violation: read of guest 0x00000008` (a null-object dereference) with
+  no stack in the log. Added fear360's crash reporter (`port/src/crash_report.*`) so the next
+  fault names the recompiled function. Round 4 (the two splitters dropped) may already change
+  this: `0x821F116C` is in the same engine region as the crash site's neighbours.

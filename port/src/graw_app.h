@@ -8,6 +8,8 @@
 #include <rex/logging.h>
 #include <rex/rex_app.h>
 
+#include "crash_report.h"
+
 class GrawApp : public rex::ReXApp {
  public:
   using rex::ReXApp::ReXApp;
@@ -20,6 +22,9 @@ class GrawApp : public rex::ReXApp {
 
  protected:
   void OnPreSetup(rex::RuntimeConfig& config) override {
+    // logs/crash-<time>.txt + .dmp with the guest stack (sub_<360 address> names) on any fault.
+    graw::crash_report::InstallCrashReporter();
+
     // Without a GPU plugin the runtime ignores every Vd* call and the game never draws
     // (F.E.A.R. lesson). "xenos" is the SDK's Xenos -> D3D12/Vulkan translator; a
     // --gpu_plugin on the command line still takes precedence.

@@ -90,7 +90,7 @@ includes = []
 0x82164210 = {}  # from 0x82009F10
 0x821ECE84 = {}  # from 0x82095C40
 0x821F05E0 = {}  # from 0x82095D48
-0x821F116C = {}  # from 0x82095D98
+# 0x821F116C dropped (round 3): a label inside the function at 0x821F10E0, codegen "Unresolved b target 0x821F10E0"
 0x821F118C = {}  # from 0x82095DA0
 0x821F12D4 = {}  # from 0x82095DC0
 0x821F1640 = {}  # from 0x82095DD8
@@ -101,7 +101,7 @@ includes = []
 0x82202C7C = {}  # from 0x82096040
 0x822043E4 = {}  # from 0x82096088
 0x8220455C = {}  # from 0x82096098
-0x8224A2DC = {}  # from 0x820960D8
+# 0x8224A2DC dropped (round 3): a label inside the function around 0x8224A284, codegen "Unresolved conditional branch"
 0x8225EA28 = {}  # from 0x8201CD44
 0x8225ED10 = {}  # from 0x8201CF14
 0x8225ED38 = {}  # from 0x8201CF18

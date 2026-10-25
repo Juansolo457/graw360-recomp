@@ -653,8 +653,10 @@ void NativeRenderer::QueueSwap(uint8_t* base, const HookArgs& args) {
   q.Push(Queue::kSwap, uint32_t(b.swaps.size() - 1));
   q.Publish();
   ++q.frame;
-  // Handing over and a capture's wait count towards the next frame.
-  const uint64_t capture_wait = sync ? q.WaitFrames(q.frame) : 0;
+  // Handing over and a capture's wait count towards the next frame. A hand-over waits for the
+  // render thread to run this Swap (its last native frame, which also gives the game window back)
+  // before the Xenos plugin draws again.
+  const uint64_t capture_wait = sync || hand_over ? q.WaitFrames(q.frame) : 0;
   // The render thread has run this Swap: the capture is taken, or waits for a shown frame.
   if (sync) q.capture_armed = present_->capture_holding_guest();
   const uint64_t pace_wait = pacer_ ? pacer_->WaitToBegin() : 0;

@@ -509,7 +509,9 @@ void TextureCache::Destroy(Texture& t) {
 }
 
 void TextureCache::EvictOverBudget(uint64_t completed_fence) {
-  if (resident_bytes_ <= budget_.soft_bytes) return;
+  // Under both limits: with no soft limit (0) or one above the hard limit, the hard one still
+  // applies.
+  if (resident_bytes_ <= std::min(budget_.soft_bytes, budget_.hard_bytes)) return;
   const uint64_t t0 = NowNs();
   evict_batch_.clear();
   evict_resources_.clear();

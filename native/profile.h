@@ -1,0 +1,123 @@
+// GRAW native renderer (ported from pgr4-native 8ea20d5, MIT; see native/README.md): per-stage CPU time of the draw path (--graw_native_profile).
+//
+// Stage boundaries are timestamped in Ticks (clock.h); NativeRenderer converts them to µs and
+// appends one column per stage to the native CSV. Off by default: then each Mark is one predictable
+// branch.
+//
+// Threading: one switch for the process, one State per thread. With the render thread
+// (renderer.h) the guest thread's stages (read_state, cap_*, track, imm_vs) are handed to the
+// render thread at each Swap and added to its State before the CSV row is written.
+#pragma once
+
+#include "clock.h"
+
+#include <atomic>
+#include <cstdint>
+
+namespace graw::native::profile {
+
+enum Stage : uint32_t {
+  // NativeRenderer::OnDraw / DrawRenderer::Impl::Draw, in order.
+  kReadState,  // ReadDrawState
+  kShaders,    // shader memo/Load + SelectModifications + checks
+  kSetup,      // primitive, index buffer, scissor/viewport, rasterization
+  kRtBind,     // RenderTargets::Bind
+  kTranslate,  // ShaderCache::Translate (VS, PS)
+  kPipeline,   // PipelineKey + GetPipeline
+  kTextures,   // TextureCache::Get, SRV/sampler descriptors, b4 tables
+  kSysConst,   // b0 system constants
+  kPack,       // b1 float constant packing
+  kVertices,   // RequestRange (vertex fetch, indices) + FlushCopies
+  kCbv,        // UploadCbv b0..b4
+  kRecord,     // fixed-function state, render targets, IA, draw call
+  kSubmit,     // NativeRenderer::SubmitEarly when it submits: CloseUploadLists, Submit
+  // Hook side (graw_d3d_trace.cpp), outside OnDraw.
+  kTrack,        // ReadDirtyMasks + GuestStateTracker::AfterCall, every flushing call
+  kImmediateVs,  // GuestStateTracker::AfterImmediateVs
+  // Guest thread, render thread mode (renderer.h): the hook-side half of the On* calls.
+  kCapShaders,   // DrawRenderer::Prepare: shader memo/Load
+  kCapVertices,  // DrawRenderer::Prepare: vertex/index copies, fan indices
+  kCapRecord,    // register deltas, decoding Clear/Resolve/Swap, queueing
+  // Nested inside kTextures (Scope timers, not part of the Mark chain; not summed with it).
+  kTexMiss,  // bind_textures with no BindMemo hit (includes kTexGet and kTexSrv)
+  kTexGet,   // TextureCache::Get calls on that path
+  kTexSrv,   // SRV index lookups on that path
+  // Hook side, overlapping kTrack (not summed with the others): time inside the original guest
+  // D3D functions at the outermost hooked call, i.e. the D3D library's own work (packet
+  // building, state flushes) that a recompilation which replaces the D3D API would not run.
+  kGuestD3d,
+  // Nested inside kSubmit or the swap: NativeRenderer::CloseUploadLists.
+  kUploadList,
+  kStageCount
+};
+
+inline constexpr const char* kStageNames[kStageCount] = {
+    "read_state", "shaders",  "setup",   "rt_bind",     "translate",    "pipeline",
+    "textures",   "sysconst", "pack",    "vertices",    "cbv",          "record",
+    "submit",     "track",    "imm_vs",  "cap_shaders", "cap_vertices", "cap_record",
+    "tex_miss",   "tex_get",  "tex_srv", "guest_d3d",   "upload_list"};
+
+// Per-frame event counts (CSV columns, reset every frame), counted while the profiler is on.
+enum Counter : uint32_t {
+  kBindHit,          // BindMemo hits (whole shader)
+  kBindMru,          // lookups answered by the shader's last entry, without hashing
+  kBindMissEmpty,    // memo slot empty or another shader's (first sight, evicted, not memoizable)
+  kBindMissFetch,    // memo slot of this shader, but for other fetch constants
+  kBindMissTexture,  // same fetch constants, a texture changed (guest write or resolve)
+  kBindNoMemo,       // miss that could not be memoized (missing texture, too many slots)
+  kGetMissFetch,     // TextureCache::Get memo slot held other fetch dwords (or none)
+  kGetMissChanged,   // same fetch dwords, texture changed
+  kSrvMemoHit,       // SRV index from a memo (no XXH3 + map)
+  kUploadSkipped,    // dirty texture not untiled: resolved images overwrite all of it
+  kCounterCount
+};
+
+inline constexpr const char* kCounterNames[kCounterCount] = {
+    "bind_hit",    "bind_mru",       "bind_miss_empty",  "bind_miss_fetch", "bind_miss_tex",
+    "bind_nomemo", "get_miss_fetch", "get_miss_changed", "srv_memo_hit",    "tex_upload_skip"};
+
+// --graw_native_profile, set once by NativeRenderer::Initialize. Atomic because the hooks that
+// pass straight through read it on any guest thread without going through NativeRenderer::Get.
+inline std::atomic<bool> enabled{false};
+inline bool On() { return enabled.load(std::memory_order_relaxed); }
+
+struct State {
+  uint64_t last = 0;
+  uint64_t ticks[kStageCount] = {};
+  uint64_t track_calls = 0;
+  uint64_t counters[kCounterCount] = {};
+};
+inline thread_local State g;
+
+inline void Count(Counter c) {
+  if (On()) ++g.counters[c];
+}
+
+// Starts a run of stages.
+inline void Begin() {
+  if (On()) g.last = Ticks();
+}
+// Charges the time since the previous Begin/Mark to `stage`.
+inline void Mark(Stage stage) {
+  if (!On()) return;
+  const uint64_t t = Ticks();
+  g.ticks[stage] += t - g.last;
+  g.last = t;
+}
+
+// Times one call outside the Begin/Mark chain.
+class Scope {
+ public:
+  explicit Scope(Stage s) : stage_(s), start_(On() ? Ticks() : 0) {}
+  ~Scope() {
+    if (start_) g.ticks[stage_] += Ticks() - start_;
+  }
+  Scope(const Scope&) = delete;
+  Scope& operator=(const Scope&) = delete;
+
+ private:
+  Stage stage_;
+  uint64_t start_;
+};
+
+}  // namespace graw::native::profile

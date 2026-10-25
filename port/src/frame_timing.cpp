@@ -83,8 +83,11 @@ void LimitFrameRate() {
   static Clock::time_point next{};
   Clock::time_point now = Clock::now();
   if (next != Clock::time_point{} && now < next) {
-    GrawSleepUs(std::chrono::duration_cast<std::chrono::microseconds>(next - now).count());
-    now = Clock::now();
+    // The timer wakes up to ~0.2 ms late: sleep to 0.5 ms before the deadline, then spin.
+    const int64_t sleep_us =
+        std::chrono::duration_cast<std::chrono::microseconds>(next - now).count() - 500;
+    GrawSleepUs(sleep_us);
+    while ((now = Clock::now()) < next) std::this_thread::yield();
   }
   next = next != Clock::time_point{} && now - next < period ? next + period : now + period;
 }

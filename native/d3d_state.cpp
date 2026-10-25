@@ -107,11 +107,13 @@ void GuestStateTracker::Attach(uint8_t* base, uint32_t device) {
   MarkAllDirty(base, device);
 }
 
-void GuestStateTracker::Sync(uint8_t* base, uint32_t device, uint32_t fn) {
+void GuestStateTracker::Sync(uint8_t* base, uint32_t device, uint32_t fn, bool entry) {
   if (!device) return;
   if (device != device_) Attach(base, device);
   const uint32_t cur = Load32(base, device + dev::kPush);
   if (cur == cursor_) return;
+  current_fn_ = fn;
+  current_entry_ = entry;
   if (cur > cursor_ && cur - cursor_ <= kMaxWindowBytes) {
     // Each window starts at a packet boundary: the D3D completes its packets before it calls
     // another function or returns. A packet still open here was cut short (or a length was
@@ -285,6 +287,18 @@ void GuestStateTracker::HandlePacket(const uint8_t* base) {
     case 0x34:
     case 0x35:
       ++counters_.draws;
+      // The D3D's own one-point draws (DRAW_INDX_2, one auto-indexed point, no index data),
+      // dozens per frame before Swap and BeginTiling, are not counted.
+      if (current_entry_ && !(op == 0x36 && pkt_.size() == 1 && pkt_[0] == 0x00010081)) {
+        ++counters_.unhooked_draws;
+        static uint32_t logged = 0;
+        if (++logged <= 40)
+          REXLOG_WARN(
+              "GRAW native state: draw packet {:08X} ({} dwords, initiator {:08X}) at {:08X} "
+              "written before call {:08X}: not from a hooked draw",
+              header_, pkt_.size(), op == 0x22 ? (pkt_.size() > 1 ? pkt_[1] : 0) : pkt_[0],
+              packet_address_, current_fn_);
+      }
       if (!first_draw_valid_) {
         first_draw_valid_ = true;
         first_draw_op_ = op;
@@ -294,10 +308,19 @@ void GuestStateTracker::HandlePacket(const uint8_t* base) {
         first_draw_index_size_ = op == 0x22 && pkt_.size() >= 4 ? pkt_[3] : 0;
       }
       break;
+    case 0x3F:  // INDIRECT_BUFFER: a command buffer the D3D calls (draws the hooks never see)
+    case 0x37: {
+      ++counters_.indirect;
+      static uint32_t logged = 0;
+      if (logged < 40 && pkt_.size() >= 2) {
+        ++logged;
+        REXLOG_INFO("GRAW native state: INDIRECT_BUFFER {:08X} {} dwords at {:08X} (call {:08X})",
+                    pkt_[0], pkt_[1] & 0xFFFFF, packet_address_, current_fn_);
+      }
+      break;
+    }
     case 0x10:  // NOP
     case 0x3B:  // INVALIDATE_STATE
-    case 0x3F:  // INDIRECT_BUFFER
-    case 0x37:  // INDIRECT_BUFFER_PFD
     case 0x3C:  // WAIT_REG_MEM
     case 0x3D:  // MEM_WRITE
     case 0x3E:  // REG_TO_MEM
@@ -347,9 +370,10 @@ void GuestStateTracker::AfterCall(const uint8_t* base, uint32_t device) {
       const Counters& c = counters_;
       REXLOG_INFO(
           "GRAW native state: {} dwords, {} packets, {} draw packets, {} jumps, {} resyncs, {} "
-          "torn, {} unknown opcodes, {} predicated writes, {} shader loads, {} immediate",
+          "torn, {} unknown opcodes, {} predicated writes, {} shader loads, {} immediate, {} "
+          "indirect buffers, {} unhooked draws",
           c.dwords, c.packets, c.draws, c.jumps, c.resyncs, c.torn, c.unknown_ops,
-          c.predicated_writes, c.shader_loads, c.immediate_loads);
+          c.predicated_writes, c.shader_loads, c.immediate_loads, c.indirect, c.unhooked_draws);
     }
   }
 }

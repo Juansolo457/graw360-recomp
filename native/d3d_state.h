@@ -112,7 +112,7 @@ class GuestStateTracker {
  public:
   // Decodes what the D3D wrote since the last call, up to the device's push cursor. At the entry
   // and the exit of every hooked call. `fn` names the call, for the log.
-  void Sync(uint8_t* base, uint32_t device, uint32_t fn);
+  void Sync(uint8_t* base, uint32_t device, uint32_t fn, bool entry = false);
   // After a call that moved the push cursor by assignment (graw_d3d.h fn::kMakeSpace and the
   // segment functions): continue from the new cursor; what the old and new place hold between
   // the last decoded dword and the new cursor was not written in this pass.
@@ -141,6 +141,9 @@ class GuestStateTracker {
   struct Counters {
     uint64_t dwords = 0, packets = 0, draws = 0, jumps = 0, resyncs = 0, torn = 0;
     uint64_t unknown_ops = 0, predicated_writes = 0, shader_loads = 0, immediate_loads = 0;
+    uint64_t indirect = 0;  // INDIRECT_BUFFER packets: command buffers called from the stream
+    uint64_t unhooked_draws = 0;  // draw packets decoded at a call's entry: written by code the
+                                  // hooks do not see, so no OnDraw reports them
   };
   const Counters& counters() const { return counters_; }
 
@@ -162,6 +165,8 @@ class GuestStateTracker {
   uint32_t device_ = 0;
   uint32_t cursor_ = 0;  // the last decoded dword (guest address)
   uint32_t last_sync_fn_ = 0;      // the hooked call of the last Sync (torn packet log)
+  uint32_t current_fn_ = 0;        // the hooked call whose window is being decoded
+  bool current_entry_ = false;     // ... at its entry (packets written before it)
   uint32_t last_sync_thread_ = 0;  // and its thread
   // Decoder.
   bool in_packet_ = false;

@@ -2843,6 +2843,55 @@ void DrawRenderer::Impl::LogDraw(const DrawState& s, const RegisterFile& regs, u
       const xenos::xe_gpu_vertex_fetch_t vf = regs.GetVertexFetch(index);
       std::fprintf(draw_log, " vf%u=%08X+%X", index, vf.address << 2, vf.size << 2);
     }
+  // Each shader's ucode disassembly, once per log file.
+  {
+    static std::FILE* logged_for = nullptr;
+    static std::unordered_set<uint64_t> logged;
+    if (logged_for != draw_log) {
+      logged_for = draw_log;
+      logged.clear();
+    }
+    for (const Shader* sh : {static_cast<const Shader*>(&vs), static_cast<const Shader*>(ps)})
+      if (sh && logged.insert(sh->ucode_data_hash()).second && !sh->ucode_disassembly().empty())
+        std::fprintf(draw_log, "\n  ucode %016llX:\n%s", (unsigned long long)sh->ucode_data_hash(),
+                     sh->ucode_disassembly().c_str());
+  }
+  // The vertex index offset (DrawVertices' start vertex, DrawIndexedVertices' base vertex) and,
+  // from it, the first 64 bytes of each fetched vertex buffer (guest byte order), for vertex
+  // format and position checks.
+  const uint32_t indx_offset = regs[XE_GPU_REG_VGT_INDX_OFFSET];
+  std::fprintf(draw_log, " indx_offset=%u base_vertex=%u", indx_offset, s.base_vertex);
+  for (uint32_t w = 0; w < 3; ++w)
+    for (uint32_t bits = vmap.vertex_fetch_bitmap[w]; bits; bits &= bits - 1) {
+      const uint32_t index = w * 32 + uint32_t(std::countr_zero(bits));
+      const xenos::xe_gpu_vertex_fetch_t vf = regs.GetVertexFetch(index);
+      std::fprintf(draw_log, "\n  vdata%u (endian %u):", index, uint32_t(vf.endian));
+      for (uint32_t i = 0; i < 32 && i < (vf.size << 2); i += 4) {
+        uint32_t v;
+        std::memcpy(&v, membase + (vf.address << 2) + i, 4);
+        std::fprintf(draw_log, " %08X", __builtin_bswap32(v));
+      }
+      // At the offset, assuming the shader's stride is 32 bytes for the dump (the stride is in the
+      // vfetch instruction, not the fetch constant); 64 bytes.
+      std::fprintf(draw_log, "\n  vdata%u@offset*32:", index);
+      for (uint32_t i = 0; i < 64; i += 4) {
+        const uint64_t o = uint64_t(indx_offset) * 32 + i;
+        if (o + 4 > (uint64_t(vf.size) << 2)) break;
+        uint32_t v;
+        std::memcpy(&v, membase + (vf.address << 2) + o, 4);
+        std::fprintf(draw_log, " %08X", __builtin_bswap32(v));
+      }
+    }
+  {
+    std::fprintf(draw_log, "\n  vc");
+    for (uint32_t w = 0; w < 4; ++w)
+      for (uint64_t bits = vmap.float_bitmap[w]; bits; bits &= bits - 1) {
+        const uint32_t c = w * 64 + uint32_t(std::countr_zero(bits));
+        const uint32_t r = XE_GPU_REG_SHADER_CONSTANT_000_X + c * 4;
+        std::fprintf(draw_log, " %u=%g,%g,%g,%g", c, regs.Get<float>(r), regs.Get<float>(r + 1),
+                     regs.Get<float>(r + 2), regs.Get<float>(r + 3));
+      }
+  }
   auto float_hash = [&](const Shader* shader, uint32_t base) {
     uint64_t h = 0;
     if (!shader) return h;
@@ -3045,11 +3094,14 @@ uint32_t DrawRenderer::Impl::BindTextures(const TextureBindContext& ctx, const D
       got = texture_cache.Get(fetch, ctx.list, frame_fence, &b, ctx.captured) && b.resource;
     }
     if (draw_log)
-      std::fprintf(draw_log, "  tf%u %08X fmt=%u %ux%ux%u dim=%u tiled=%u mips=%u%s%s\n",
+      std::fprintf(draw_log,
+                   "  tf%u %08X fmt=%u %ux%ux%u dim=%u tiled=%u mips=%u%s%s signed=%u fetch=%08X "
+                   "%08X %08X %08X %08X %08X\n",
                    tb.fetch_constant, b.key.base_page << 12, uint32_t(b.key.format), b.key.width,
                    b.key.height, b.key.depth_or_array_size, uint32_t(b.key.dimension),
                    uint32_t(b.key.tiled), b.key.mip_levels(), got ? "" : " missing",
-                   got && b.aliased ? " alias" : "");
+                   got && b.aliased ? " alias" : "", uint32_t(tb.is_signed), fetch[0], fetch[1],
+                   fetch[2], fetch[3], fetch[4], fetch[5]);
     if (got) {
       profile::Scope srv_scope(profile::kTexSrv);
       stale += b.stale;

@@ -37,6 +37,9 @@ REXCVAR_DEFINE_INT32(graw_native_capture_frame, -1, "GRAW native",
 REXCVAR_DEFINE_INT32(graw_native_capture_hold_ms, 500, "GRAW native",
                      "How long a capture holds the guest thread in Swap so the Xenos plugin "
                      "finishes the frame before its front buffer is read from guest memory");
+REXCVAR_DEFINE_INT32(graw_native_capture_burst, 1, "GRAW native",
+                     "Debug: a capture request (file or F12) captures this many frames in a row "
+                     "(a frame or two apart with the Xenos copy, which holds the guest)");
 REXCVAR_DEFINE_BOOL(graw_native_capture_xenos, true, "GRAW native",
                     "Captures also write the Xenos plugin's copy of the frame and the PSNR "
                     "between them, holding the guest thread (--graw_native_capture_hold_ms); "
@@ -262,6 +265,7 @@ struct Presenter::Impl {
   // --graw_native_capture_dir; empty: no request file and no mark key are polled.
   std::filesystem::path capture_dir, capture_request;
   uint32_t request_poll = 0;
+  int32_t burst_left = 0;  // --graw_native_capture_burst: captures still to take
 };
 
 bool Presenter::Impl::Initialize() {
@@ -389,6 +393,12 @@ bool Presenter::Impl::CaptureRequested(uint64_t frame) {
     request_poll = 0;
     std::error_code ec;
     if (std::filesystem::remove(capture_request, ec)) want = true;
+  }
+  if (want) {
+    burst_left = std::max(REXCVAR_GET(graw_native_capture_burst), 1) - 1;
+  } else if (burst_left > 0) {
+    --burst_left;
+    want = true;
   }
   return want;
 }

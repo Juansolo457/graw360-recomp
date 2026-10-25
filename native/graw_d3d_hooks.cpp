@@ -74,7 +74,7 @@ template <GuestFn kOriginal>
 inline void RunTracked(PPCContext& ctx, uint8_t* base, uint32_t fn) {
   const uint32_t device = ctx.r3.u32;
   nat::GuestStateTracker& gs = nat::GuestState();
-  gs.Sync(base, device, fn);
+  gs.Sync(base, device, fn, t_native_depth == 0);
   kOriginal(ctx, base);
   gs.Sync(base, device, fn);
   gs.AfterCall(base, device);
@@ -102,7 +102,7 @@ inline void NativeHook(PPCContext& ctx, uint8_t* base) {
   {
     const uint32_t device = ctx.r3.u32;
     nat::GuestStateTracker& gs = nat::GuestState();
-    gs.Sync(base, device, kAddr);
+    gs.Sync(base, device, kAddr, outer);
     if (outer && (kClass == kNatDraw || kClass == kNatPendingDraw)) gs.BeginDrawCall();
     kOriginal(ctx, base);
     gs.Sync(base, device, kAddr);
@@ -114,7 +114,10 @@ inline void NativeHook(PPCContext& ctx, uint8_t* base) {
   if constexpr (kClass == kNatDraw) {
     r->OnDraw(base, a);
   } else if constexpr (kClass == kNatPendingDraw) {
-    if (a.ret) {
+    // BeginVertices returns the vertex pointer (0: failed); BeginIndexedVertices an HRESULT
+    // (0: S_OK), its pointers through out-parameters. Its draws are the particle batches
+    // (dust, smoke, muzzle flashes).
+    if (kFn == HookFn::kBeginIndexedVertices ? uint32_t(a.ret) == 0 : a.ret != 0) {
       t_pending_args = a;
       t_pending = true;
     }
@@ -140,7 +143,7 @@ inline void EndVerticesHook(PPCContext& ctx, uint8_t* base) {
   }
   nat::GuestStateTracker& gs = nat::GuestState();
   const uint32_t device = ctx.r3.u32;
-  gs.Sync(base, device, nat::fn::kEndVertices);
+  gs.Sync(base, device, nat::fn::kEndVertices, t_native_depth == 0);
   gs.BeginDrawCall();
   kOriginal(ctx, base);
   gs.Sync(base, device, nat::fn::kEndVertices);
@@ -181,7 +184,7 @@ inline void JumpHook(PPCContext& ctx, uint8_t* base, uint32_t fn) {
   }
   const uint32_t device = ctx.r3.u32;
   nat::GuestStateTracker& gs = nat::GuestState();
-  if (t_jump_depth++ == 0) gs.Sync(base, device, fn);
+  if (t_jump_depth++ == 0) gs.Sync(base, device, fn, t_native_depth == 0);
   kOriginal(ctx, base);
   --t_jump_depth;
   gs.Jump(base, device, fn);

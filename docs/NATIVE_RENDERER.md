@@ -28,15 +28,16 @@ predicated-tiling replays double the command processor's work). The emulated ren
   (`sub_824D7C08`) inside MakeSpace's submit: the wrap hook decoded the submit's own bookkeeping
   (pointers) as packets. A jump hook nested in another no longer decodes at its entry: 0 torn
   since.
-- Open: **bullet effects in the scope view and muzzle flashes** (user play-test 2026-10-25):
-  white tracers, dust puffs and the muzzle flash show with Xenos, not natively. Measured: the
-  scene pass (additive particle batches included) matches Xenos to 99.8%; the tracer streak first
-  differs in the post-processed composite (resolve to `1E5D8000`), so it is drawn after the scene
-  resolve. No vertex data changes after its draw (`--graw_native_coherency_check`: no late or
-  stale pages). Next: find the draws between the scene resolve and the composite resolve in a
-  firing frame (`draw-debug.txt` bit 16 logs a frame's draws; bit 128 with a shader hash draws
-  only those) and compare their output. Autopilot scripts: `tools/autopilot/campaign-fire.txt`,
-  `campaign-scope-fire.txt`.
+- Fixed: **bullet tracers, impact dust and muzzle flashes** missing natively (user play-test
+  2026-10-25). They are the particle batches the game draws with BeginIndexedVertices (about a
+  dozen per frame, at the end of the scene pass). That call returns an HRESULT (0 = S_OK, the
+  vertex and index pointers through out-parameters), and the hook took a zero return for a
+  failed reservation as it is for BeginVertices (which returns the pointer): every one was
+  dropped. Found by capturing the frames around a shot (`--graw_native_capture_burst=30`: one
+  request captures 30 frames) with a per-draw log on both sides: native matched Xenos draw for
+  draw up to the particles, then had none. With the fix the shot frames match Xenos (muzzle
+  flash 1,080 bright pixels each side, was 83 natively). Autopilot scripts:
+  `tools/autopilot/campaign-fire.txt`, `campaign-scope-fire.txt`.
 - Open: the BeginTiling jump. The 4x MSAA depth resolve differs from Xenos
   in one column per 40-pixel EDRAM tile (sample choice at tile edges).
 - HDR10 output (pgr4-native's default) washed the picture out; GRAW defaults to SDR now

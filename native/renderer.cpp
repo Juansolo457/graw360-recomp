@@ -206,13 +206,18 @@ void AppendCsvCells(std::span<const CsvCell> cells, bool header, bool leading_co
     AppendCsvCell(cells[i], header, i || leading_comma, line);
 }
 
-// The window's presenter belongs to the UI thread.
+// The window's presenter belongs to the UI thread. Connected again for a XAM dialog, it is asked
+// to paint: it paints on guest frames (none while the Xenos plugin draws nothing) and on paint
+// requests, and the dialog's own request came while the window was ours, so without this the
+// window stayed black until something else repainted it (#24).
 void ConnectSdkPresenter(bool connect) {
   rex::ui::Window* window = GameWindow();
   rex::ui::Presenter* presenter = SdkPresenter();
   if (window && presenter)
-    window->app_context().CallInUIThreadSynchronous(
-        [&] { window->SetPresenter(connect ? presenter : nullptr); });
+    window->app_context().CallInUIThreadSynchronous([&] {
+      window->SetPresenter(connect ? presenter : nullptr);
+      if (connect) presenter->RequestUIPaintFromUIThread();
+    });
 }
 
 }  // namespace

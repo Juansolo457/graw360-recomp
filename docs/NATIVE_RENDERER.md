@@ -38,6 +38,10 @@ predicated-tiling replays double the command processor's work). The emulated ren
   draw up to the particles, then had none. With the fix the shot frames match Xenos (muzzle
   flash 1,080 bright pixels each side, was 83 natively). Autopilot scripts:
   `tools/autopilot/campaign-fire.txt`, `campaign-scope-fire.txt`.
+- Fixed: the new-game save-name dialog showed as a black screen (#24). For a XAM dialog the
+  renderer hands the window to ReXGlue's presenter, which paints on guest frames (none: the
+  Xenos plugin draws nothing) and on paint requests; the dialog's request came while the window
+  was the renderer's. The presenter is asked to paint when it gets the window back.
 - Open: the BeginTiling jump. The 4x MSAA depth resolve differs from Xenos
   in one column per 40-pixel EDRAM tile (sample choice at tile edges).
 - HDR10 output (pgr4-native's default) washed the picture out; GRAW defaults to SDR now

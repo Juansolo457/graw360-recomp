@@ -1,7 +1,7 @@
 # Launch the GRAW recomp (port/, the front end; it hands over to the campaign and Instant Action)
 # for playing. The guest is told it is on a 1280x720 display (as on a real 360; this also avoids
 # ReXGlue's 4:3 squeeze at 200% Windows scaling) and renders at a multiple of that.
-# Defaults: the guest display at 60 Hz (the game logic is frame-rate dependent, see -RefreshRate);
+# Defaults: the guest display at 30 Hz (the game logic is built for ~30 fps, see -RefreshRate);
 # 2x = 2560x1440 internal and 16x anisotropic filtering (#12). No FXAA by
 # default (it blurs the image; -Aa fxaa|fxaa_extreme turns it on). The renderer can't force MSAA:
 # the game picks its own (the campaign already renders with 4x MSAA). For smoother edges render
@@ -12,8 +12,8 @@
 #   pwsh -NoProfile -File tools/launch.ps1 -Windowed -Scale 1 -Aa none   # as the 360 draws it
 #   pwsh -NoProfile -File tools/launch.ps1 -Windowed -Trace          # every kernel call (file opens, ...) in the log
 #   pwsh -NoProfile -File tools/launch.ps1 -Windowed -PerfLog        # per-frame CSV next to the log; fps summary every 10 s in the log (#11)
-#   pwsh -NoProfile -File tools/launch.ps1 -Windowed -RefreshRate 240 -PerfLog   # uncapped (#11): running animations and the AI run too fast
-#   pwsh -NoProfile -File tools/launch.ps1 -Console -RefreshRate 30 -PerfLog     # 360 settings at ~30 fps (frame-rate dependence, #17)
+#   pwsh -NoProfile -File tools/launch.ps1 -Windowed -RefreshRate 60 -PerfLog    # 60 fps: smoother but the game logic misbehaves (#17)
+#   pwsh -NoProfile -File tools/launch.ps1 -Console -PerfLog                     # 360 settings: 720p, the game's filtering, 30 fps
 # This opens a window on the user's screen. Never kill a running graw.exe; ask the user to quit.
 [CmdletBinding()]
 param(
@@ -24,10 +24,11 @@ param(
     [switch]$Trace,       # --log_level trace --log_noisy: every kernel call with its arguments (large log)
     [switch]$PerfLog,     # --graw_frame_log: one CSV row per presented frame, logs\perf-<time>.csv (src/frame_timing.cpp)
     # The refresh rate the guest's display reports (24-240 Hz; 0 = the SDK's 60). GRAW presents
-    # once per vblank, so this caps the frame rate. Keep 60: above it the running animations of
-    # the player and allies play too fast and the enemy AI is sluggish (play-test 2026-10-25),
-    # though movement speed is right. At 240 the campaign ran at 47-127 fps.
-    [ValidateRange(0,240)][double]$RefreshRate = 60,
+    # once per vblank, so this caps the frame rate. Keep 30: the game's logic is built for ~30 fps
+    # as on the 360. At 60 allies' weapons vanish (#7), the rally point can't complete (#19),
+    # squad commands lag and enemies react late; above 60 running animations play too fast too
+    # (#17, play-tests 2026-10-25). At 240 the campaign ran at 47-127 fps.
+    [ValidateRange(0,240)][double]$RefreshRate = 30,
     # The campaign on fear-nx's native Vulkan renderer (port-yeti-nx, #2): the front end hands
     # Campaign to that build instead of port-yeti. Built with tools/build.ps1 -Project port-yeti-nx.
     [switch]$Nx,
@@ -40,8 +41,7 @@ param(
     # port = the front end (graw.exe, what a player starts); port-mp = Instant Action/multiplayer (grawmp.exe), port-yeti = the campaign (grawyeti.exe), alone; port-yeti-nx = the campaign on the native renderer, alone
     [ValidateSet('port', 'port-mp', 'port-yeti', 'port-yeti-nx')][string]$Project = 'port',
     # As close to the 360 as the options allow: 1280x720 internal, the game's own texture
-    # filtering, no FXAA, 60 Hz (add -RefreshRate 30 to also hold it to ~30 fps, roughly what the
-    # 360 ran at in heavy scenes). For checking whether a bug depends on the frame rate.
+    # filtering, no FXAA, 30 fps.
     [switch]$Console,
     [ValidateSet('Debug','Release','RelWithDebInfo')][string]$Configuration = 'RelWithDebInfo'
 )
@@ -52,7 +52,6 @@ if ($Console) {
     $Scale = 1
     $Anisotropic = -1
     $Aa = 'none'
-    if (-not $PSBoundParameters.ContainsKey('RefreshRate')) { $RefreshRate = 60 }
 }
 $buildDir = "out\build\win-amd64-$($Configuration.ToLowerInvariant())"
 # The native renderer's own options (other programs ignore options they don't know).

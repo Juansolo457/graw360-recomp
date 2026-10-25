@@ -50,3 +50,22 @@ but ~half the frames 3 ms early or late, ~3% a full 33 ms (a missed refresh) and
 
 Still uneven: ~20% of frames take 17.5-25 ms, because the vblank thread still polls on a 1 ms
 sleep instead of waiting for each vblank's deadline (a renderer-plugin change).
+
+## 30 fps is the game's rate; even vblanks (2026-10-25)
+Play-tests showed the campaign's logic is built for ~30 fps (#17): at 60 allies' weapons vanish
+(#7), the rally point can't complete (#19), squad commands lag and enemies react late; at 30
+(`launch.ps1 -Console`) it plays like the 360. `launch.ps1` now defaults to a 30 Hz guest display.
+30 fps then felt uneven: frames between 31 and 35 ms and ~15% under 25 ms, because the guest
+vblank thread polled on a 1 ms sleep and fired every vblank that was due at once. The thread
+now waits for each vblank's own deadline (coarse sleep to 2 ms before, then yield) and restarts
+after a stall instead of firing a burst (`tools/patches/rexglue-bd833a2-vblank-pacing.patch`, in the
+renderer plugin). 360 settings, plaza fight, 60 s:
+
+| | old timer | new timer |
+|---|---|---|
+| frames within 33.3 +-1 ms | 51.8% | 71.1% |
+| frames under 25 ms | 15.7% | 6.2% |
+| frame-time std. dev. | 7.3 ms | 5.4 ms |
+
+(The frame log times the game's VdSwap calls, i.e. when the CPU hands a frame over, not when it
+is shown, so some of the remaining spread is the CPU running a frame ahead.)

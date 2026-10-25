@@ -184,6 +184,8 @@ def main():
     ap.add_argument('--tids', default='', help='comma-separated thread ids instead of --threads')
     ap.add_argument('--depth', type=int, default=6, help='stack words scanned for return addresses')
     ap.add_argument('--out', default='')
+    ap.add_argument('--bins', default='', help='also write per-second leaf counts to this CSV '
+                    '(process_age_s, thread, function, samples), to compare slow and smooth seconds')
     args = ap.parse_args()
 
     pid = None
@@ -214,7 +216,12 @@ def main():
     leaf = {t: collections.Counter() for t in tids}
     callers = {t: collections.Counter() for t in tids}
     samples = collections.Counter()
-    end = time.perf_counter() + args.seconds
+    binned = collections.Counter()  # (second of process age, thread, address) -> samples
+    age0 = process_age(proc)
+    t0 = time.perf_counter()
+    end = t0 + args.seconds
+    alive = wt.DWORD()
+    next_alive_check = t0
     buf = (ctypes.c_uint64 * args.depth)()
     read = ctypes.c_size_t()
     while time.perf_counter() < end:
@@ -229,9 +236,16 @@ def main():
                 continue
             samples[t] += 1
             leaf[t][rip] += 1
+            if args.bins:
+                binned[(int(age0 + time.perf_counter() - t0), t, rip)] += 1
             for i in range(args.depth):
                 callers[t][buf[i]] += 1
         time.sleep(0.0008)
+        if time.perf_counter() >= next_alive_check:  # stop when the game exits
+            next_alive_check += 1
+            k32.GetExitCodeProcess.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
+            if k32.GetExitCodeProcess(proc, ctypes.byref(alive)) and alive.value != 259:
+                break
 
     every = set()
     for t in tids:
@@ -260,6 +274,11 @@ def main():
         lines.append('  on the stack (likely callers, counted per sample word):')
         for f, c in by_caller.most_common(15):
             lines.append(f'  {100 * c / max(1, n):5.1f}%  {f}')
+    if args.bins:
+        with open(args.bins, 'w', encoding='utf-8') as f:
+            f.write('age_s,thread,function,samples\n')
+            for (sec, t, addr), c in sorted(binned.items()):
+                f.write(f'{sec},{t},"{name(addr) or f"?{addr:x}"}",{c}\n')
     text = '\n'.join(lines)
     print(text)
     if args.out:

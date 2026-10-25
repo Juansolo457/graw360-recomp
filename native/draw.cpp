@@ -2464,6 +2464,17 @@ void DrawRenderer::Impl::Prewarm() {
     }
     PipelineKey key;
     std::memcpy(&key, sp.key.data(), sizeof(key));
+    // A stored key comes from disk: its blend factors index kD3DBlend in CreatePipeline, so a
+    // corrupt or foreign one is dropped here (the other fields reach D3D12 as enum values, which
+    // it validates).
+    bool valid = true;
+    for (const PipelineKey::Rt& rt : key.rt)
+      for (uint8_t factor : {rt.src, rt.dst, rt.src_a, rt.dst_a})
+        valid &= factor < std::size(kD3DBlend);
+    if (!valid) {
+      ++prewarm_failed;
+      continue;
+    }
     key.vs = vst;
     key.ps = pst;
     const uint64_t hash = XXH3_64bits(&key, sizeof(key));

@@ -38,10 +38,10 @@ $info.UseShellExecute = $false
 $info.CreateNoWindow = $true
 $extraArguments = @($Extra -split '\s+' | Where-Object { $_ })
 if ($Autopilot) { $extraArguments += @('--graw_autopilot', (Resolve-Path (Join-Path $root $Autopilot)).Path) }
-$headless = if ($Autopilot) { @() } else { @('--headless') }
-foreach ($argument in $headless + @('--no-fullscreen', '--resolution', '720p',
+$headless = if ($Autopilot) { @() } else { @('--headless=true') }
+foreach ($argument in @('--no-fullscreen', '--resolution', '720p',
     '--game_data_root', "$port\assets", '--user_data_root', "$port\user-smoke",
-    '--cache_root', "$port\cache-smoke", '--log_file', $log, '--log_level', 'debug', '--log_flush_interval', '1') + $extraArguments) {
+    '--cache_root', "$port\cache-smoke", '--log_file', $log, '--log_level', 'debug', '--log_flush_interval', '1') + $extraArguments + $headless) {
     $info.ArgumentList.Add($argument)
 }
 $capture = { & (Join-Path $PSScriptRoot 'capture_window.ps1') -ProcessId $process.Id -Out $captureDir | Out-Null }

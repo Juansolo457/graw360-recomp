@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <rex/cvar.h>
@@ -59,7 +60,39 @@ void Summarise() {
 
 }  // namespace
 
+// The front end presents without waiting for a vblank (the campaign's Direct3D waits on them),
+// so its menus ran uncapped: 4,700 fps average, a CPU core and the GPU flat out for nothing
+// (#25). A frame limiter at the same spot as the frame mark holds every program to at most
+// --graw_max_fps.
+REXCVAR_DEFINE_INT32(graw_max_fps, 60, "GRAW",
+                     "Present at most this many frames per second (0 = no limit); the campaign "
+                     "paces itself at 30 below that")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
+void GrawSleepUs(int64_t us);  // below
+
+namespace {
+
+// Waits until the next frame is due. Deadlines step by whole periods, so short sleeps' jitter
+// doesn't drift the rate; after a frame longer than a period the schedule restarts from now
+// instead of letting the next frames catch up.
+void LimitFrameRate() {
+  const int32_t max_fps = REXCVAR_GET(graw_max_fps);
+  if (max_fps <= 0) return;
+  const auto period = std::chrono::nanoseconds(1'000'000'000LL / max_fps);
+  static Clock::time_point next{};
+  Clock::time_point now = Clock::now();
+  if (next != Clock::time_point{} && now < next) {
+    GrawSleepUs(std::chrono::duration_cast<std::chrono::microseconds>(next - now).count());
+    now = Clock::now();
+  }
+  next = next != Clock::time_point{} && now - next < period ? next + period : now + period;
+}
+
+}  // namespace
+
 void GrawFrameMark() {
+  LimitFrameRate();
   const Clock::time_point now = Clock::now();
   std::lock_guard<std::mutex> lock(g_mutex);
   if (!g_csv_tried) {
@@ -140,9 +173,8 @@ REXCVAR_DEFINE_INT32(graw_ring_wait_sleep_us, 200, "GRAW",
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 #if defined(_WIN32)
-void GrawRingWaitYield() {
-  const int32_t sleep_us = REXCVAR_GET(graw_ring_wait_sleep_us);
-  if (sleep_us <= 0) return;
+void GrawSleepUs(int64_t us) {
+  if (us <= 0) return;
   // A high-resolution waitable timer sleeps for well under a millisecond (Sleep can't).
   thread_local HANDLE timer = CreateWaitableTimerExW(
       nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
@@ -151,11 +183,17 @@ void GrawRingWaitYield() {
     return;
   }
   LARGE_INTEGER due;
-  due.QuadPart = -int64_t(sleep_us) * 10;  // relative, in 100 ns units
+  due.QuadPart = -us * 10;  // relative, in 100 ns units
   if (SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) {
     WaitForSingleObject(timer, INFINITE);
   }
 }
+
+void GrawRingWaitYield() { GrawSleepUs(REXCVAR_GET(graw_ring_wait_sleep_us)); }
 #else
+void GrawSleepUs(int64_t us) {
+  if (us > 0) std::this_thread::sleep_for(std::chrono::microseconds(us));
+}
+
 void GrawRingWaitYield() {}
 #endif

@@ -66,6 +66,30 @@ resolves and the presenter.
   both runs) and the tutorial-only pass `sub_8217BEF8` (skipping it changes nothing).
 - **Not a resolution problem:** the noise appears at 1x (720p internal) too.
 
+## Round 3 (2026-10-24 afternoon): what the front buffer holds
+
+Dumped with `--readback_resolve=full --graw_dump_physical ...` (resolve results copied back to
+guest memory, then written to files; `port/src/resolve_probe.cpp`) and untiled offline with
+Xenia's GetTiledOffset2D:
+
+- **The front buffer** (physical 1ED08000, 1280x720, 8:8:8:8, tiled; from VdSwap's fetch
+  constant) shows the noise margins exactly as on screen.
+- **The inner rectangle is the whole scene shrunk**, not a crop: about (80,77)-(1202,653) of
+  1280x720, i.e. NDC x ±0.876, y +0.786..-0.814. Every HUD element sits inside it; the cyan frame
+  (which lives in the margin) is missing.
+- **The blur textures are fine:** 1FA14000 and 1FA4C000 (256x200) hold clean full-frame blurred
+  copies of the scene. The edge blur's source is not the noise.
+- **Ruled out this round:** heap memory (`--scribble_heap` leaves the noise identical, so it is
+  deterministic, not fresh allocations); the single-channel 1280x720 / 640x360 textures after the
+  scene copy (zeroing them changes nothing); dropped draws (no renderer errors besides the
+  "nothing bound" fetch); D3D SetViewport (all viewports full: 1280x720 and the post-process
+  sizes); D3D SetScissorRect (scissor test off); the full-screen post quad (`sub_82115298`
+  builds (0,0)-(1280,720)); `sub_821851D0`'s quad (its projection, view+140 = 1.429/2.54, puts the
+  quad at ±1.27, past the screen edges).
+- **The letterbox mask** in the old Mission 1 capture (event 18077) is the HUD frame art
+  (512x256 BC2, 16 vertices); with the #2 fix it draws One/InvSrcColor like Canary, so it no longer
+  hides the margin.
+
 ## Next steps
 
 0. Find which 256x200 texture the edge mesh and the Cross-Com square sample in the tutorial,

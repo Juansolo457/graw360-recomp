@@ -8,8 +8,11 @@
 // and clear colour. Comparing the tutorial with Mission 1 shows which write the margin misses.
 // Off unless --graw_debug_resolve.
 
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <sstream>
 #include <map>
 #include <mutex>
 #include <string>
@@ -28,6 +31,15 @@
 
 REXCVAR_DEFINE_BOOL(graw_debug_resolve, false, "GRAW",
                     "Log the game's distinct D3D Resolve and Clear calls with their callers (#1)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_STRING(graw_dump_physical, "", "GRAW",
+                      "Once, after --graw_dump_after seconds, write these guest physical ranges to "
+                      "files: 'address:size,...' in hex, e.g. '1DB52000:E1000' (#1)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_INT32(graw_dump_after, 60, "GRAW", "Seconds before --graw_dump_physical runs")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_STRING(graw_debug_zero_physical, "", "GRAW",
+                      "Experiment: keep this guest physical range zeroed, 'address:size' in hex (#1)")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 namespace {
@@ -105,9 +117,43 @@ void GrawResolveCall(PPCRegister& r4, PPCRegister& r5, PPCRegister& r6, PPCRegis
                    r12.u32, r4.u32, rect, tex, point, clear));
 }
 
+// --graw_dump_physical: guest memory as the CPU sees it (resolved data stays in the GPU's copy
+// unless read back, so a range nothing on the CPU writes shows what the textures start from).
+void DumpPhysicalOnce() {
+  static const auto start = std::chrono::steady_clock::now();
+  static bool done = false;
+  const std::string spec = REXCVAR_GET(graw_dump_physical);
+  if (done || spec.empty() ||
+      std::chrono::steady_clock::now() - start < std::chrono::seconds(REXCVAR_GET(graw_dump_after))) {
+    return;
+  }
+  done = true;
+  std::stringstream ranges(spec);
+  std::string range;
+  while (std::getline(ranges, range, ',')) {
+    const auto colon = range.find(':');
+    if (colon == std::string::npos) continue;
+    const uint32_t address = std::stoul(range.substr(0, colon), nullptr, 16);
+    const uint32_t size = std::stoul(range.substr(colon + 1), nullptr, 16);
+    const std::string path = fmt::format("graw-phys-{:08X}.bin", address);
+    if (FILE* f = std::fopen(path.c_str(), "wb")) {
+      std::fwrite(rex::system::kernel_memory()->TranslatePhysical<uint8_t*>(address), 1, size, f);
+      std::fclose(f);
+      REXLOG_INFO("GRAW dumped physical {:08X}+{:X} to {}", address, size, path);
+    }
+  }
+}
+
 // D3DDevice_Clear(device, count, rects, flags, colour, z (f1), stencil, ...)
 void GrawClearCall(PPCRegister& r4, PPCRegister& r5, PPCRegister& r6, PPCRegister& r7,
                    PPCRegister& r12) {
+  DumpPhysicalOnce();
+  if (const std::string z = REXCVAR_GET(graw_debug_zero_physical); !z.empty()) {
+    const auto colon = z.find(':');
+    const uint32_t address = std::stoul(z.substr(0, colon), nullptr, 16);
+    const uint32_t size = std::stoul(z.substr(colon + 1), nullptr, 16);
+    std::memset(rex::system::kernel_memory()->TranslatePhysical<uint8_t*>(address), 0, size);
+  }
   if (!REXCVAR_GET(graw_debug_resolve)) return;
   const std::string rect = r4.u32 ? Rect(r5.u32) : "full";
   Note(fmt::format("C {:08X} {} {} {:X} {:X}", r12.u32, r4.u32, rect, r6.u32, r7.u32),
@@ -127,4 +173,56 @@ void GrawViewRect(PPCRegister& r3, PPCRegister& r12) {
       r12.u32, v, h(380), h(382), h(384), h(386), LoadF(v + 388), LoadF(v + 392),
       LoadF(v + 396), LoadF(v + 400));
   Note(line, line);
+}
+
+// Before the game's VdSwap call (0x824CCB48, r4 = the front buffer's fetch constant): logs each
+// distinct front buffer (base, size, format), to compare with the resolves that write it (#1).
+void GrawSwapFetch(PPCRegister& r4) {
+  if (!REXCVAR_GET(graw_debug_resolve) || !Readable(r4.u32, 24)) return;
+  uint32_t d[6];
+  for (int i = 0; i < 6; ++i) d[i] = Load32(r4.u32 + 4 * i);
+  const std::string line = fmt::format(
+      "GRAW swap front buffer base {:08X} {}x{} fmt {} fetch [{:08X} {:08X} {:08X} {:08X} {:08X} {:08X}]",
+      d[1] & 0xFFFFF000u, (d[2] & 0x1FFF) + 1, ((d[2] >> 13) & 0x1FFF) + 1, d[1] & 0x3F, d[0], d[1],
+      d[2], d[3], d[4], d[5]);
+  Note(line, line);
+}
+
+// D3D SetViewport(device, D3DVIEWPORT9*) at 0x824D0488, hooked after mflr r12: each distinct
+// viewport (X, Y, width, height) with its caller (#1: is the tutorial's composition inset?).
+void GrawSetViewport(PPCRegister& r4, PPCRegister& r12) {
+  if (!REXCVAR_GET(graw_debug_resolve) || !Readable(r4.u32, 24)) return;
+  const std::string line =
+      fmt::format("GRAW viewport from {:08X}: ({},{}) {}x{} z {}..{}", r12.u32, int32_t(Load32(r4.u32)),
+                  int32_t(Load32(r4.u32 + 4)), Load32(r4.u32 + 8), Load32(r4.u32 + 12),
+                  LoadF(r4.u32 + 16), LoadF(r4.u32 + 20));
+  Note(line, line);
+}
+
+// D3D SetScissorRect(device, RECT*) at 0x824D03C0, hooked after mflr r12: each distinct rectangle
+// with its caller and the device's scissor-test flag (device+11952) (#1).
+void GrawSetScissor(PPCRegister& r3, PPCRegister& r4, PPCRegister& r12) {
+  if (!REXCVAR_GET(graw_debug_resolve) || !Readable(r4.u32, 16) || !Readable(r3.u32 + 11952, 4)) {
+    return;
+  }
+  const std::string line = fmt::format(
+      "GRAW scissor from {:08X}: ({},{})-({},{}) test {}", r12.u32, int32_t(Load32(r4.u32)),
+      int32_t(Load32(r4.u32 + 4)), int32_t(Load32(r4.u32 + 8)), int32_t(Load32(r4.u32 + 12)),
+      Load32(r3.u32 + 11952));
+  Note(line, line);
+}
+
+// sub_821851D0 (the view effect, r3 = the view) entry (#1): logs the view's two 4x4 matrices
+// (+12 and +140, uploaded as vertex shader constants for its camera-facing quad) and +588.
+void GrawViewMatrices(PPCRegister& r3) {
+  if (!REXCVAR_GET(graw_debug_resolve) || !Readable(r3.u32 + 12, 600)) return;
+  std::string m;
+  for (uint32_t base : {12u, 140u}) {
+    m += fmt::format(" +{}:", base);
+    for (int i = 0; i < 16; ++i) m += fmt::format(" {:.4g}", LoadF(r3.u32 + base + 4 * i));
+  }
+  const std::string line = fmt::format("GRAW viewfx view {:08X} aspect {:.4g}{}", r3.u32,
+                                       LoadF(r3.u32 + 588), m);
+  static int logged = 0;
+  if (logged++ < 6) REXLOG_INFO("{}", line);
 }

@@ -344,3 +344,23 @@ registers = ["r4", "r5", "r6", "r7", "r12"]
 name = "GrawViewRect"            # sub_82140938 (view viewport rectangle), after mflr r12
 address = 0x8214093C
 registers = ["r3", "r12"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawSwapFetch"           # before bl VdSwap's last argument setup; r4 = front buffer fetch
+address = 0x824CCB48
+registers = ["r4"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawSetViewport"         # D3D SetViewport(device, D3DVIEWPORT9*), after mflr r12
+address = 0x824D048C
+registers = ["r4", "r12"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawSetScissor"          # D3D SetScissorRect(device, RECT*), after mflr r12
+address = 0x824D03C4
+registers = ["r3", "r4", "r12"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawViewMatrices"        # sub_821851D0 entry (#1)
+address = 0x821851D0
+registers = ["r3"]

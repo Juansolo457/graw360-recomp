@@ -232,3 +232,29 @@ seconds later: a red vignette with a desaturated screen. Without the #2 switch o
 manifest the same frames are entirely black, which was #13. The local autopilot is
 `private/autopilot/load-graw-nade.txt` (looks down at 80 s; X at 84 and 100 s, B at 92 and 110 s, RT after
 each).
+
+## Parked 2026-10-25: state and next step
+- **The game logic is built for ~30 fps** (#17): at 30 (the default now, `launch.ps1`; `-Console`
+  for 720p and the game's own filtering) squad commands, the rally point (#19) and the AI behave
+  as on the 360; at 60 allies' weapons vanish and the rally point blocks. #7 (weapons vanishing)
+  still happens at 30 after explosions, so it is also a separate bug.
+- **Installed campaign renderer:** stock bd833a2 + `rexglue-bd833a2-freed-page-resolve.patch` +
+  `rexglue-bd833a2-vblank-pacing.patch` (`port-yeti/out/build/.../rexgpu-xenosrd.dll.fixed2`).
+  Every campaign build copies the SDK's stock DLL back: reinstall `.fixed2` after building.
+  The SDK work tree keeps the diagnostics (`rexglue-bd833a2-graw-rtt-trace.patch`), the codegen
+  fix (`rexglue-bd833a2-vpkd3d128-alias.patch`, generated code needs the patched CLI, see
+  TACMAP.md) and the vblank change.
+- **Steam Deck test copy:** `D:\x360-recomps\packages\graw360-steamdeck-20261025.zip` (private:
+  game files + saves; 30 Hz, 720p).
+- **Next (step 1 of 60+ fps):** find the campaign's main loop (the per-frame update on the main
+  thread that calls VdSwap; the frame timer is `sub_82406748`, `mftb`) and log the time step it
+  hands each subsystem; then run the same scripted scene at 30 and 60 and diff which systems step
+  per frame instead of by time (animation playback, AI, squad orders, weapon attachment). The
+  number of culprits decides whether 60 (and 120) is realistic. The renderer also needs headroom
+  for 60+: the command processor reaches ~16 ms in the plaza fight (#11).
+- **Other open from the play-tests:** #21 first-load stutter (pipeline compilation, depth-only
+  pipelines are created synchronously), #18 AI parity check against a real 360, #20 menu videos,
+  #15 one executable, #16 LOD and shadow resolution.
+- **Tools added:** `tools/sample_profile.py` (sampling profiler with per-second bins),
+  `tools/check_vector_aliasing.py`, `tools/launch.ps1 -Console`, portable layout (programs + game\
+  + user\ in one folder).

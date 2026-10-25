@@ -127,3 +127,35 @@ void GrawRaiseTimerResolution() {
 #else
 void GrawRaiseTimerResolution() {}
 #endif
+
+// The campaign's Direct3D waits for room in the GPU command ring by polling the read pointer the
+// GPU writes back (sub_824D7830's loop around sub_824E0A00): while the command processor is
+// behind, the main thread spins a whole core. On a power-limited device (Steam Deck: CPU and GPU
+// share ~15 W) that starves the GPU, whose clock dropped to 200-900 MHz with all CPU threads at
+// 60-100% (play-test 2026-10-25). A hook at the loop's back-edge (only reached while waiting)
+// sleeps briefly instead.
+REXCVAR_DEFINE_INT32(graw_ring_wait_sleep_us, 200, "GRAW",
+                     "Sleep this long (microseconds) each time the game's Direct3D waits for room "
+                     "in the GPU command ring, instead of spinning; 0 = spin as on the 360")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
+#if defined(_WIN32)
+void GrawRingWaitYield() {
+  const int32_t sleep_us = REXCVAR_GET(graw_ring_wait_sleep_us);
+  if (sleep_us <= 0) return;
+  // A high-resolution waitable timer sleeps for well under a millisecond (Sleep can't).
+  thread_local HANDLE timer = CreateWaitableTimerExW(
+      nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+  if (!timer) {
+    Sleep(0);
+    return;
+  }
+  LARGE_INTEGER due;
+  due.QuadPart = -int64_t(sleep_us) * 10;  // relative, in 100 ns units
+  if (SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) {
+    WaitForSingleObject(timer, INFINITE);
+  }
+}
+#else
+void GrawRingWaitYield() {}
+#endif

@@ -69,3 +69,28 @@ renderer plugin). 360 settings, plaza fight, 60 s:
 
 (The frame log times the game's VdSwap calls, i.e. when the CPU hands a frame over, not when it
 is shown, so some of the remaining spread is the CPU running a frame ahead.)
+
+## Sleep, don't spin (2026-10-25)
+On the Steam Deck the CPU and GPU share one ~15 W budget. The overlay showed all CPU threads at
+60-100% and the GPU clock at 200-900 MHz: spinning threads were taking the GPU's power. Two
+waits spun:
+- **The game's wait for room in the GPU command ring** (`sub_824D7830` polls the read pointer
+  through `sub_824E0A00`; about half the main thread's samples). A mid-asm hook at the loop's
+  back-edge (`0x824D78C8`, reached only while waiting) sleeps 200 us on a high-resolution
+  waitable timer: `GrawRingWaitYield` in `port/src/frame_timing.cpp`,
+  `--graw_ring_wait_sleep_us` (0 = spin as on the 360).
+- **The vblank thread's last 2 ms before each vblank.** It now sleeps on a high-resolution
+  waitable timer to 0.25 ms before the deadline and spins only that
+  (`tools/patches/rexglue-bd833a2-vblank-pacing.patch`).
+
+360 settings, 30 fps, PC, 3 minutes of play (the old rows are the earlier runs in the section
+above, not the same scene):
+
+| | before the vblank fix | vblank fix | this change |
+|---|---|---|---|
+| frames within 33.3 +-1 ms | 49% | 74% | 82% |
+| frames under 25 ms | 18.8% | 5.3% | 1.3% |
+| frames over 40 ms | 2.0% | 0.7% | 0.1% |
+
+The whole process averaged ~0.7 of one core. The play-tester called it the best run so far, with
+no judder. The Deck result is pending.

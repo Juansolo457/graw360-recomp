@@ -394,3 +394,8 @@ registers = ["r25", "r27"]
 name = "GrawMapPanelMessage"     # sub_821F3D98: message handler that adds a map panel rect (#3)
 address = 0x821F3DB4
 registers = ["r1", "r4", "r5"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawRingWaitYield"       # sub_824D7830: back-edge of D3D's wait for GPU ring space (sleep, don't spin)
+address = 0x824D78C8
+registers = []

@@ -87,3 +87,43 @@ void GrawFrameMark() {
     g_window_start = now;
   }
 }
+
+// Windows' default timer resolution is 15.6 ms, and nothing in the runtime raises it, so every
+// Sleep(1) in it really sleeps up to 15.6 ms: the guest vblank thread (graphics_system.cpp sleeps
+// 1 ms between checks and then fires all the vblanks that are due), the command processor's
+// WAIT_REG_MEM sleeps and the game's own KeDelayExecutionThread. At 60 Hz that made vblanks
+// arrive late and in bursts: ~half the frames 3 ms early or late and ~3% a missed refresh (33 ms),
+// although the game needs only ~14 ms of CPU per frame (#11, play-test 2026-10-25). Xenia raises
+// the resolution at start-up too. Also asks Windows 11 to keep honouring it when the window is
+// in the background (power throttling ignores timer requests then).
+REXCVAR_DEFINE_INT32(graw_timer_resolution_us, 500, "GRAW",
+                     "Windows timer resolution to request at start-up, in microseconds (0 = leave "
+                     "the system default of 15.6 ms)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+void GrawRaiseTimerResolution() {
+  const int32_t requested_us = REXCVAR_GET(graw_timer_resolution_us);
+  if (requested_us <= 0) return;
+  PROCESS_POWER_THROTTLING_STATE throttling{};
+  throttling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+  throttling.ControlMask = PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+  throttling.StateMask = 0;  // don't ignore this process's timer resolution
+  SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling,
+                        sizeof(throttling));
+  using SetResolution = LONG(WINAPI*)(ULONG desired, BOOLEAN set, ULONG* current);
+  auto set_resolution = reinterpret_cast<SetResolution>(
+      GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtSetTimerResolution"));
+  ULONG current = 0;  // in 100 ns units
+  if (set_resolution && set_resolution(ULONG(requested_us) * 10, TRUE, &current) >= 0) {
+    REXLOG_INFO("GRAW: timer resolution {} us (requested {} us)", current / 10, requested_us);
+  } else {
+    REXLOG_WARN("GRAW: couldn't raise the timer resolution; frame pacing may be uneven");
+  }
+}
+#else
+void GrawRaiseTimerResolution() {}
+#endif

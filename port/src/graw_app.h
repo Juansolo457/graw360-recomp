@@ -20,6 +20,8 @@
 #include <rex/ui/window.h>
 
 #include "autopilot.h"
+
+void GrawRaiseTimerResolution();  // frame_timing.cpp
 #include "crash_report.h"
 #include "graw_loader.h"
 #include "graw_process.h"
@@ -79,6 +81,9 @@ class GrawApp : public rex::ReXApp {
   }
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
+    // 0.5 ms Windows timer resolution: the runtime's Sleep(1)s pace the guest's vblanks (#11).
+    GrawRaiseTimerResolution();
+
     // logs/crash-<time>.txt + .dmp with the guest stack (sub_<360 address> names) on any fault.
     graw::crash_report::InstallCrashReporter();
 

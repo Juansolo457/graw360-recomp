@@ -26,8 +26,16 @@ Rendering in the campaign is the open front. These issues are filed on
 - Performance at 4K: see [PERF.md](PERF.md) (CPU-bound on two threads; 4K itself is free).
 - #1 HUD border, #4 window checkerboard, #5 speckle and shadows, #6 textures and bump maps, #7
   allies' weapons. #13 black screen under fire: fixed by #2's override (verified, see below).
-- Other open issues: #8 tiny name dialog, #10 saving, #11 frame rate in heavy scenes, #12 image
-  quality defaults, #14 FOV 90.
+- #8 tiny name dialog: fixed 2026-10-24, the runtime's dialogs now scale with the window height
+  (`port/src/ui_style.cpp`).
+- #10 saving: works (2026-10-24). A fresh New game writes `GRAW.sav`, its thumbnail and header
+  under the user data root, the content enumerator then lists it, and Load game restores Mission
+  1 from the "GRAW" save. The `D:\Dummy` write probe is refused because D: is the read-only disc,
+  as on a retail console; nothing depends on it.
+- #4 window checkerboard: the facades near the start of Mission 1 look like broken and frosted
+  panes (jagged dark panes), possibly the real art; compare with a console recording before
+  treating it as a bug.
+- Other open issues: #11 frame rate in heavy scenes, #12 image quality defaults, #14 FOV 90.
 
 What is in place:
 - **Hand-off:** `graw_loader.*` and `graw_process.*`.

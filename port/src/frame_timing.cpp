@@ -83,8 +83,11 @@ void LimitFrameRate() {
   static Clock::time_point next{};
   Clock::time_point now = Clock::now();
   if (next != Clock::time_point{} && now < next) {
-    GrawSleepUs(std::chrono::duration_cast<std::chrono::microseconds>(next - now).count());
-    now = Clock::now();
+    // The timer wakes up to ~0.2 ms late: sleep to 0.5 ms before the deadline, then spin.
+    const int64_t sleep_us =
+        std::chrono::duration_cast<std::chrono::microseconds>(next - now).count() - 500;
+    GrawSleepUs(sleep_us);
+    while ((now = Clock::now()) < next) std::this_thread::yield();
   }
   next = next != Clock::time_point{} && now - next < period ? next + period : now + period;
 }
@@ -197,3 +200,83 @@ void GrawSleepUs(int64_t us) {
 
 void GrawRingWaitYield() {}
 #endif
+
+#include <rex/ppc/context.h>
+
+// The campaign's Direct3D presents a frame after `interval` vblanks: sub_824CC788 gets the
+// interval in the high half of its argument (r31 from 0x824CC7C0 on) and arms the vblank
+// countdown with it (the interval comes from the device's presentation interval, device+13788,
+// via sub_824CC858); each change of the interval the game asks for is logged. Capping it raises
+// the frame rate without changing the guest's vblank rate (a faster --video_mode_refresh_rate
+// also raises it, for every vblank consumer). 0 presents without waiting for a vblank, paced by
+// the frame limiter (--graw_max_fps): with the animation tick below, that's how the campaign
+// runs at 120 fps.
+REXCVAR_DEFINE_INT32(graw_present_interval, -1, "GRAW",
+                     "At most this many vblanks per presented frame in the campaign (0 = don't "
+                     "wait for vblanks, --graw_max_fps paces frames; -1 = the game's own)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
+void GrawPresentInterval(PPCRegister& r31) {
+  const uint32_t word = r31.u32;
+  const uint32_t interval = word >> 16;
+  static uint32_t logged = ~0u;
+  if (interval != logged) {
+    logged = interval;
+    REXLOG_INFO("GRAW present interval: the game asks for {} (word {:08X})", interval, word);
+  }
+  const int32_t cap = REXCVAR_GET(graw_present_interval);
+  // The low half is how far into the scanout (percent) a late present may still go out at once
+  // instead of waiting for the next vblank: with interval 0 it becomes 100, so presents never
+  // wait for a vblank (the frame limiter, --graw_max_fps, paces them instead).
+  if (cap >= 0 && interval > uint32_t(cap))
+    r31.u64 = (uint64_t(cap) << 16) | (cap == 0 ? 100u : (word & 0xFFFF));
+}
+
+#include <atomic>
+
+// The campaign's character animation (#17) runs on a 60 Hz tick. Every frame, sub_821D5F60 sets
+// the step all animated characters advance by (0x8266B42C: the clock's frame delta times its
+// time scale, floored at 1/60 s by the constants at 0x8209B5D0/D8), then sub_822484D8 banks it
+// in each character's animation (+116) and queues the ones a level-of-detail check picks;
+// sub_821D5FF8 and sub_821D6048 (two halves of the queue, on two threads) run their updates
+// (sub_82248940 -> sub_82216CC8). How often a character is picked depends on the frame count
+// and on the step together, and only balances at 1/60 s per frame: above 60 fps the floored
+// step made animation fast (2x at 120 fps), and the real step made it slow (0.5x at 120 fps;
+// measured per character against wall time). Movement uses the real delta and was right.
+// So above 60 fps those three run only once 1/60 s of game time has passed, with the step
+// covering all of it; on the frames between they return at once. At 60 fps and below every
+// frame is a tick with the game's own step, as before.
+REXCVAR_DEFINE_BOOL(graw_anim_tick_60, true, "GRAW",
+                    "Above 60 fps, update the campaign's character animation at 60 Hz with the "
+                    "elapsed time (false: every frame, which runs animation at the wrong speed)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
+namespace {
+std::atomic<bool> g_anim_tick{true};
+double g_anim_banked = 0;  // scaled game time since the last animation tick
+}  // namespace
+
+// sub_821D5F60 before it stores the step (0x821D5FC4): f0 = the frame's scaled delta, f1 = the
+// step floored at 1/60 s. Decides whether this frame is an animation tick.
+void GrawAnimStep(PPCRegister& f0, PPCRegister& f1) {
+  if (!REXCVAR_GET(graw_anim_tick_60)) return;
+  // Frames of a 60 Hz pace vary by a fraction of a millisecond: within 1.5 ms of 1/60 s a frame
+  // still is a tick, so at 60 fps and below every frame is one. On a tick the step covers the
+  // banked time, but not less than the game's own (floored) step, which is then unchanged.
+  constexpr double kTick = 1.0 / 60.0, kSlack = 0.0015;
+  g_anim_banked += f0.f64;
+  const bool tick = g_anim_banked >= kTick - kSlack || f0.f64 <= 0.0;
+  if (tick) {
+    if (g_anim_banked > f1.f64) f1.f64 = g_anim_banked;
+    g_anim_banked = 0;
+  }
+  g_anim_tick.store(tick, std::memory_order_release);
+}
+
+// sub_821D5F60 after the store (0x821D5FC8), and the entries of sub_821D5FF8 and sub_821D6048:
+// return 0 at once on the frames between ticks.
+bool GrawAnimSkip(PPCRegister& r3) {
+  if (g_anim_tick.load(std::memory_order_acquire)) return false;
+  r3.u64 = 0;
+  return true;
+}

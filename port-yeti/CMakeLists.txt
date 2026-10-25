@@ -60,6 +60,26 @@ endif()
 set(GRAW_REXGLUE_SDK_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/rexglue-sdk-bd833a2"
     CACHE PATH "ReXGlue SDK source tree (bd833a2) for the native renderer")
 if(WIN32 AND EXISTS "${GRAW_REXGLUE_SDK_SRC}/src/graphics/pipeline/shader/dxbc_translator.cpp")
+    # The tree must carry the four pgr4-native SDK patches (tools/patches/pgr4-native/): a line
+    # each one adds, so an unpatched tree stops here rather than in native/'s compile errors.
+    foreach(check
+            "0021|include/rex/graphics/format/dxbc.h|kSampleB = 74"
+            "0022|include/rex/graphics/pipeline/shader/dxbc_translator.h|textures_unsigned"
+            "0030|include/rex/graphics/command_processor.h|for presenters"
+            "0031|src/graphics/command_processor.cpp|gpu_skip_draws")
+        string(REPLACE "|" ";" check "${check}")
+        list(GET check 0 patch)
+        list(GET check 1 file)
+        list(GET check 2 marker)
+        file(READ "${GRAW_REXGLUE_SDK_SRC}/${file}" text)
+        string(FIND "${text}" "${marker}" at)
+        if(at EQUAL -1)
+            message(FATAL_ERROR "The native renderer needs pgr4-native's SDK patch ${patch} in "
+                "${GRAW_REXGLUE_SDK_SRC} (${file} lacks it): apply "
+                "tools/patches/pgr4-native/${patch}-*.patch there (docs/NATIVE_RENDERER.md, Build), "
+                "or remove the tree to build without the native renderer.")
+        endif()
+    endforeach()
     set(GRAW_NATIVE_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../native")
     file(GLOB GRAW_NATIVE_SOURCES CONFIGURE_DEPENDS "${GRAW_NATIVE_SRC}/*.cpp")
     # An object library: its hooks (REX_HOOK_RAW) override the generated functions only when

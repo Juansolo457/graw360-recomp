@@ -165,6 +165,7 @@ bool D3D12Device::Initialize(uint32_t width, uint32_t height, const wchar_t* tit
     return false;
   DXGI_ADAPTER_DESC1 ad = {};
   adapter->GetDesc1(&ad);
+  vendor_id_ = ad.VendorId;
   char name[128] = {};
   WideCharToMultiByte(CP_UTF8, 0, ad.Description, -1, name, sizeof(name) - 1, nullptr, nullptr);
 

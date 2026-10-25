@@ -39,12 +39,12 @@ void DumpFile(const char* name, const void* data, size_t size) {
 }
 }  // namespace
 
-// The Xenos plugin's settings on the RTX 3090 (bindless on, host render targets, gamma as
-// unorm16, 2x MSAA supported, no resolution scale), so a translation here is byte-identical to
+// The Xenos plugin's settings (bindless on, host render targets, gamma as unorm16, 2x MSAA
+// supported, no resolution scale) and adapter vendor, so a translation here is byte-identical to
 // the plugin's for the same modification. The vendor only changes code for Intel (no switch
 // statements).
-ShaderCache::ShaderCache()
-    : translator_(rex::ui::GraphicsProvider::GpuVendorID(0x10DE), /*bindless=*/true,
+ShaderCache::ShaderCache(uint32_t vendor_id)
+    : translator_(rex::ui::GraphicsProvider::GpuVendorID(vendor_id), /*bindless=*/true,
                   /*edram_rov_used=*/false, /*gamma_render_target_as_unorm8=*/false,
                   /*msaa_2x_supported=*/true) {}
 

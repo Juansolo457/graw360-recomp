@@ -1021,7 +1021,8 @@ struct DrawRenderer::Impl {
   void Snapshot(ID3D12GraphicsCommandList* list, RenderTarget* rt, const std::string& stem);
   void WriteSnapshots(uint64_t completed_fence);
 
-  Impl(NativeRenderer& renderer, DrawRenderer::Stats& s) : r(renderer), stats(s) {}
+  Impl(NativeRenderer& renderer, DrawRenderer::Stats& s)
+      : r(renderer), stats(s), shaders(renderer.device().vendor_id()) {}
   ~Impl() {
     if (!pso_threads.empty()) {
       {

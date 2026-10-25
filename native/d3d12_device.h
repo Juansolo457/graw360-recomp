@@ -83,6 +83,8 @@ class D3D12Device {
   ID3D12Resource* back_buffer() const { return back_buffers_[back_index_].Get(); }
   D3D12_CPU_DESCRIPTOR_HANDLE back_buffer_rtv() const;
   uint32_t width() const { return width_; }
+  // The adapter's PCI vendor ID (DXGI_ADAPTER_DESC1::VendorId).
+  uint32_t vendor_id() const { return vendor_id_; }
   uint32_t height() const { return height_; }
   // The swapchain presents HDR10 (kHdrBackBufferFormat): --graw_native_hdr is on and the display
   // takes it (under Proton: gamescope with HDR on and DXVK_HDR=1, as in Steam's Game Mode).
@@ -151,6 +153,7 @@ class D3D12Device {
   static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 
   uint32_t width_ = 0, height_ = 0;
+  uint32_t vendor_id_ = 0;
   ComPtr<IDXGIFactory6> factory_;
   ComPtr<ID3D12Device> device_;
   ComPtr<ID3D12CommandQueue> queue_;

@@ -29,7 +29,9 @@ struct ShaderCacheStats {
 
 class ShaderCache {
  public:
-  ShaderCache();
+  // vendor_id: the adapter's PCI vendor (DXGI_ADAPTER_DESC1::VendorId), as the Xenos plugin
+  // passes it: the translator changes its code for Intel.
+  explicit ShaderCache(uint32_t vendor_id);
   ~ShaderCache();
 
   const DxbcShaderTranslator& translator() const { return translator_; }

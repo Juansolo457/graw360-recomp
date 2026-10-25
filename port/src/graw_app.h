@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <filesystem>
 #include <string>
 
 #include <rex/cvar.h>
@@ -15,6 +16,7 @@
 #include <rex/input/input_system.h>
 #include <rex/logging.h>
 #include <rex/rex_app.h>
+#include <rex/runtime.h>
 #include <rex/system/xthread.h>
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/window.h>
@@ -76,8 +78,19 @@ class GrawApp : public rex::ReXApp {
   // A program started by another (the hand-off) waits for that one to exit first, so the two
   // never hold the window, the saves or the log at the same time.
   void OnConfigurePaths(rex::PathConfig& paths) override {
-    (void)paths;
     graw::process::WaitForPreviousRun();
+    // A packaged copy (a folder with the three programs, game\ = the disc's files and user\ =
+    // profile and saves, e.g. for a Steam Deck under Proton) runs without command-line paths.
+    const auto own_dir = graw::process::OwnExecutable().parent_path();
+    std::error_code error;
+    if (paths.game_data_root.empty() && std::filesystem::is_directory(own_dir / "game", error)) {
+      paths.game_data_root = own_dir / "game";
+    }
+    if (REXCVAR_GET(user_data_root).empty() &&
+        std::filesystem::is_directory(own_dir / "user", error)) {
+      paths.user_data_root = own_dir / "user";
+      paths.cache_root = own_dir / "user" / "cache";
+    }
   }
 
   void OnPreSetup(rex::RuntimeConfig& config) override {

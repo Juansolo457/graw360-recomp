@@ -74,8 +74,13 @@ fs::path SiblingProgram(const char* project, const char* name) {
 }
 
 fs::path ProgramFor(const std::string& executable) {
+  // A packaged copy keeps the three programs side by side; a build tree has them in sibling
+  // projects' build folders.
   const auto pick = [](const std::string& set, const char* project, const char* name) {
-    return set.empty() ? SiblingProgram(project, name) : fs::path(set);
+    if (!set.empty()) return fs::path(set);
+    const fs::path beside = graw::process::OwnExecutable().parent_path() / name;
+    std::error_code error;
+    return fs::exists(beside, error) ? beside : SiblingProgram(project, name);
   };
   if (executable == "default.xex") {
     return pick(REXCVAR_GET(graw_frontend_exe), "port", "graw.exe");

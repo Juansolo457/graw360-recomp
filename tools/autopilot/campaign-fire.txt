@@ -1,0 +1,38 @@
+# From the campaign program's own menu into the tutorial (campaign-newgame.txt), then the right
+# trigger in bursts: muzzle flash, tracers and the ammo counter (native renderer checks).
+#   pwsh -NoProfile -File tools/smoke.ps1 -Project port-yeti -Seconds 130 -FreshProfile -Autopilot tools/autopilot/campaign-fire.txt
+# Times are seconds from start-up; the Campaign menu is up after ~8 s. Play game is greyed out, so
+# Up a few times lands on New game whatever the cursor started on (the menu doesn't wrap: check
+# the captures if it does).
+10.0 UP
+10.6 UP
+11.2 UP
+11.8 UP
+12.4 UP
+13.0 UP
+14.5 A           # New game
+# The device selector answers at once; the save-name keyboard opens (ImGui). A = Enter
+# (src/ui_pad.cpp) accepts the default name.
+19.0 A
+# Difficulty selection: Normal is highlighted.
+24.0 A
+# Loading screen, then the tutorial's first objective. A few more A presses skip intro text.
+45.0 A
+55.0 A
+65.0 A
+70.0 trigger 0 1 hold 1.2
+73.0 trigger 0 1 hold 1.2
+76.0 trigger 0 1 hold 1.2
+79.0 trigger 0 1 hold 1.2
+82.0 trigger 0 1 hold 1.2
+85.0 trigger 0 1 hold 1.2
+88.0 trigger 0 1 hold 1.2
+91.0 trigger 0 1 hold 1.2
+94.0 trigger 0 1 hold 1.2
+97.0 trigger 0 1 hold 1.2
+100.0 trigger 0 1 hold 1.2
+103.0 trigger 0 1 hold 1.2
+106.0 trigger 0 1 hold 1.2
+109.0 trigger 0 1 hold 1.2
+112.0 trigger 0 1 hold 1.2
+115.0 trigger 0 1 hold 1.2

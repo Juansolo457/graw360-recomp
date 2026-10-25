@@ -143,11 +143,19 @@ void GuestStateTracker::Sync(uint8_t* base, uint32_t device, uint32_t fn) {
   last_sync_thread_ = GetCurrentThreadId();
 }
 
-void GuestStateTracker::Jump(const uint8_t* base, uint32_t device) {
+void GuestStateTracker::Jump(const uint8_t* base, uint32_t device, uint32_t fn) {
   if (!device || device != device_) return;
   ++counters_.jumps;
   if (in_packet_) {
     ++counters_.torn;
+    static uint32_t logged = 0;
+    if (++logged <= 24)
+      REXLOG_WARN(
+          "GRAW native state: packet {:08X} at {:08X} open at the jump of {:08X}: has {} dwords, "
+          "needs {} more; cursor {:08X} -> {:08X}, then {:08X} {:08X} (thread {})",
+          header_, packet_address_, fn, pkt_.size(), need_, cursor_,
+          Load32(base, device + dev::kPush), Load32(base, Load32(base, device + dev::kPush) + 4),
+          Load32(base, Load32(base, device + dev::kPush) + 8), GetCurrentThreadId());
     in_packet_ = false;
   }
   cursor_ = Load32(base, device + dev::kPush);

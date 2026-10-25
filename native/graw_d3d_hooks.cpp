@@ -166,6 +166,13 @@ inline void TilingHook(PPCContext& ctx, uint8_t* base, uint32_t fn) {
 
 // The functions that move the push cursor by assignment: decode up to the old place, then go on
 // from the new one.
+//
+// Nested in another one (the wrap inside MakeSpace's submit, sub_824D7D40 -> sub_824D7C08), it
+// does not decode at its entry: the outer call decoded everything the game wrote, and what lies
+// between that and the cursor now is the submit's own bookkeeping (pointers, not packets), which
+// decoded as packets with absurd lengths (torn at the jump, ~5,000 per 3 minutes).
+thread_local uint32_t t_jump_depth = 0;
+
 template <GuestFn kOriginal>
 inline void JumpHook(PPCContext& ctx, uint8_t* base, uint32_t fn) {
   if (!nat::NativeRenderer::Live()) {
@@ -174,9 +181,10 @@ inline void JumpHook(PPCContext& ctx, uint8_t* base, uint32_t fn) {
   }
   const uint32_t device = ctx.r3.u32;
   nat::GuestStateTracker& gs = nat::GuestState();
-  gs.Sync(base, device, fn);
+  if (t_jump_depth++ == 0) gs.Sync(base, device, fn);
   kOriginal(ctx, base);
-  gs.Jump(base, device);
+  --t_jump_depth;
+  gs.Jump(base, device, fn);
 }
 
 }  // namespace

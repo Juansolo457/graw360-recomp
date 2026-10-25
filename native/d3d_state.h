@@ -116,7 +116,7 @@ class GuestStateTracker {
   // After a call that moved the push cursor by assignment (graw_d3d.h fn::kMakeSpace and the
   // segment functions): continue from the new cursor; what the old and new place hold between
   // the last decoded dword and the new cursor was not written in this pass.
-  void Jump(const uint8_t* base, uint32_t device);
+  void Jump(const uint8_t* base, uint32_t device, uint32_t fn);
   // At the exit of every hooked call, after Sync: the registers the D3D writes per tile, set
   // from the device (window offset and scissor).
   void AfterCall(const uint8_t* base, uint32_t device);

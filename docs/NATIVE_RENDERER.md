@@ -24,7 +24,20 @@ predicated-tiling replays double the command processor's work). The emulated ren
   Xenos to 99% of pixels exact (final image 67.7 dB, was ~25). For comparisons, run both with
   the game's own texture filtering (`--anisotropic_override=-1`): the SDK forces 4x anisotropy
   on the Xenos side by default, the native renderer uses the game's.
-- Open: the torn packets and the BeginTiling jump. The 4x MSAA depth resolve differs from Xenos
+- Fixed: the torn packets (~5,000 per 3 minutes). They all came at the buffer wrap
+  (`sub_824D7C08`) inside MakeSpace's submit: the wrap hook decoded the submit's own bookkeeping
+  (pointers) as packets. A jump hook nested in another no longer decodes at its entry: 0 torn
+  since.
+- Open: **bullet effects in the scope view and muzzle flashes** (user play-test 2026-10-25):
+  white tracers, dust puffs and the muzzle flash show with Xenos, not natively. Measured: the
+  scene pass (additive particle batches included) matches Xenos to 99.8%; the tracer streak first
+  differs in the post-processed composite (resolve to `1E5D8000`), so it is drawn after the scene
+  resolve. No vertex data changes after its draw (`--graw_native_coherency_check`: no late or
+  stale pages). Next: find the draws between the scene resolve and the composite resolve in a
+  firing frame (`draw-debug.txt` bit 16 logs a frame's draws; bit 128 with a shader hash draws
+  only those) and compare their output. Autopilot scripts: `tools/autopilot/campaign-fire.txt`,
+  `campaign-scope-fire.txt`.
+- Open: the BeginTiling jump. The 4x MSAA depth resolve differs from Xenos
   in one column per 40-pixel EDRAM tile (sample choice at tile edges).
 - HDR10 output (pgr4-native's default) washed the picture out; GRAW defaults to SDR now
   (`--graw_native_hdr=true` to try HDR).

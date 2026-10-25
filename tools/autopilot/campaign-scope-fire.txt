@@ -1,0 +1,46 @@
+# From the campaign program's own menu into the tutorial (campaign-newgame.txt), then aims (left trigger,
+# right stick click: the scope) and fires while zoomed: muzzle flash and tracers in the scope view.
+#   pwsh -NoProfile -File tools/smoke.ps1 -Project port-yeti -Seconds 130 -FreshProfile -Autopilot tools/autopilot/campaign-scope-fire.txt
+# Times are seconds from start-up; the Campaign menu is up after ~8 s. Play game is greyed out, so
+# Up a few times lands on New game whatever the cursor started on (the menu doesn't wrap: check
+# the captures if it does).
+10.0 UP
+10.6 UP
+11.2 UP
+11.8 UP
+12.4 UP
+13.0 UP
+14.5 A           # New game
+# The device selector answers at once; the save-name keyboard opens (ImGui). A = Enter
+# (src/ui_pad.cpp) accepts the default name.
+19.0 A
+# Difficulty selection: Normal is highlighted.
+24.0 A
+# Loading screen, then the tutorial's first objective. A few more A presses skip intro text.
+45.0 A
+55.0 A
+65.0 A
+70.0 trigger 1 0 hold 5.0
+70.6 RS
+72.0 trigger 1 1 hold 2.5
+76.0 trigger 1 0 hold 5.0
+76.6 RS
+78.0 trigger 1 1 hold 2.5
+82.0 trigger 1 0 hold 5.0
+82.6 RS
+84.0 trigger 1 1 hold 2.5
+88.0 trigger 1 0 hold 5.0
+88.6 RS
+90.0 trigger 1 1 hold 2.5
+94.0 trigger 1 0 hold 5.0
+94.6 RS
+96.0 trigger 1 1 hold 2.5
+100.0 trigger 1 0 hold 5.0
+100.6 RS
+102.0 trigger 1 1 hold 2.5
+106.0 trigger 1 0 hold 5.0
+106.6 RS
+108.0 trigger 1 1 hold 2.5
+112.0 trigger 1 0 hold 5.0
+112.6 RS
+114.0 trigger 1 1 hold 2.5

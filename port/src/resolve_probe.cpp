@@ -8,6 +8,7 @@
 // and clear colour. Comparing the tutorial with Mission 1 shows which write the margin misses.
 // Off unless --graw_debug_resolve.
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -190,12 +191,20 @@ void GrawSwapFetch(PPCRegister& r4) {
 
 // D3D SetViewport(device, D3DVIEWPORT9*) at 0x824D0488, hooked after mflr r12: each distinct
 // viewport (X, Y, width, height) with its caller (#1: is the tutorial's composition inset?).
-void GrawSetViewport(PPCRegister& r4, PPCRegister& r12) {
-  if (!REXCVAR_GET(graw_debug_resolve) || !Readable(r4.u32, 24)) return;
-  const std::string line =
-      fmt::format("GRAW viewport from {:08X}: ({},{}) {}x{} z {}..{}", r12.u32, int32_t(Load32(r4.u32)),
-                  int32_t(Load32(r4.u32 + 4)), Load32(r4.u32 + 8), Load32(r4.u32 + 12),
-                  LoadF(r4.u32 + 16), LoadF(r4.u32 + 20));
+void GrawSetViewport(PPCRegister& r3, PPCRegister& r4, PPCRegister& r12) {
+  if (!REXCVAR_GET(graw_debug_resolve) || !Readable(r4.u32, 24) || !Readable(r3.u32 + 13480, 8)) {
+    return;
+  }
+  // The clamp: device+12536 is the colour surface (its +24 packs width-1 | height-1 << 13); when
+  // device+10432 bit 4 and the surfaces match the saved set, device+13480/13484 is used instead.
+  const uint32_t d = r3.u32, surface = Load32(d + 12536);
+  const uint32_t packed = surface && Readable(surface + 24, 4) ? Load32(surface + 24) : 0;
+  const std::string line = fmt::format(
+      "GRAW viewport from {:08X}: ({},{}) {}x{} z {}..{} | surface {:08X} {}x{} alt {}x{} flag {:02X}",
+      r12.u32, int32_t(Load32(r4.u32)), int32_t(Load32(r4.u32 + 4)), Load32(r4.u32 + 8),
+      Load32(r4.u32 + 12), LoadF(r4.u32 + 16), LoadF(r4.u32 + 20), surface, (packed & 0x1FFF) + 1,
+      ((packed >> 13) & 0x1FFF) + 1, Load32(d + 13480), Load32(d + 13484),
+      Base()[d + 10432]);
   Note(line, line);
 }
 
@@ -225,4 +234,122 @@ void GrawViewMatrices(PPCRegister& r3) {
                                        LoadF(r3.u32 + 588), m);
   static int logged = 0;
   if (logged++ < 6) REXLOG_INFO("{}", line);
+}
+
+// D3D SetVertexShaderConstantF(device, start, data, count) at 0x824C8788 (#1): each distinct
+// upload (caller from the back chain, start register, first 8 floats) - to find the constants
+// that map the post-process quads to the screen.
+void GrawVsConstants(PPCRegister& r1, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6) {
+  if (!REXCVAR_GET(graw_debug_resolve) || !Readable(r5.u32, 32) || !Readable(r1.u32, 4)) return;
+  const uint32_t back = Load32(r1.u32);
+  const uint32_t caller = Readable(back - 8, 4) ? Load32(back - 8) : 0;
+  std::string v;
+  for (uint32_t i = 0; i < std::min<uint32_t>(r6.u32 * 4, 8); ++i) v += fmt::format(" {:.5g}", LoadF(r5.u32 + 4 * i));
+  const std::string line =
+      fmt::format("GRAW vsconst from {:08X}: c{} x{}:{}", caller, r4.u32, r6.u32, v);
+  Note(line, line);
+}
+
+// BinkDoFrame (0x825B8CE0), after mflr r12 (#1): every video the game decodes - handle, size,
+// frame number and count (Bink 1.x header: +0 width, +4 height, +8 frames, +12 frame), caller.
+void GrawBinkDoFrame(PPCRegister& r3, PPCRegister& r12) {
+  if (!REXCVAR_GET(graw_debug_resolve) || !Readable(r3.u32, 16)) return;
+  const uint32_t b = r3.u32;
+  const std::string key = fmt::format("{:08X} {:08X} {}x{}", r12.u32, b, Load32(b), Load32(b + 4));
+  const std::string line =
+      fmt::format("GRAW binkdoframe from {:08X}: bink {:08X} {}x{} frame {}/{}", r12.u32, b,
+                  Load32(b), Load32(b + 4), Load32(b + 12), Load32(b + 8));
+  Note(key, line);
+}
+
+// sub_82119858 at 0x8211AE10, just before the edge grid's draw (sub_821154B0) (#1): the vertex
+// shader constants it wrote inline into the device shadow (device+2048..2092, +6032..6044).
+void GrawGridConstants(PPCRegister& r31) {
+  if (!REXCVAR_GET(graw_debug_resolve) || !Readable(r31.u32 + 4, 4)) return;
+  const uint32_t device = Load32(r31.u32 + 4);
+  if (!Readable(device + 2048, 48) || !Readable(device + 6032, 16)) return;
+  std::string c;
+  for (uint32_t o : {2048u, 2064u, 2080u, 6032u}) {
+    c += fmt::format(" +{}:", o);
+    for (int i = 0; i < 4; ++i) c += fmt::format(" {:.5g}", LoadF(device + o + 4 * i));
+  }
+  const std::string line = "GRAW grid constants" + c;
+  Note(line, line);
+  // The grid's vertex buffer (global 0x828F12C4; header fetch constant at +24: address | 3,
+  // size in words): min/max of the 16-bit positions (each vertex: x, y, u, v as int16).
+  const uint32_t vb = Load32(0x828F12C4);
+  if (!vb || !Readable(vb, 32)) return;
+  {
+    std::string raw;
+    for (int i = 0; i < 16; ++i) raw += fmt::format(" {:08X}", Load32(vb + 4 * i));
+    const std::string rline = fmt::format("GRAW grid vb object {:08X}:{}", vb, raw);
+    Note(rline, rline);
+  }
+  // Engine wrapper: +4 = vertex data (virtual), +8 = size in bytes; 8 bytes per vertex:
+  // int16 x, y (screen pixels), then two more int16 (texture coordinates).
+  const uint32_t header = Load32(vb + 4);
+  if (!Readable(header, 32)) return;
+  const uint32_t data_va = Load32(header + 28), bytes = Load32(vb + 8);
+  if (!bytes || bytes > 0x40000 || !Readable(data_va, bytes)) return;
+  int minx = 99999, maxx = -99999, miny = 99999, maxy = -99999;
+  std::string first;
+  for (uint32_t o = 0; o + 8 <= bytes; o += 8) {
+    const uint32_t v = Load32(data_va + o);
+    const int x = int16_t(v >> 16), y = int16_t(v & 0xFFFF);
+    minx = std::min(minx, x), maxx = std::max(maxx, x), miny = std::min(miny, y), maxy = std::max(maxy, y);
+    if (o < 64) first += fmt::format(" ({},{})", x, y);
+  }
+  const std::string vline = fmt::format("GRAW grid vb data {:08X} bytes {} x {}..{} y {}..{} first{}",
+                                        data_va, bytes, minx, maxx, miny, maxy, first);
+  Note(vline, vline);
+}
+
+// sub_821820C8 (#3, tactical map): the camera object's matrices once they're built: view (+12),
+// sub_8212AE48's result (+76), projection (+140), product (+204) and the transposed constant
+// copy (+268). Logged on each distinct content.
+REXCVAR_DEFINE_BOOL(graw_debug_map, false, "GRAW",
+                    "Log the tactical map's camera matrices and panel rects (#3)");
+
+void GrawMapMatrices(PPCRegister& r31) {
+  if (!REXCVAR_GET(graw_debug_map) || !Readable(r31.u32 + 8, 324)) return;
+  if (Load32(r31.u32 + 8) != 1) return;  // only the orthographic (2D panel) camera
+  std::string line = fmt::format("GRAW map matrices {:08X}", r31.u32);
+  for (uint32_t o : {12u, 76u, 140u, 204u, 268u}) {
+    line += fmt::format(" | +{}:", o);
+    for (int i = 0; i < 16; ++i) line += fmt::format(" {:.5g}", LoadF(r31.u32 + o + 4 * i));
+  }
+  Note(line, line);
+}
+
+// sub_821823A0 (#3): a map panel entry (24 bytes: x, z, width, height, flags byte, pointer)
+// before the draw scales x and width by the aspect at +588 when the flags byte is set.
+void GrawMapRect(PPCRegister& r25, PPCRegister& r27) {
+  if (!REXCVAR_GET(graw_debug_map) || !Readable(r25.u32, 24) || !Readable(r27.u32 + 588, 4)) {
+    return;
+  }
+  const uint32_t e = r25.u32;
+  const std::string line = fmt::format(
+      "GRAW map rect {:08X}: x {:.5g} z {:.5g} w {:.5g} h {:.5g} flags {:08X} ptr {:08X} aspect {:.5g}",
+      e, LoadF(e), LoadF(e + 4), LoadF(e + 8), LoadF(e + 12), Load32(e + 16), Load32(e + 20),
+      LoadF(r27.u32 + 588));
+  Note(line, line);
+}
+
+// sub_821F3D98 (#3): the message that adds a map panel. Its x, z, width, height are half floats
+// at +12, +14, +16, +18; logs the raw message words and the caller chain.
+void GrawMapPanelMessage(PPCRegister& r1, PPCRegister& r4, PPCRegister& r5) {
+  if (!REXCVAR_GET(graw_debug_map) || !Readable(r4.u32, 24)) return;
+  std::string words;
+  for (uint32_t o = 0; o < 24; o += 4) words += fmt::format(" {:08X}", Load32(r4.u32 + o));
+  uint32_t chain[4] = {};
+  uint32_t sp = r1.u32;
+  for (int i = 0; i < 4 && Readable(sp, 4); ++i) {
+    sp = Load32(sp);  // back chain
+    if (!sp || !Readable(sp - 8, 4)) break;
+    chain[i] = Load32(sp - 8);  // saved LR (mflr r12; stw r12,-8(r1))
+  }
+  const std::string line =
+      fmt::format("GRAW map panel message {:08X} r5 {:X}:{} <- {:08X} {:08X} {:08X} {:08X}",
+                  r4.u32, r5.u32, words, chain[0], chain[1], chain[2], chain[3]);
+  Note(line, line);
 }

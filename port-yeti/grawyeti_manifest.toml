@@ -353,7 +353,7 @@ registers = ["r4"]
 [[entrypoint.midasm_hook]]
 name = "GrawSetViewport"         # D3D SetViewport(device, D3DVIEWPORT9*), after mflr r12
 address = 0x824D048C
-registers = ["r4", "r12"]
+registers = ["r3", "r4", "r12"]
 
 [[entrypoint.midasm_hook]]
 name = "GrawSetScissor"          # D3D SetScissorRect(device, RECT*), after mflr r12
@@ -364,3 +364,33 @@ registers = ["r3", "r4", "r12"]
 name = "GrawViewMatrices"        # sub_821851D0 entry (#1)
 address = 0x821851D0
 registers = ["r3"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawVsConstants"         # D3D SetVertexShaderConstantF(device, start, data, count) entry
+address = 0x824C8788
+registers = ["r1", "r4", "r5", "r6"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawBinkDoFrame"         # BinkDoFrame(bink), after mflr r12 (#1)
+address = 0x825B8CE4
+registers = ["r3", "r12"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawGridConstants"       # sub_82119858: before bl sub_821154B0 (edge grid) (#1)
+address = 0x8211AE10
+registers = ["r31"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawMapMatrices"         # sub_821820C8: end, after the map camera's matrices (#3)
+address = 0x82182398
+registers = ["r31"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawMapRect"             # sub_821823A0: before the aspect multiply of a map panel rect (#3)
+address = 0x82182858
+registers = ["r25", "r27"]
+
+[[entrypoint.midasm_hook]]
+name = "GrawMapPanelMessage"     # sub_821F3D98: message handler that adds a map panel rect (#3)
+address = 0x821F3DB4
+registers = ["r1", "r4", "r5"]

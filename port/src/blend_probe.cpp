@@ -26,6 +26,8 @@
 #include <mutex>
 #include <string>
 #include <tuple>
+#include <vector>
+#include <sstream>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -191,6 +193,29 @@ void Draw(const char* name, uint32_t device, uint32_t a4, uint32_t a5, uint32_t 
 
 }  // namespace
 
+REXCVAR_DEFINE_STRING(graw_debug_skip_draws, "", "GRAW",
+                      "Experiment: skip draws whose direct caller (return address) is in this "
+                      "comma-separated hex list (#1)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
+namespace {
+bool SkipDraw(uint32_t caller, uint32_t sp) {
+  static const std::vector<uint32_t> list = [] {
+    std::vector<uint32_t> v;
+    std::stringstream in(REXCVAR_GET(graw_debug_skip_draws));
+    std::string item;
+    while (std::getline(in, item, ',')) {
+      if (!item.empty()) v.push_back(std::stoul(item, nullptr, 16));
+    }
+    return v;
+  }();
+  if (list.empty()) return false;
+  (void)sp;  // only the direct caller: skipping an inner call (DrawPrimitiveUP calls 4578) breaks D3D
+  return std::find(list.begin(), list.end(), caller) != list.end();
+  return false;
+}
+}  // namespace
+
 void GrawDrawSetTexture(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) { (void)r3; SetTexture(r4.u32, r5.u32); }
 void GrawDraw4578(PPCRegister& r1, PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r12) { Draw("draw4578", r3.u32, r4.u32, r5.u32, r12.u32, r1.u32); }
 // DrawPrimitiveUP(device, type, count, data, stride): also log each distinct site's vertex
@@ -198,6 +223,13 @@ void GrawDraw4578(PPCRegister& r1, PPCRegister& r3, PPCRegister& r4, PPCRegister
 void GrawDraw4838(PPCRegister& r1, PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6,
                   PPCRegister& r7, PPCRegister& r12) {
   Draw("drawUP4838", r3.u32, r4.u32, r5.u32, r12.u32, r1.u32);
+  if (SkipDraw(r12.u32, r1.u32) && r6.u32 && r7.u32 >= 8 && r7.u32 <= 256 &&
+      r5.u32 <= 64 && Readable(r6.u32, r5.u32 * r7.u32)) {
+    // Collapse the geometry (every vertex = vertex 0, zero-area triangles); skipping the call or
+    // zeroing the count corrupts the caller.
+    uint8_t* v = Base() + r6.u32;
+    for (uint32_t i = 1; i < r5.u32; ++i) std::memcpy(v + i * r7.u32, v, r7.u32);  // r5 = vertices
+  }
   if (!REXCVAR_GET(graw_debug_blend) || !r6.u32 || r7.u32 < 8 || r7.u32 > 256) return;
   const uint32_t n = std::min<uint32_t>(4, r5.u32 + 2);
   if (!Readable(r6.u32, n * r7.u32)) return;

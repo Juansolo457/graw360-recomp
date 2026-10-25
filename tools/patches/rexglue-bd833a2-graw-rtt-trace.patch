@@ -163,7 +163,7 @@ index 0000000..be24ebd
 +
 +}  // namespace rex::graphics::graw_trace
 diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
-index 19874a5..7c98960 100644
+index 19874a5..45a43b2 100644
 --- a/src/graphics/d3d12/command_processor.cpp
 +++ b/src/graphics/d3d12/command_processor.cpp
 @@ -10,6 +10,7 @@
@@ -216,7 +216,7 @@ index 19874a5..7c98960 100644
    CommandProcessor::WriteRegister(index, value);
  
    if (index >= XE_GPU_REG_SHADER_CONSTANT_000_X && index <= XE_GPU_REG_SHADER_CONSTANT_511_W) {
-@@ -1891,8 +1912,71 @@ void D3D12CommandProcessor::OnGammaRampPWLValueWritten() {
+@@ -1891,8 +1912,74 @@ void D3D12CommandProcessor::OnGammaRampPWLValueWritten() {
    gamma_ramp_pwl_up_to_date_ = false;
  }
  
@@ -232,6 +232,9 @@ index 19874a5..7c98960 100644
 +
 +REXCVAR_DEFINE_BOOL(graw_invalidate_atlas, false, "GPU",
 +                    "GRAW #1 experiment: mark the HUD atlas texture as CPU-modified once after 58 s");
++REXCVAR_DEFINE_INT32(graw_seq_at, 55, "GPU",
++                     "GRAW: with graw_trace_rtt_max_width, log a frame's draws after this many seconds "
++                     "(and again 7 s later)");
 +REXCVAR_DEFINE_BOOL(graw_grid_no_depth, false, "GPU",
 +                    "GRAW #1 experiment: draw the HUD edge-blur grid without depth/stencil tests");
 +
@@ -288,7 +291,7 @@ index 19874a5..7c98960 100644
    SCOPE_profile_cpu_f("gpu");
    vertex_buffers_in_sync_[0] = 0;
    vertex_buffers_in_sync_[1] = 0;
-@@ -2268,6 +2352,357 @@ Shader* D3D12CommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32_
+@@ -2268,6 +2355,392 @@ Shader* D3D12CommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32_
    return pipeline_cache_->LoadShader(shader_type, host_address, dword_count);
  }
  
@@ -507,6 +510,41 @@ index 19874a5..7c98960 100644
 +      }
 +    }
 +  }
++  if (vs == UINT64_C(0xD46836FDA9466337)) {
++    // #3: the tactical map composite. Its constants (VS c0-c8, c114, c255; PS c31) and vertices.
++    static int map_logs = 0;
++    if (map_logs < 400 && (++map_logs % 100) == 1) {
++      std::string c;
++      for (uint32_t ci : {0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 114u, 255u, 256u + 31u}) {
++        c += fmt::format(" c{}=", ci);
++        for (uint32_t e = 0; e < 4; ++e) {
++          float v;
++          std::memcpy(&v, &regs[XE_GPU_REG_SHADER_CONSTANT_000_X + ci * 4 + e], 4);
++          c += fmt::format("{}{:.6g}", e ? "," : "", v);
++        }
++      }
++      REXGPU_INFO("GRAW map c:{}", c);
++      for (uint32_t i = 0; i < 96; ++i) {
++        const xenos::xe_gpu_vertex_fetch_t vf = regs.GetVertexFetch(i);
++        if (vf.type != xenos::FetchConstantType::kVertex || !vf.address || !vf.size ||
++            vf.size > 0x400 || !GrawMemory()) {
++          continue;
++        }
++        const uint8_t* d = GrawMemory()->TranslatePhysical<const uint8_t*>(vf.address << 2);
++        std::string f;
++        for (uint32_t w = 0; w < std::min<uint32_t>(vf.size, 36); ++w) {
++          uint32_t v;
++          std::memcpy(&v, d + 4 * w, 4);
++          if (vf.endian == xenos::Endian::k8in32) v = rex::byte_swap(v);
++          float x;
++          std::memcpy(&x, &v, 4);
++          f += fmt::format("{}{:.5g}", (w % 9) ? "," : " | ", x);
++        }
++        REXGPU_INFO("GRAW map vfetch {} {:08X} words {} endian {}:{}", i, vf.address << 2,
++                    uint32_t(vf.size), uint32_t(vf.endian), f);
++      }
++    }
++  }
 +  if (vs == UINT64_C(0x9932BC1F8BCC0099)) {
 +    // The edge grid: oPos = pos16 * c255.xxyy + c255.yyzx; also c8-c10, c251-c254.
 +    std::string c;
@@ -554,8 +592,8 @@ index 19874a5..7c98960 100644
 +  static const auto start = std::chrono::steady_clock::now();
 +  const auto elapsed = std::chrono::steady_clock::now() - start;
 +  if (vs == UINT64_C(0x54BAEAB9C0C06F2E) && seq_left == 0 &&
-+      ((seq_runs == 0 && elapsed > std::chrono::seconds(55)) ||
-+       (seq_runs == 1 && elapsed > std::chrono::seconds(62)))) {
++      ((seq_runs == 0 && elapsed > std::chrono::seconds(REXCVAR_GET(graw_seq_at))) ||
++       (seq_runs == 1 && elapsed > std::chrono::seconds(REXCVAR_GET(graw_seq_at) + 7)))) {
 +    seq_left = 400;
 +    ++seq_runs;
 +  }
@@ -646,7 +684,7 @@ index 19874a5..7c98960 100644
  bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint32_t index_count,
                                        IndexBufferInfo* index_buffer_info,
                                        bool major_mode_explicit) {
-@@ -2277,6 +2712,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2277,6 +2750,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
  
    ID3D12Device* device = GetD3D12Provider().GetDevice();
    const RegisterFile& regs = *register_file_;
@@ -654,7 +692,7 @@ index 19874a5..7c98960 100644
  
    xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
    if (edram_mode == xenos::EdramMode::kCopy) {
-@@ -2285,6 +2721,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2285,6 +2759,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    }
  
    bool surface_pitch_is_zero = regs.Get<reg::RB_SURFACE_INFO>().surface_pitch == 0;
@@ -665,7 +703,7 @@ index 19874a5..7c98960 100644
  
    // Vertex shader analysis.
    auto vertex_shader = static_cast<D3D12Shader*>(active_vertex_shader());
-@@ -2321,6 +2761,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2321,6 +2799,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      // cache.
      if (!memexport_used_vertex) {
        // This draw has no effect.
@@ -673,7 +711,7 @@ index 19874a5..7c98960 100644
        return true;
      }
    }
-@@ -2338,10 +2779,42 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2338,10 +2817,42 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    }
    if (!primitive_processing_result.host_draw_vertex_count) {
      // Nothing to draw.
@@ -716,7 +754,7 @@ index 19874a5..7c98960 100644
  
    // Shader modifications.
    uint32_t ps_param_gen_pos = UINT32_MAX;
-@@ -2366,6 +2839,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2366,6 +2877,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
                     : 0;
    if (!render_target_cache_->Update(is_rasterization_done, normalized_depth_control,
                                      normalized_color_mask, *vertex_shader)) {
@@ -725,7 +763,7 @@ index 19874a5..7c98960 100644
      return false;
    }
  
-@@ -2400,6 +2875,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2400,6 +2913,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    }
    if (REXCVAR_GET(async_shader_compilation) &&
        pipeline_cache_->GetD3D12PipelineByHandle(pipeline_handle) == nullptr) {
@@ -734,7 +772,7 @@ index 19874a5..7c98960 100644
      return true;
    }
  
-@@ -2407,6 +2884,23 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2407,6 +2922,23 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    uint32_t used_texture_mask =
        vertex_shader->GetUsedTextureMaskAfterTranslation() |
        (pixel_shader != nullptr ? pixel_shader->GetUsedTextureMaskAfterTranslation() : 0);
@@ -758,7 +796,7 @@ index 19874a5..7c98960 100644
    texture_cache_->RequestTextures(used_texture_mask);
  
    // Bind the pipeline after configuring it and doing everything that may bind
-@@ -2617,6 +3111,50 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2617,6 +3149,50 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    SetPrimitiveTopology(primitive_topology);
    // Must not call anything that may change the primitive topology from now on!
  
@@ -809,7 +847,7 @@ index 19874a5..7c98960 100644
    // Draw.
    if (primitive_processing_result.index_buffer_type ==
        PrimitiveProcessor::ProcessedIndexBufferType::kNone) {
-@@ -2628,8 +3166,69 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2628,8 +3204,69 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      SubmitBarriers();
      PROFILE_DRAW_CALL();
      PROFILE_VERTICES(primitive_processing_result.host_draw_vertex_count);
@@ -881,7 +919,7 @@ index 19874a5..7c98960 100644
    } else {
      D3D12_INDEX_BUFFER_VIEW index_buffer_view;
      index_buffer_view.SizeInBytes = primitive_processing_result.host_draw_vertex_count;
-@@ -2687,8 +3286,22 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2687,8 +3324,22 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      SubmitBarriers();
      PROFILE_DRAW_CALL();
      PROFILE_VERTICES(primitive_processing_result.host_draw_vertex_count);
@@ -906,7 +944,7 @@ index 19874a5..7c98960 100644
      if (scratch_index_buffer != nullptr) {
        ReleaseScratchGPUBuffer(scratch_index_buffer, D3D12_RESOURCE_STATE_INDEX_BUFFER);
      }
-@@ -2871,6 +3484,15 @@ bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_s
+@@ -2871,6 +3522,15 @@ bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_s
  }
  
  bool D3D12CommandProcessor::IssueCopy() {
@@ -922,7 +960,7 @@ index 19874a5..7c98960 100644
  #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
    SCOPE_profile_cpu_f("gpu");
  #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
-@@ -2879,9 +3501,57 @@ bool D3D12CommandProcessor::IssueCopy() {
+@@ -2879,9 +3539,57 @@ bool D3D12CommandProcessor::IssueCopy() {
    }
    ReadbackResolveMode readback_mode = GetReadbackResolveMode(REXCVAR_GET(d3d12_readback_resolve));
    if (readback_mode == ReadbackResolveMode::kDisabled) {

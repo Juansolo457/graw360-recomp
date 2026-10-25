@@ -3,7 +3,7 @@
 Read [PLAN.md](PLAN.md) for the phases and exit criteria and [FINDINGS.md](FINDINGS.md) for the
 disc and executable facts. This file is the state, the build/run detail and where things live.
 Update it at the end of every session; the next model starts here, not from chat history.
-**#2 (black video panels) is FIXED (2026-10-24): a mistranslated jump table in the HUD sprite blend switch, see "Root cause" at the end of [CROSSCOM.md](CROSSCOM.md). Retest #13 and #3 with it. #1 (tutorial border noise) is FIXED in the renderer (2026-10-24): a resolve into freed memory left the HUD atlases stale on the GPU, see "Root cause" at the end of [BORDER.md](BORDER.md) and `tools/patches/rexglue-bd833a2-freed-page-resolve.patch`. The campaign's installed `rexgpu-xenosrd.dll` is stock bd833a2 plus that fix (copy: `.fixed`); how it reaches players (upstream or a source-built plugin) is undecided. #3 (tactical map grid/buildings missing) is still open with the fix.**
+**#2 (black video panels) is FIXED (2026-10-24): a mistranslated jump table in the HUD sprite blend switch, see "Root cause" at the end of [CROSSCOM.md](CROSSCOM.md). Retest #13 and #3 with it. #1 (tutorial border noise) is FIXED in the renderer (2026-10-24): a resolve into freed memory left the HUD atlases stale on the GPU, see "Root cause" at the end of [BORDER.md](BORDER.md) and `tools/patches/rexglue-bd833a2-freed-page-resolve.patch`. The campaign's installed `rexgpu-xenosrd.dll` is stock bd833a2 plus that fix (copy: `.fixed`); how it reaches players (upstream or a source-built plugin) is undecided. #3 (tactical map empty) is FIXED in the code generator (2026-10-24): `vpkd3d128` float16 packs lost the sign when vD == vB, see [TACMAP.md](TACMAP.md) and `tools/patches/rexglue-bd833a2-vpkd3d128-alias.patch`; the campaign sources were regenerated with a patched CLI, the front end and Instant Action not yet.**
 
 ## Where it stands
 **The game plays.** The front end hands over to the campaign and to Instant Action, as the
@@ -21,8 +21,8 @@ Rendering in the campaign is the open front. These issues are filed on
 [GitHub](https://github.com/Juansolo457/graw360-recomp/issues):
 - **#2 video panels black (Cross-Com, narration panel)**: fixed 2026-10-24 (switch override in
   the campaign manifest), see [CROSSCOM.md](CROSSCOM.md).
-- **#3 tactical map empty**: next priority. Reproduced unattended 2026-10-24 (Mission 1, Back): ring,
-  markers and objective panel draw; the map grid and buildings do not.
+- **#3 tactical map empty**: fixed 2026-10-24 (code generator, float16 pack sign), see
+  [TACMAP.md](TACMAP.md).
 - Performance at 4K: see [PERF.md](PERF.md) (CPU-bound on two threads; 4K itself is free).
 - #1 HUD border, #4 window checkerboard, #5 speckle and shadows, #6 textures and bump maps, #7
   allies' weapons, #13 black screen under fire.

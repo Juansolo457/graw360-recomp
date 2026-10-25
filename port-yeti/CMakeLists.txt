@@ -52,3 +52,32 @@ target_include_directories(grawyeti PRIVATE "${GRAW_SHARED_SRC}")
 if(WIN32)
     target_link_libraries(grawyeti PRIVATE dbghelp shell32)
 endif()
+
+# The native D3D12 renderer (native/, docs/NATIVE_RENDERER.md), off at run time unless
+# --graw_native. It compiles ReXGlue's shader translator and texture format tables from the SDK
+# source tree (the plugin DLL exports none of them): third_party/rexglue-sdk-bd833a2, the same
+# commit as the prebuilt SDK.
+set(GRAW_REXGLUE_SDK_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/rexglue-sdk-bd833a2"
+    CACHE PATH "ReXGlue SDK source tree (bd833a2) for the native renderer")
+if(WIN32 AND EXISTS "${GRAW_REXGLUE_SDK_SRC}/src/graphics/pipeline/shader/dxbc_translator.cpp")
+    set(GRAW_NATIVE_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../native")
+    file(GLOB GRAW_NATIVE_SOURCES CONFIGURE_DEPENDS "${GRAW_NATIVE_SRC}/*.cpp")
+    # An object library: its hooks (REX_HOOK_RAW) override the generated functions only when
+    # their objects are linked in, and it compiles against the SDK source tree's headers first,
+    # which carry the pgr4-native SDK patches the renderer needs (tools/patches/pgr4-native/:
+    # shader translator modifications, the command processor's gamma ramp, gpu_skip_draws).
+    # The renderer plugin is built from the same tree with the same patches.
+    add_library(graw_native OBJECT ${GRAW_NATIVE_SOURCES}
+        "${GRAW_REXGLUE_SDK_SRC}/src/graphics/pipeline/texture/util.cpp"
+        "${GRAW_REXGLUE_SDK_SRC}/src/graphics/pipeline/texture/info_formats.cpp")
+    target_include_directories(graw_native BEFORE PRIVATE "${GRAW_REXGLUE_SDK_SRC}/include")
+    target_include_directories(graw_native PRIVATE "${GRAW_NATIVE_SRC}" "${GRAW_REXGLUE_SDK_SRC}")
+    rexglue_apply_target_settings(graw_native)
+    target_link_libraries(graw_native PRIVATE rex::runtime rex::xxhash)
+    include("${GRAW_NATIVE_SRC}/shader_xlate.cmake")
+    target_include_directories(graw_shader_xlate BEFORE PRIVATE "${GRAW_REXGLUE_SDK_SRC}/include")
+    target_link_libraries(grawyeti PRIVATE graw_native graw_shader_xlate d3d12 dxgi dxguid)
+    target_compile_definitions(grawyeti PRIVATE GRAW_NATIVE_RENDERER=1)
+else()
+    message(STATUS "grawyeti: native renderer not built (needs Windows and ${GRAW_REXGLUE_SDK_SRC})")
+endif()

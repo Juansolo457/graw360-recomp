@@ -14,6 +14,7 @@
 #   pwsh -NoProfile -File tools/launch.ps1 -Windowed -PerfLog        # per-frame CSV next to the log; fps summary every 10 s in the log (#11)
 #   pwsh -NoProfile -File tools/launch.ps1 -Windowed -RefreshRate 60 -PerfLog    # 60 fps: smoother but the game logic misbehaves (#17)
 #   pwsh -NoProfile -File tools/launch.ps1 -Console -PerfLog                     # 360 settings: 720p, the game's filtering, 30 fps
+#   pwsh -NoProfile -File tools/launch.ps1 -Console -Native                      # the campaign on its own D3D12 renderer (F9: back to Xenos)
 # This opens a window on the user's screen. Never kill a running graw.exe; ask the user to quit.
 [CmdletBinding()]
 param(
@@ -43,6 +44,12 @@ param(
     # As close to the 360 as the options allow: 1280x720 internal, the game's own texture
     # filtering, no FXAA, 30 fps.
     [switch]$Console,
+    # The campaign's own D3D12 renderer (native/, docs/NATIVE_RENDERER.md; branch native-renderer):
+    # -Native draws the game in its window (the Xenos plugin keeps running the GPU's fences and
+    # interrupts but draws nothing; F9 switches between the two). -NativeSide keeps the Xenos plugin
+    # drawing the game and shows the native renderer's frames in a second window, for comparing.
+    [switch]$Native,
+    [switch]$NativeSide,
     [ValidateSet('Debug','Release','RelWithDebInfo')][string]$Configuration = 'RelWithDebInfo'
 )
 $ErrorActionPreference = 'Stop'
@@ -62,6 +69,8 @@ if ($Nx -or $Project -eq 'port-yeti-nx') {
     $nxArguments = @('--graw_campaign_exe', (Resolve-Path $campaign).Path,
         '--nx_renderer', 'native', '--nx_native_resolution_scale', "$Scale")
 }
+if ($Native) { $nxArguments += @('--graw_native_primary=true') }
+elseif ($NativeSide) { $nxArguments += @('--graw_native=true') }
 $running = Get-Process -Name graw, grawmp, grawyeti -ErrorAction SilentlyContinue
 if ($running) { throw "GRAW is already running (pid $($running.Id -join ', ')). Quit it first." }
 $executable = Join-Path $port "out\build\win-amd64-$($Configuration.ToLowerInvariant())\$exeName.exe"

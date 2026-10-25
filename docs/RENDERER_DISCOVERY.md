@@ -72,11 +72,33 @@ The library sits at about `0x824C0000`–`0x824E2000` (the lower bound isn't pin
 
 **GRAW uses predicated tiling.** All four draw functions issue predicated packets. The campaign
 renders 1280x720 with 4x MSAA: 3.7 M samples x (4 bytes colour + 4 depth) = ~29 MB, about three
-times the 10 MB EDRAM, so roughly three tiles per frame. ReXGlue's command processor runs a
+times the 10 MB EDRAM, so at least three tiles per frame (it uses four, measured below). ReXGlue's command processor runs a
 predicated packet in every pass whose bin select matches (`command_processor.cpp`,
 `(bin_select_ & bin_mask_) != 0`). So the emulated path probably processes most of the frame's
-draws and register writes about three times. That would fit the plaza being command-processor
-bound. **Not measured yet:** step 1 below.
+draws and register writes several times. That would fit the plaza being command-processor bound.
+
+**Measured (2026-10-25, step 1):** `--graw_tile_stats` (`tools/patches/rexglue-bd833a2-tile-stats.patch`,
+in the renderer plugin's command processor) counts, per frame, the packets run against the unique
+packets by guest address, and logs averages every 150 frames. Campaign autopilot
+(`tools/autopilot/campaign-newgame.txt`, the opening of a new game), 360 settings, 2 minutes:
+
+| per frame | run | unique | replay |
+|---|---|---|---|
+| draws (`DRAW_INDX`, `DRAW_INDX_2`) | 2,400-3,100 | 1,220-1,510 | x2.0-2.1 |
+| register writes (type-0 dwords) | 520,000-650,000 | 237,000-290,000 | x2.2-2.3 |
+| type-0 packets | 34,000-44,500 | 16,600-20,700 | x2.1 |
+| predicated packets skipped (outside the tile) | 2,500-3,300 | | |
+| bin selects / distinct tiles | 6 / 4 | | |
+
+- The frame is drawn in **4 tiles**. A draw runs in each tile it overlaps, ~2 on average.
+- The command processor handles **~600,000 register writes per frame** (~18 M/s at 30 fps), more
+  than half of them tile replays. That's the `WriteRegister` hot spot. An API-level renderer
+  takes each draw's state from the D3D device once, so it does neither the replays nor the
+  per-register emulation.
+- Even without replays, ~275,000 unique register dwords per frame (~190 per draw) is mostly
+  shader constants. A native renderer uploads them as constant buffers in bulk.
+- Not measured yet: the plaza (heavier) and Instant Action. The autopilot only reaches the
+  opening of the campaign.
 
 ## What a native renderer could buy GRAW
 
@@ -99,9 +121,7 @@ The costs:
 
 ## Steps (each ends in a measurement)
 
-1. **Measure the tile replay factor.** Count per frame, in the command processor: `SET_BIN_SELECT`
-   changes, predicated packets executed vs skipped, and draws. If draws run ~3x, the CPU case for
-   an API-level renderer is made. One cheap counter in the renderer plugin.
+1. **Measure the tile replay factor.** Done (see above): 4 tiles, draws x2, register writes x2.2.
 2. **Name the API surface.** Port PGR4's `scan_d3d_surface.py` idea: find the device's register
    shadow (the type-0 flush sequences in the draw functions) and name the setters and getters by
    register. Compare GRAW's offsets with PGR4's `SHADOW` table to see how far the XDK versions

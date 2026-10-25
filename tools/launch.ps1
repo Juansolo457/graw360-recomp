@@ -13,6 +13,7 @@
 #   pwsh -NoProfile -File tools/launch.ps1 -Windowed -Trace          # every kernel call (file opens, ...) in the log
 #   pwsh -NoProfile -File tools/launch.ps1 -Windowed -PerfLog        # per-frame CSV next to the log; fps summary every 10 s in the log (#11)
 #   pwsh -NoProfile -File tools/launch.ps1 -Windowed -RefreshRate 240 -PerfLog   # uncapped (#11): running animations and the AI run too fast
+#   pwsh -NoProfile -File tools/launch.ps1 -Console -RefreshRate 30 -PerfLog     # 360 settings at ~30 fps (frame-rate dependence, #17)
 # This opens a window on the user's screen. Never kill a running graw.exe; ask the user to quit.
 [CmdletBinding()]
 param(
@@ -38,11 +39,21 @@ param(
     [string]$Extra = '',
     # port = the front end (graw.exe, what a player starts); port-mp = Instant Action/multiplayer (grawmp.exe), port-yeti = the campaign (grawyeti.exe), alone; port-yeti-nx = the campaign on the native renderer, alone
     [ValidateSet('port', 'port-mp', 'port-yeti', 'port-yeti-nx')][string]$Project = 'port',
+    # As close to the 360 as the options allow: 1280x720 internal, the game's own texture
+    # filtering, no FXAA, 60 Hz (add -RefreshRate 30 to also hold it to ~30 fps, roughly what the
+    # 360 ran at in heavy scenes). For checking whether a bug depends on the frame rate.
+    [switch]$Console,
     [ValidateSet('Debug','Release','RelWithDebInfo')][string]$Configuration = 'RelWithDebInfo'
 )
 $ErrorActionPreference = 'Stop'
 $port = Join-Path $PSScriptRoot "..\$Project" | Resolve-Path
 $exeName = @{ 'port' = 'graw'; 'port-mp' = 'grawmp'; 'port-yeti' = 'grawyeti'; 'port-yeti-nx' = 'grawyeti' }[$Project]
+if ($Console) {
+    $Scale = 1
+    $Anisotropic = -1
+    $Aa = 'none'
+    if (-not $PSBoundParameters.ContainsKey('RefreshRate')) { $RefreshRate = 60 }
+}
 $buildDir = "out\build\win-amd64-$($Configuration.ToLowerInvariant())"
 # The native renderer's own options (other programs ignore options they don't know).
 $nxArguments = @()

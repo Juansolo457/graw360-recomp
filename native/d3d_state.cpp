@@ -12,6 +12,11 @@
 
 #include <algorithm>
 #include <cstring>
+#include <string>
+
+#include <fmt/format.h>
+#include <windows.h>
+#undef DrawState  // winuser.h maps it to DrawStateA/W
 
 REXCVAR_DEFINE_BOOL(graw_native_stream_log, false, "GRAW native",
                     "Log the push-buffer tracker's counters now and then (decoded dwords, "
@@ -113,6 +118,13 @@ void GuestStateTracker::Sync(uint8_t* base, uint32_t device, uint32_t fn) {
     // misread); drop it rather than let a bad length swallow the following stream.
     if (in_packet_) {
       ++counters_.torn;
+      static uint32_t logged = 0;
+      if (++logged <= 24)
+        REXLOG_WARN(
+            "GRAW native state: torn packet {:08X} at {:08X} still needs {} dwords: window ended "
+            "at {:08X}, next one at {:08X} starts {:08X} (thread {}, last {})",
+            header_, packet_address_, need_, last_sync_fn_, fn, Load32(base, cursor_ + 4),
+            GetCurrentThreadId(), last_sync_thread_);
       in_packet_ = false;
     }
     for (uint32_t a = cursor_ + 4; a <= cur; a += 4) Feed(base, a, Load32(base, a));
@@ -127,6 +139,8 @@ void GuestStateTracker::Sync(uint8_t* base, uint32_t device, uint32_t fn) {
                   cur, fn);
   }
   cursor_ = cur;
+  last_sync_fn_ = fn;
+  last_sync_thread_ = GetCurrentThreadId();
 }
 
 void GuestStateTracker::Jump(const uint8_t* base, uint32_t device) {
@@ -211,7 +225,22 @@ void GuestStateTracker::HandlePacket(const uint8_t* base) {
   const uint32_t op = (header_ >> 8) & 0x7F;
   const bool predicated = header_ & 1;
   auto range = [&](uint32_t reg, size_t first) {
-    if (predicated) ++counters_.predicated_writes;
+    if (predicated) {
+      ++counters_.predicated_writes;
+      // Which registers the D3D writes per tile (renderer discovery: each needs its untiled
+      // value, see AfterCall).
+      static uint32_t logged = 0;
+      static std::vector<bool> seen(kGuestRegisterCount);
+      if (logged < 64 && reg < kGuestRegisterCount && !seen[reg]) {
+        seen[reg] = true;
+        ++logged;
+        std::string values;
+        for (size_t i = first; i < pkt_.size() && i < first + 8; ++i)
+          values += fmt::format(" {:08X}", pkt_[i]);
+        REXLOG_INFO("GRAW native state: predicated write {:04X} x{}:{} (op {:02X}, thread {})", reg,
+                    pkt_.size() - first, values, op, GetCurrentThreadId());
+      }
+    }
     for (size_t i = first; i < pkt_.size(); ++i) Put(reg + uint32_t(i - first), pkt_[i]);
   };
   switch (op) {

@@ -64,6 +64,11 @@ enum class TextureConversion : uint8_t {
   kR5G5B6ToB5G6R5WithRBGASwizzle,  // k_6_5_5: host swizzle R,B,G,G restores the order
   kDepthUnorm24ToFloat32,          // k_24_8: R32_FLOAT = unorm24(d >> 8)
   kDepthFloat24ToFloat32,          // k_24_8_FLOAT: R32_FLOAT = float20e4(d >> 8)
+  // Expanding (HostFormat::expand 2): one 32-bit guest texel to four 16-bit UNORM channels, as
+  // ReXGlue's load shaders texture_load_r11g11b10_rgba16 / r10g11b11_rgba16 do (no DXGI format
+  // holds these as normalized integers).
+  kR11G11B10ToRGBA16,  // k_10_11_11: R bits 0-10, G 11-21, B 22-31
+  kR10G11B11ToRGBA16,  // k_11_11_10: R bits 0-9, G 10-20, B 21-31
 };
 
 struct HostFormat {
@@ -73,6 +78,7 @@ struct HostFormat {
   TextureConversion conversion;
   bool block_compressed;  // BCn: 4x4 blocks are copied as is
   uint32_t host_swizzle;  // XE_GPU_TEXTURE_SWIZZLE_* of the host channels
+  uint8_t expand = 1;     // host bytes per block / guest bytes per block (1 or 2)
 };
 
 // nullptr for formats PGR4 does not use yet (or that need a decompressing load).

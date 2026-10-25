@@ -16,9 +16,16 @@ predicated-tiling replays double the command processor's work). The emulated ren
   system dialogs and takes it back.
 - Tracker: 2.2 billion dwords in 3 minutes, 0 unknown opcodes, 1 resync (inside BeginTiling,
   once), 3,041 torn packets (some function stops mid-packet before a hooked call).
-- Open: lit 3D surfaces about 6% darker than Xenos (up to ~25/255 on bright walls; sky and HUD
-  equal), and harder ground shadows: a lighting or shadow pass. The torn packets and the
-  BeginTiling jump.
+- Fixed: lit 3D surfaces were ~6% darker than Xenos, shadowed ones up to 25% (no bluish fill
+  light). Found with the resolve oracle (`--graw_native_resolve_dump`,
+  `tools/compare_resolves.py`): the scene render itself was dark, and the log named a 256x256
+  `k_10_11_11` texture as unsupported, a lighting lookup sampled as black. The texture cache now
+  expands `k_10_11_11` / `k_11_11_10` to RGBA16 as ReXGlue does: the dumped frame matches
+  Xenos to 99% of pixels exact (final image 67.7 dB, was ~25). For comparisons, run both with
+  the game's own texture filtering (`--anisotropic_override=-1`): the SDK forces 4x anisotropy
+  on the Xenos side by default, the native renderer uses the game's.
+- Open: the torn packets and the BeginTiling jump. The 4x MSAA depth resolve differs from Xenos
+  in one column per 40-pixel EDRAM tile (sample choice at tile edges).
 - HDR10 output (pgr4-native's default) washed the picture out; GRAW defaults to SDR now
   (`--graw_native_hdr=true` to try HDR).
 

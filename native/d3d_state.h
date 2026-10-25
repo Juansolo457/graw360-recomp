@@ -161,6 +161,8 @@ class GuestStateTracker {
 
   uint32_t device_ = 0;
   uint32_t cursor_ = 0;  // the last decoded dword (guest address)
+  uint32_t last_sync_fn_ = 0;      // the hooked call of the last Sync (torn packet log)
+  uint32_t last_sync_thread_ = 0;  // and its thread
   // Decoder.
   bool in_packet_ = false;
   uint32_t header_ = 0, need_ = 0, packet_address_ = 0;

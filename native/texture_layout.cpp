@@ -136,6 +136,14 @@ constexpr FormatEntry kFormats[] = {
       DXGI_FORMAT_R32G32B32A32_FLOAT, C::kCopy, false, kRGBA}},
     {TextureFormat::k_DXN,
      {DXGI_FORMAT_BC5_UNORM, DXGI_FORMAT_BC5_UNORM, DXGI_FORMAT_UNKNOWN, C::kCopy, true, kRGGG}},
+    // GRAW: a 256x256 k_10_11_11 lookup in the campaign's lighting (missing, shadowed surfaces
+    // lost their ambient light). Unsigned only: ReXGlue's signed load is not ported.
+    {TextureFormat::k_10_11_11,
+     {DXGI_FORMAT_R16G16B16A16_UNORM, DXGI_FORMAT_R16G16B16A16_UNORM, DXGI_FORMAT_UNKNOWN,
+      C::kR11G11B10ToRGBA16, false, kRGBB, 2}},
+    {TextureFormat::k_11_11_10,
+     {DXGI_FORMAT_R16G16B16A16_UNORM, DXGI_FORMAT_R16G16B16A16_UNORM, DXGI_FORMAT_UNKNOWN,
+      C::kR10G11B11ToRGBA16, false, kRGBB, 2}},
 };
 
 // Fetch constant formats are 6 bits.
@@ -165,9 +173,36 @@ uint32_t Float20e4To32Bits(uint32_t f24) {
   return ((exponent + 112) << 23) | (mantissa << 3);
 }
 
+// An n-bit unsigned normalized field to 16 bits (bit replication, exact at 0 and 1).
+constexpr uint16_t Unorm16(uint32_t v, uint32_t bits) {
+  return uint16_t((v << (16 - bits)) | (v >> (2 * bits - 16)));
+}
+
+// Expanding conversions: `texels` 32-bit guest texels in `in` to 64-bit host texels in `out`.
+void Expand(TextureConversion conversion, const uint8_t* in, uint8_t* out, uint32_t texels) {
+  for (uint32_t i = 0; i < texels; ++i) {
+    uint32_t v;
+    std::memcpy(&v, in + size_t(i) * 4, 4);
+    uint16_t c[4];
+    if (conversion == C::kR11G11B10ToRGBA16) {
+      c[0] = Unorm16(v & 0x7FF, 11);
+      c[1] = Unorm16((v >> 11) & 0x7FF, 11);
+      c[2] = Unorm16(v >> 22, 10);
+    } else {
+      c[0] = Unorm16(v & 0x3FF, 10);
+      c[1] = Unorm16((v >> 10) & 0x7FF, 11);
+      c[2] = Unorm16(v >> 21, 11);
+    }
+    c[3] = 0xFFFF;
+    std::memcpy(out + size_t(i) * 8, c, 8);
+  }
+}
+
 void Convert(TextureConversion conversion, uint8_t* row, uint32_t bytes) {
   switch (conversion) {
     case C::kCopy:
+    case C::kR11G11B10ToRGBA16:  // Expand
+    case C::kR10G11B11ToRGBA16:
       return;
     case C::kR5G6B5ToB5G6R5:
       for (uint32_t i = 0; i + 2 <= bytes; i += 2) {
@@ -289,9 +324,8 @@ uint64_t GetHostFootprints(const TextureKey& key, bool d3d12_placement,
   const FormatInfo* info = FormatInfo::Get(key.format);
   uint32_t bw = host->block_compressed ? info->block_width : 1;
   uint32_t bh = host->block_compressed ? info->block_height : 1;
-  // Host bytes per block equal the guest ones for every format in the table (the conversions
-  // keep the size).
-  uint32_t bpb = info->bytes_per_block();
+  // Host bytes per block: the guest ones, doubled for the expanding conversions.
+  uint32_t bpb = info->bytes_per_block() * host->expand;
   uint64_t offset = 0;
   for (uint32_t slice = 0; slice < key.array_size(); ++slice) {
     for (uint32_t level = 0; level <= key.mip_max_level; ++level) {
@@ -421,7 +455,10 @@ bool UntileTexture(const TextureKey& key, const texture_util::TextureGuestLayout
           }
           x += run;
         }
-        if (convert) {
+        if (host->expand > 1) {
+          // The row was built at the guest's bytes per block in scratch.
+          Expand(host->conversion, row, row_out, s.block_columns);
+        } else if (convert) {
           Convert(host->conversion, row, s.row_bytes);
           std::memcpy(row_out, row, s.row_bytes);
         }

@@ -3,7 +3,7 @@
 Read [PLAN.md](PLAN.md) for the phases and exit criteria and [FINDINGS.md](FINDINGS.md) for the
 disc and executable facts. This file is the state, the build/run detail and where things live.
 Update it at the end of every session; the next model starts here, not from chat history.
-**#2 (black video panels) is FIXED (2026-10-24): a mistranslated jump table in the HUD sprite blend switch, see "Root cause" at the end of [CROSSCOM.md](CROSSCOM.md). Retest #13 and #3 with it. #1 (tutorial border noise) is FIXED in the renderer (2026-10-24): a resolve into freed memory left the HUD atlases stale on the GPU, see "Root cause" at the end of [BORDER.md](BORDER.md) and `tools/patches/rexglue-bd833a2-freed-page-resolve.patch`. The campaign's installed `rexgpu-xenosrd.dll` is stock bd833a2 plus that fix (copy: `.fixed`); how it reaches players (upstream or a source-built plugin) is undecided. #3 (tactical map empty) is FIXED in the code generator (2026-10-24): `vpkd3d128` float16 packs lost the sign when vD == vB, see [TACMAP.md](TACMAP.md) and `tools/patches/rexglue-bd833a2-vpkd3d128-alias.patch`; the campaign sources were regenerated with a patched CLI, the front end and Instant Action not yet.**
+**#2 (black video panels) is FIXED (2026-10-24): a mistranslated jump table in the HUD sprite blend switch, see "Root cause" at the end of [CROSSCOM.md](CROSSCOM.md). #13 (black screen under fire) was the same bug: verified 2026-10-24 by grenade damage, black without the #2 override and the red, desaturated damage effect with it. #1 (tutorial border noise) is FIXED in the renderer (2026-10-24): a resolve into freed memory left the HUD atlases stale on the GPU, see "Root cause" at the end of [BORDER.md](BORDER.md) and `tools/patches/rexglue-bd833a2-freed-page-resolve.patch`. The campaign's installed `rexgpu-xenosrd.dll` is stock bd833a2 plus that fix (copy: `.fixed`); how it reaches players (upstream or a source-built plugin) is undecided. #3 (tactical map empty) is FIXED in the code generator (2026-10-24): `vpkd3d128` float16 packs lost the sign when vD == vB, see [TACMAP.md](TACMAP.md) and `tools/patches/rexglue-bd833a2-vpkd3d128-alias.patch`; the campaign sources were regenerated with a patched CLI, the front end and Instant Action not yet.**
 
 ## Where it stands
 **The game plays.** The front end hands over to the campaign and to Instant Action, as the
@@ -25,7 +25,7 @@ Rendering in the campaign is the open front. These issues are filed on
   [TACMAP.md](TACMAP.md).
 - Performance at 4K: see [PERF.md](PERF.md) (CPU-bound on two threads; 4K itself is free).
 - #1 HUD border, #4 window checkerboard, #5 speckle and shadows, #6 textures and bump maps, #7
-  allies' weapons, #13 black screen under fire.
+  allies' weapons. #13 black screen under fire: fixed by #2's override (verified, see below).
 - Other open issues: #8 tiny name dialog, #10 saving, #11 frame rate in heavy scenes, #12 image
   quality defaults, #14 FOV 90.
 
@@ -214,3 +214,13 @@ campaign-clamp-off-working-20261024.log/.toml (off), frontend-handoff-failed-202
 See CROSSCOM.md for details and the Lost Odyssey comparison-method reference. Crosshair
 visibility does not specifically verify the HUD border (#1); under-fire black screen (#13)
 was not tested. The root cause remains unknown.
+
+## Taking damage unattended (#13, 2026-10-24)
+Controller configuration A (pause menu > Options > Controller): X selects the weapon (the frag
+grenade is the next one), RT fires or throws, B toggles night vision, Y is select/action, LB the
+engagement mode, RB switches the camera side, Back the tactical map. From the "GRAW" save, looking
+down (right stick down) and throwing a grenade at the player's feet gives the damage effect a few
+seconds later: a red vignette with a desaturated screen. Without the #2 switch override in the
+manifest the same frames are entirely black, which was #13. The local autopilot is
+`private/autopilot/load-graw-nade.txt` (looks down at 80 s; X at 84 and 100 s, B at 92 and 110 s, RT after
+each).

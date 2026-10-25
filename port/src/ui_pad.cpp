@@ -1,6 +1,7 @@
 // GRAW 360 - the controller drives the runtime's own dialogs. See ui_pad.h.
 
 #include "ui_pad.h"
+#include "ui_style.h"
 
 #include <cstdint>
 
@@ -36,6 +37,7 @@ class PadBridge final : public rex::ui::ImGuiDialog {
 
  protected:
   void OnDraw(ImGuiIO& io) override {
+    ApplyWindowScale(io);
     const uint16_t buttons = rex::kernel::xam::xeXamIsUIActive() ? Buttons() : 0;
     const uint16_t changed = static_cast<uint16_t>(buttons ^ previous_);
     for (const Mapping& m : kMappings) {

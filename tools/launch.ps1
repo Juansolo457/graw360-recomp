@@ -1,7 +1,8 @@
 # Launch the GRAW recomp (port/, the front end; it hands over to the campaign and Instant Action)
 # for playing. The guest is told it is on a 1280x720 display (as on a real 360; this also avoids
 # ReXGlue's 4:3 squeeze at 200% Windows scaling) and renders at a multiple of that.
-# Defaults: the guest display at 240 Hz (#11); 2x = 2560x1440 internal and 16x anisotropic filtering (#12). No FXAA by
+# Defaults: the guest display at 60 Hz (the game logic is frame-rate dependent, see -RefreshRate);
+# 2x = 2560x1440 internal and 16x anisotropic filtering (#12). No FXAA by
 # default (it blurs the image; -Aa fxaa|fxaa_extreme turns it on). The renderer can't force MSAA:
 # the game picks its own (the campaign already renders with 4x MSAA). For smoother edges render
 # above the window's size and let it downscale (supersampling): -Scale 3 = 3840x2160.
@@ -11,7 +12,7 @@
 #   pwsh -NoProfile -File tools/launch.ps1 -Windowed -Scale 1 -Aa none   # as the 360 draws it
 #   pwsh -NoProfile -File tools/launch.ps1 -Windowed -Trace          # every kernel call (file opens, ...) in the log
 #   pwsh -NoProfile -File tools/launch.ps1 -Windowed -PerfLog        # per-frame CSV next to the log; fps summary every 10 s in the log (#11)
-#   pwsh -NoProfile -File tools/launch.ps1 -Windowed -RefreshRate 60 -PerfLog    # the 360's 60 Hz cap, for comparison (#11)
+#   pwsh -NoProfile -File tools/launch.ps1 -Windowed -RefreshRate 240 -PerfLog   # uncapped (#11): running animations and the AI run too fast
 # This opens a window on the user's screen. Never kill a running graw.exe; ask the user to quit.
 [CmdletBinding()]
 param(
@@ -22,9 +23,10 @@ param(
     [switch]$Trace,       # --log_level trace --log_noisy: every kernel call with its arguments (large log)
     [switch]$PerfLog,     # --graw_frame_log: one CSV row per presented frame, logs\perf-<time>.csv (src/frame_timing.cpp)
     # The refresh rate the guest's display reports (24-240 Hz; 0 = the SDK's 60). GRAW presents
-    # once per vblank, so at 60 it's capped at 60 fps; at 240 the campaign averaged 83 fps (up to
-    # 136) with game speed unchanged (#11, play-test 2026-10-23).
-    [ValidateRange(0,240)][double]$RefreshRate = 240,
+    # once per vblank, so this caps the frame rate. Keep 60: above it the running animations of
+    # the player and allies play too fast and the enemy AI is sluggish (play-test 2026-10-25),
+    # though movement speed is right. At 240 the campaign ran at 47-127 fps.
+    [ValidateRange(0,240)][double]$RefreshRate = 60,
     # The campaign on fear-nx's native Vulkan renderer (port-yeti-nx, #2): the front end hands
     # Campaign to that build instead of port-yeti. Built with tools/build.ps1 -Project port-yeti-nx.
     [switch]$Nx,

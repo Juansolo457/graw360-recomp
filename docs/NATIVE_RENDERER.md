@@ -7,9 +7,20 @@ predicated-tiling replays double the command processor's work). The emulated ren
 
 ## Status (2026-10-25)
 
-**Built, not run yet.** Everything below compiles and links into `grawyeti.exe`; the hooks were
-checked to override the generated functions (PDB: `sub_X` at its own address, `__imp__sub_X` the
-original). Nobody has run it: the first run is the user's play-test.
+**First runs (autopilot, campaign tutorial, RTX 4090):** it works in both modes.
+- Menus and gameplay render: native and Xenos captures of the same frame match in geometry,
+  textures, HUD, text and markers (PSNR 25-37 dB; the menus differ only by the animated
+  background's frame).
+- About 1,000 draws per tutorial frame: 0.7-0.8 ms of recording on the render thread, ~0.2 ms
+  on the game thread. No failures; primary mode hands the window to ReXGlue's presenter for the
+  system dialogs and takes it back.
+- Tracker: 2.2 billion dwords in 3 minutes, 0 unknown opcodes, 1 resync (inside BeginTiling,
+  once), 3,041 torn packets (some function stops mid-packet before a hooked call).
+- Open: lit 3D surfaces about 6% darker than Xenos (up to ~25/255 on bright walls; sky and HUD
+  equal), and harder ground shadows: a lighting or shadow pass. The torn packets and the
+  BeginTiling jump.
+- HDR10 output (pgr4-native's default) washed the picture out; GRAW defaults to SDR now
+  (`--graw_native_hdr=true` to try HDR).
 
 Run it:
 

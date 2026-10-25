@@ -18,9 +18,11 @@
 REXCVAR_DEFINE_BOOL(graw_native_gpu_serialize, false, "GRAW native",
                     "Debug: wait for the GPU at the end of every frame, so no frame is in flight "
                     "while the next one is recorded (slow)");
-REXCVAR_DEFINE_BOOL(graw_native_hdr, true, "GRAW native",
+REXCVAR_DEFINE_BOOL(graw_native_hdr, false, "GRAW native",
                     "HDR10 output when the display takes it: the highlights the game renders above "
-                    "SDR white, which its front buffer clips, reach the screen");
+                    "SDR white, which its front buffer clips, reach the screen. Off by default for "
+                    "GRAW (pgr4-native: on): the game's look was tuned for SDR, and the Xenos "
+                    "plugin it is compared with outputs SDR");
 REXCVAR_DEFINE_INT32(graw_native_hdr_peak_nits, 0, "GRAW native",
                      "HDR output: the peak luminance in nits the image is fitted to; 0: the "
                      "display's, or 1000 when it reports none");

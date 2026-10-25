@@ -1,0 +1,46 @@
+diff --git a/src/graphics/shared_memory.cpp b/src/graphics/shared_memory.cpp
+index ec0df7c..f1e3cd0 100644
+--- a/src/graphics/shared_memory.cpp
++++ b/src/graphics/shared_memory.cpp
+@@ -291,6 +291,28 @@ void SharedMemory::MakeRangeValid(uint32_t start, uint32_t length, bool written_
+   uint32_t valid_block_first = valid_page_first >> 6;
+   uint32_t valid_block_last = valid_page_last >> 6;
+ 
++  // GPU writes (resolves) can land after the guest has freed the memory, since the GPU runs
++  // behind the CPU. Freed pages can't be watched (EnableAccessCallbacks skips inaccessible
++  // pages), so if they were marked valid here, the CPU data written after the memory is
++  // allocated again would never be uploaded, and textures there would keep the stale resolved
++  // data (in Ghost Recon Advanced Warfighter, the HUD textures loaded for a mission showed the
++  // menu's last front buffer). Keep such pages invalid so they're uploaded from guest memory
++  // when next used.
++  std::vector<uint64_t> unallocated;
++  if (written_by_gpu) {
++    memory::VirtualHeap* physical_heap = memory().GetPhysicalHeap();
++    for (uint32_t page = valid_page_first; page <= valid_page_last; ++page) {
++      uint32_t protect = 0;
++      if (!physical_heap->QueryProtect(page << page_size_log2_, &protect) ||
++          !(protect & (memory::kMemoryProtectRead | memory::kMemoryProtectWrite))) {
++        if (unallocated.empty()) {
++          unallocated.resize(valid_block_last - valid_block_first + 1);
++        }
++        unallocated[(page >> 6) - valid_block_first] |= uint64_t(1) << (page & 63);
++      }
++    }
++  }
++
+   {
+     auto global_lock = global_critical_region_.Acquire();
+ 
+@@ -302,6 +324,12 @@ void SharedMemory::MakeRangeValid(uint32_t start, uint32_t length, bool written_
+       if (i == valid_block_last && (valid_page_last & 63) != 63) {
+         valid_bits &= (uint64_t(1) << ((valid_page_last & 63) + 1)) - 1;
+       }
++      if (!unallocated.empty()) {
++        const uint64_t freed = unallocated[i - valid_block_first];
++        system_page_flags_valid_[i] &= ~freed;
++        system_page_flags_valid_and_gpu_written_[i] &= ~freed;
++        valid_bits &= ~freed;
++      }
+       system_page_flags_valid_[i] |= valid_bits;
+       uint64_t& gpu_written = system_page_flags_valid_and_gpu_written_[i];
+       gpu_written = written_by_gpu ? (gpu_written | valid_bits) : (gpu_written & ~valid_bits);

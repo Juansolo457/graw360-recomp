@@ -1,6 +1,9 @@
 # HUD border noise in the tutorial (#1): findings
 
-Status 2026-10-24: **open**. The cause is narrowed; no fix yet.
+Status 2026-10-24: **fixed** in the renderer (`tools/patches/rexglue-bd833a2-freed-page-resolve.patch`),
+see "Root cause" at the end. The 3D view was never inset: the noise band was the HUD frame art,
+drawn from a stale GPU copy of its texture. Earlier sections are kept as the investigation record;
+their theories about an inset composite are superseded.
 
 ## The symptom, measured
 
@@ -108,3 +111,43 @@ Xenia's GetTiledOffset2D:
 - `port/src/resolve_probe.cpp`: the game's D3D Resolve and Clear calls with their callers.
 - `port/src/blend_probe.cpp`: the per-draw catalogue now also logs each DrawPrimitiveUP site's
   vertices (all floats, full precision).
+
+## Root cause (2026-10-24 evening): a resolve into freed memory left a stale texture
+
+Found by logging every draw from the scene composite to the swap, then skipping draws by index and
+by texture:
+- **The scene is full-screen.** The edge-blur grid (vs 9932BC1F8BCC0099) gets correct vertices
+  (positions 0..1280 x 0..720, texture coordinates 0..1); the HUD sits where it does in Mission 1.
+- **The band is the HUD frame art.** Skipping every 512x256 DXT3 texture (`--graw_skip_sampling=512x256f19`,
+  a size/format match, since texture addresses move between runs) gives a clean full-screen view.
+  The same textures hold the Cross-Com icon, the stance icon and the minimap frame, which were
+  noise too.
+- **Guest memory is right, the GPU copy is wrong.** The atlas's guest bytes, dumped at draw time
+  and untiled, are the correct cyan frame art. Forcing one invalidation of that range
+  (`--graw_invalidate_atlas`) makes the frame draw correctly.
+- **Why the GPU copy is stale.** Shared-memory history for the atlas range (`G` = written by the
+  GPU, `I` = invalidated by the CPU, `U` = uploaded): the menu's front buffer (1D977000+398000)
+  is resolved there every frame until 29.09 s; the game frees it (`I`); 18 ms later one more
+  resolve lands in it (`G`), the last frame's copy, which the GPU runs behind the CPU. Nothing
+  after: the HUD atlas is loaded into that memory, but the CPU writes are never seen.
+  `SharedMemory::MakeRangeValid` marks GPU-written pages valid and asks for write watches, but
+  `PhysicalHeap::EnableAccessCallbacks` skips inaccessible (freed) pages. So the pages stay
+  "valid, GPU-written" with no watch, and the texture keeps the menu's last frame forever.
+  This is also why Mission 1 loaded from a save was clean: its atlas lands elsewhere.
+- **Fix:** `MakeRangeValid` no longer marks GPU-written pages valid when the guest's physical heap
+  has them unallocated; they're uploaded from guest memory when next used. Writing a resolve into
+  freed memory has no meaning, so nothing is lost. The fix is 28 lines in
+  `src/graphics/shared_memory.cpp`, as `tools/patches/rexglue-bd833a2-freed-page-resolve.patch`
+  against bd833a2.
+- **Verified** with stock bd833a2 plus only that patch (plugin built with Vulkan off, installed as
+  the campaign's `rexgpu-xenosrd.dll`; copy `rexgpu-xenosrd.dll.fixed`) at 4K: the tutorial is
+  full-screen with the cyan frame and clean icons, and Mission 1 is unchanged. In the logged run,
+  920 pages of the menu front buffer and 20 of a Cross-Com video texture were caught.
+- **Still to decide:** how players get it. The build uses the SDK's prebuilt plugin, so the fix
+  needs either an upstream ReXGlue change or building the plugin from source in `tools/build.ps1`.
+
+Experiment options added on the way (diagnostics patch `tools/patches/rexglue-bd833a2-graw-rtt-trace.patch`,
+local plugin builds only): `--graw_skip_anchor/--graw_skip_draws_from/--graw_skip_draws_to/--graw_skip_step`
+(drop draws by index from the scene composite), `--graw_skip_sampling` (by texture base, shader hash low
+32 bits, `k8`, or `WxHfF`), `--graw_grid_no_depth`, `--graw_invalidate_atlas`, and with
+`--graw_trace_rtt_max_width` the per-draw sequence log, the atlas dump and the shared-memory history.

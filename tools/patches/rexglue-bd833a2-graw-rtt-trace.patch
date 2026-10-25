@@ -30,10 +30,10 @@ index 4d845c7..364dfc7 100644
    Microsoft::WRL::ComPtr<ID3D12RootSignature> load_root_signature_;
 diff --git a/include/rex/graphics/graw_trace.h b/include/rex/graphics/graw_trace.h
 new file mode 100644
-index 0000000..0c3a3ac
+index 0000000..be24ebd
 --- /dev/null
 +++ b/include/rex/graphics/graw_trace.h
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,128 @@
 +// GRAW #2 instrumentation (local only, never upstreamed): traces small render-to-texture
 +// resolves and every texture-cache event on their destination ranges, so a black video panel
 +// can be followed from the resolve to the texture the HUD samples. Off unless
@@ -108,12 +108,73 @@ index 0000000..0c3a3ac
 +  return s.detailed[key]++ < limit;
 +}
 +
++// #1: history of shared-memory events (G = written by the GPU, I = invalidated by the CPU,
++// U = uploaded from guest memory), to explain a stale texture after the fact.
++struct Event {
++  char kind;
++  uint32_t start, length;
++  uint32_t ms;
++};
++inline std::vector<Event>& History() {
++  static std::vector<Event> h;
++  return h;
++}
++inline void Note(char kind, uint32_t start, uint32_t length) {
++  if (!Enabled()) return;
++  static const auto t0 = std::chrono::steady_clock::now();
++  State& s = Get();
++  std::lock_guard<std::mutex> lock(s.mutex);
++  auto& h = History();
++  if (h.size() >= 4000000) return;
++  h.push_back({kind, start, length,
++               uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(
++                            std::chrono::steady_clock::now() - t0)
++                            .count())});
++}
++inline void DumpOverlapping(uint32_t base, uint32_t length) {
++  State& s = Get();
++  std::lock_guard<std::mutex> lock(s.mutex);
++  // Runs of the same event are collapsed into one line (first and last time, count).
++  uint32_t logged = 0, total = 0;
++  const Event* run = nullptr;
++  uint32_t run_count = 0, run_last = 0;
++  auto flush = [&] {
++    if (run && logged++ < 600) {
++      REXGPU_INFO("GRAW history {:08X}: {} {:08X}+{:X} x{} at {}..{} ms", base, run->kind,
++                  run->start, run->length, run_count, run->ms, run_last);
++    }
++  };
++  for (const Event& e : History()) {
++    if (!(e.start < base + length && base < e.start + e.length)) continue;
++    ++total;
++    if (run && run->kind == e.kind && run->start == e.start && run->length == e.length) {
++      ++run_count;
++      run_last = e.ms;
++      continue;
++    }
++    flush();
++    run = &e;
++    run_count = 1;
++    run_last = e.ms;
++  }
++  flush();
++  REXGPU_INFO("GRAW history {:08X}: {} events overlap (of {})", base, total, History().size());
++}
++
 +}  // namespace rex::graphics::graw_trace
 diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
-index 19874a5..f271bce 100644
+index 19874a5..7c98960 100644
 --- a/src/graphics/d3d12/command_processor.cpp
 +++ b/src/graphics/d3d12/command_processor.cpp
-@@ -20,6 +20,7 @@
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <chrono>
+ #include <cstdarg>
+ #include <cstring>
+ #include <sstream>
+@@ -20,6 +21,7 @@
  #include <rex/dbg.h>
  #include <rex/perf/counter.h>
  #include <rex/graphics/d3d12/command_processor.h>
@@ -121,7 +182,7 @@ index 19874a5..f271bce 100644
  #include <rex/graphics/d3d12/graphics_system.h>
  #include <rex/graphics/d3d12/shader.h>
  #include <rex/graphics/flags.h>
-@@ -32,6 +33,18 @@
+@@ -32,6 +34,18 @@
  #include <rex/ui/d3d12/d3d12_presenter.h>
  #include <rex/ui/d3d12/d3d12_util.h>
  
@@ -140,7 +201,7 @@ index 19874a5..f271bce 100644
  REXCVAR_DEFINE_BOOL(d3d12_bindless, true, "GPU/D3D12", "Use bindless resources where available")
      .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
  
-@@ -1768,7 +1781,14 @@ void D3D12CommandProcessor::ShutdownContext() {
+@@ -1768,7 +1782,14 @@ void D3D12CommandProcessor::ShutdownContext() {
    CommandProcessor::ShutdownContext();
  }
  
@@ -155,7 +216,79 @@ index 19874a5..f271bce 100644
    CommandProcessor::WriteRegister(index, value);
  
    if (index >= XE_GPU_REG_SHADER_CONSTANT_000_X && index <= XE_GPU_REG_SHADER_CONSTANT_511_W) {
-@@ -2268,6 +2288,113 @@ Shader* D3D12CommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32_
+@@ -1891,8 +1912,71 @@ void D3D12CommandProcessor::OnGammaRampPWLValueWritten() {
+   gamma_ramp_pwl_up_to_date_ = false;
+ }
+ 
++REXCVAR_DEFINE_INT32(graw_skip_draws_from, -1, "GPU",
++                     "GRAW #1 experiment: drop every draw from this index within the frame on "
++                     "(counted from the last swap; -1 = off) - bisects which draw changes the image");
++REXCVAR_DEFINE_BOOL(graw_skip_anchor, false, "GPU",
++                    "GRAW #1 experiment: count graw_skip_draws_from from the scene composite");
++REXCVAR_DEFINE_INT32(graw_skip_step, 0, "GPU",
++                     "GRAW #1 experiment: move graw_skip_draws_from by this much every 3 s after 60 s");
++REXCVAR_DEFINE_INT32(graw_skip_draws_to, 1000000, "GPU",
++                     "GRAW #1 experiment: with graw_skip_draws_from, drop draws up to this index");
++
++REXCVAR_DEFINE_BOOL(graw_invalidate_atlas, false, "GPU",
++                    "GRAW #1 experiment: mark the HUD atlas texture as CPU-modified once after 58 s");
++REXCVAR_DEFINE_BOOL(graw_grid_no_depth, false, "GPU",
++                    "GRAW #1 experiment: draw the HUD edge-blur grid without depth/stencil tests");
++
++namespace {
++int& GrawSeqLeft() {
++  static int n = 0;
++  return n;
++}
++uint32_t& GrawFrameDraw() {
++  static uint32_t n = 0;
++  return n;
++}
++bool GrawSkipByIndex(uint64_t vs_hash = 0) {
++  // With graw_skip_anchor: count from the scene composite (vs 54BAEAB9C0C06F2E = index 0)
++  // instead of from the swap, so the indices are stable between frames.
++  if (REXCVAR_GET(graw_skip_anchor) && vs_hash == UINT64_C(0x54BAEAB9C0C06F2E)) {
++    GrawFrameDraw() = 0;
++  }
++  const uint32_t n = GrawFrameDraw()++;
++  int64_t from = REXCVAR_GET(graw_skip_draws_from);
++  if (from < 0) return false;
++  if (REXCVAR_GET(graw_skip_anchor) && n >= 0x40000000u) return false;  // before the composite
++  // With graw_skip_step: inactive until 60 s after the first draw, then the start index moves
++  // by graw_skip_step every 3 s (one screenshot every 3 s shows each step).
++  const int32_t step = REXCVAR_GET(graw_skip_step);
++  if (step) {
++    static const auto start = std::chrono::steady_clock::now();
++    const auto t = std::chrono::duration_cast<std::chrono::milliseconds>(
++                       std::chrono::steady_clock::now() - start).count();
++    if (t < 60000) return false;
++    const int64_t k = (t - 60000) / 3000;
++    from += step * k;
++    static int64_t logged_k = -1;
++    if (k != logged_k) {
++      logged_k = k;
++      REXGPU_INFO("GRAW skip step {}: dropping draws {}.. (t {} ms)", k, from, t);
++    }
++  }
++  return int64_t(n) >= from && int64_t(n) <= REXCVAR_GET(graw_skip_draws_to);
++}
++}  // namespace
++
+ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
+                                       uint32_t frontbuffer_height) {
++  {
++    static uint32_t swaps = 0;
++    if ((++swaps % 600) == 0) REXGPU_INFO("GRAW frame draws: {}", GrawFrameDraw());
++    GrawFrameDraw() = REXCVAR_GET(graw_skip_anchor) ? 0x40000000u : 0;
++    if (GrawSeqLeft() > 0) {
++      REXGPU_INFO("GRAW seq swap front {:08X} {}x{}", frontbuffer_ptr, frontbuffer_width,
++                  frontbuffer_height);
++    }
++  }
+   SCOPE_profile_cpu_f("gpu");
+   vertex_buffers_in_sync_[0] = 0;
+   vertex_buffers_in_sync_[1] = 0;
+@@ -2268,6 +2352,357 @@ Shader* D3D12CommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32_
    return pipeline_cache_->LoadShader(shader_type, host_address, dword_count);
  }
  
@@ -241,7 +374,87 @@ index 19874a5..f271bce 100644
 +  }
 +}
 +
++const memory::Memory*& GrawMemory() {
++  static const memory::Memory* memory = nullptr;
++  return memory;
++}
++
++// #1: for draws sampling a 1280x720 8:8:8:8 texture (the scene copy), log once per distinct set
++// the registers that place screen-space geometry: VTE control, window offset, viewport
++// scale/offset, surface pitch/MSAA, and the window scissor.
++void GrawNoteSceneComposite(const RegisterFile& regs, uint32_t used_texture_mask) {
++  uint32_t index, mask = used_texture_mask;
++  bool hit = false;
++  while (rex::bit_scan_forward(mask, &index)) {
++    mask &= ~(UINT32_C(1) << index);
++    const xenos::xe_gpu_texture_fetch_t f = regs.GetTextureFetch(index);
++    if (f.size_2d.width + 1 == 1280 && f.size_2d.height + 1 == 720 && uint32_t(f.format) == 6) {
++      hit = true;
++    }
++  }
++  if (!hit) return;
++  auto fl = [&](uint32_t r) {
++    float v;
++    std::memcpy(&v, &regs[r], 4);
++    return v;
++  };
++  const std::string key = fmt::format(
++      "composite vte {:08X} winoff {:08X} vport x {} {} y {} {} surface {:08X} mode {:08X} "
++      "wscissor {:08X} {:08X}",
++      regs[XE_GPU_REG_PA_CL_VTE_CNTL], regs[XE_GPU_REG_PA_SC_WINDOW_OFFSET],
++      fl(XE_GPU_REG_PA_CL_VPORT_XSCALE), fl(XE_GPU_REG_PA_CL_VPORT_XOFFSET),
++      fl(XE_GPU_REG_PA_CL_VPORT_YSCALE), fl(XE_GPU_REG_PA_CL_VPORT_YOFFSET),
++      regs[XE_GPU_REG_RB_SURFACE_INFO], regs[XE_GPU_REG_PA_SU_SC_MODE_CNTL],
++      regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL], regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR]);
++  if (graw_trace::Count(key, 3)) REXGPU_INFO("GRAW {}", key);
++}
++
++// #1: the edge-blur grid (samples a 256x200 8:8:8:8 texture and draws indexed): its first 32
++// vertex shader float constants, once per distinct set.
++void GrawNoteGridConstants(const RegisterFile& regs, uint32_t used_texture_mask) {
++  uint32_t index, mask = used_texture_mask;
++  bool hit = false;
++  while (rex::bit_scan_forward(mask, &index)) {
++    mask &= ~(UINT32_C(1) << index);
++    const xenos::xe_gpu_texture_fetch_t f = regs.GetTextureFetch(index);
++    if (f.size_2d.width + 1 == 256 && f.size_2d.height + 1 == 200 && uint32_t(f.format) == 6 &&
++        regs.Get<reg::RB_SURFACE_INFO>().surface_pitch == 1280) {
++      hit = true;
++    }
++  }
++  if (!hit) return;
++  std::string c;
++  for (uint32_t i = 0; i < 32 * 4; ++i) {
++    float v;
++    std::memcpy(&v, &regs[XE_GPU_REG_SHADER_CONSTANT_000_X + i], 4);
++    c += fmt::format("{}{:.4g}", (i % 4) ? "," : (i ? " | " : ""), v);
++  }
++  if (graw_trace::Count("grid " + c, 2)) REXGPU_INFO("GRAW grid vs constants: {}", c);
++  // Its vertex streams: each vertex-type fetch constant, and the first 24 floats of its data.
++  for (uint32_t i = 0; i < 96; ++i) {
++    const xenos::xe_gpu_vertex_fetch_t vf = regs.GetVertexFetch(i);
++    if (vf.type != xenos::FetchConstantType::kVertex || !vf.address) continue;
++    const uint32_t address = vf.address << 2;
++    const uint8_t* data = GrawMemory() ? GrawMemory()->TranslatePhysical<const uint8_t*>(address) : nullptr;
++    std::string v;
++    for (uint32_t k = 0; data && k < std::min<uint32_t>(24, vf.size); ++k) {
++      uint32_t w;
++      std::memcpy(&w, data + 4 * k, 4);
++      w = rex::byte_swap(w);
++      float f;
++      std::memcpy(&f, &w, 4);
++      v += fmt::format(" {:.4g}", f);
++    }
++    const std::string line =
++        fmt::format("grid vfetch {} address {:08X} words {} endian {}:{}", i, address,
++                    uint32_t(vf.size), uint32_t(vf.endian), v);
++    if (graw_trace::Count(line, 1)) REXGPU_INFO("GRAW {}", line);
++  }
++}
++
 +void GrawNoteDrawTextures(const RegisterFile& regs, uint32_t used_texture_mask) {
++  GrawNoteSceneComposite(regs, used_texture_mask);
++  GrawNoteGridConstants(regs, used_texture_mask);
 +  auto si = regs.Get<reg::RB_SURFACE_INFO>();
 +  uint32_t index;
 +  uint32_t mask = used_texture_mask;
@@ -266,10 +479,182 @@ index 19874a5..f271bce 100644
 +}
 +}  // namespace
 +
++// #1: after the scene composite (vs 54BAEAB9C0C06F2E), log the next 40 draws, 3 times.
++void GrawSeq(const RegisterFile& regs, uint32_t used_texture_mask, uint64_t vs, uint64_t ps,
++             uint32_t verts, bool indexed) {
++  {
++    // #1: dump the guest bytes of the HUD atlas (512x256 DXT3, dword0 84024802) once after 58 s.
++    static bool dumped = false;
++    static const auto t0 = std::chrono::steady_clock::now();
++    uint32_t si2, sm2 = used_texture_mask;
++    while (!dumped && rex::bit_scan_forward(sm2, &si2)) {
++      sm2 &= ~(UINT32_C(1) << si2);
++      const xenos::xe_gpu_texture_fetch_t f = regs.GetTextureFetch(si2);
++      if (f.dword_0 == 0x84024802u && f.size_2d.width == 511 && f.size_2d.height == 255 &&
++          uint32_t(f.format) == 19 && GrawMemory() &&
++          std::chrono::steady_clock::now() - t0 > std::chrono::seconds(58)) {
++        dumped = true;
++        const uint32_t base = uint32_t(f.base_address) << 12;
++        const uint8_t* src = GrawMemory()->TranslatePhysical<const uint8_t*>(base);
++        const std::string name = fmt::format("graw-atlas-{:08X}.bin", base);
++        if (FILE* out = std::fopen(name.c_str(), "wb")) {
++          std::fwrite(src, 1, 0x20000, out);
++          std::fclose(out);
++        }
++        graw_trace::DumpOverlapping(base, 0x20000);
++        REXGPU_INFO("GRAW atlas dump {} (fetch {:08X} {:08X} {:08X} {:08X} {:08X} {:08X})", name,
++                    f.dword_0, f.dword_1, f.dword_2, f.dword_3, f.dword_4, f.dword_5);
++      }
++    }
++  }
++  if (vs == UINT64_C(0x9932BC1F8BCC0099)) {
++    // The edge grid: oPos = pos16 * c255.xxyy + c255.yyzx; also c8-c10, c251-c254.
++    std::string c;
++    for (uint32_t ci : {8u, 9u, 10u, 251u, 252u, 253u, 254u, 255u}) {
++      c += fmt::format(" c{}=", ci);
++      for (uint32_t e = 0; e < 4; ++e) {
++        float v;
++        std::memcpy(&v, &regs[XE_GPU_REG_SHADER_CONSTANT_000_X + ci * 4 + e], 4);
++        c += fmt::format("{}{:.6g}", e ? "," : "", v);
++      }
++    }
++    static int grid_logs = 0;
++    if (grid_logs < 400 && (++grid_logs % 50) == 0) {
++      REXGPU_INFO("GRAW grid c:{}", c);
++      // Its vertex data: every vertex fetch constant, min/max of the int16 pairs (x, y).
++      for (uint32_t i = 0; i < 96; ++i) {
++        const xenos::xe_gpu_vertex_fetch_t vf = regs.GetVertexFetch(i);
++        if (vf.type != xenos::FetchConstantType::kVertex || !vf.address || !vf.size ||
++            vf.size > 0x10000 || !GrawMemory()) {
++          continue;
++        }
++        const uint8_t* d = GrawMemory()->TranslatePhysical<const uint8_t*>(vf.address << 2);
++        for (uint32_t field = 0; field < 2; ++field) {
++          int minx = 99999, maxx = -99999, miny = 99999, maxy = -99999;
++          std::string first;
++          for (uint32_t w = field; w < vf.size; w += 2) {
++            uint32_t v;
++            std::memcpy(&v, d + 4 * w, 4);
++            v = rex::byte_swap(v);
++            const int x = int16_t(v >> 16), y = int16_t(v & 0xFFFF);
++            minx = std::min(minx, x), maxx = std::max(maxx, x);
++            miny = std::min(miny, y), maxy = std::max(maxy, y);
++            if (w < 2 * 24) first += fmt::format(" {},{}", x, y);
++          }
++          REXGPU_INFO("GRAW grid vfetch {} address {:08X} words {} endian {} field {} hi {}..{} "
++                      "lo {}..{} first:{}",
++                      i, vf.address << 2, uint32_t(vf.size), uint32_t(vf.endian), field, minx,
++                      maxx, miny, maxy, first);
++        }
++      }
++    }
++  }
++  int& seq_left = GrawSeqLeft();
++  static int seq_runs = 0;
++  static const auto start = std::chrono::steady_clock::now();
++  const auto elapsed = std::chrono::steady_clock::now() - start;
++  if (vs == UINT64_C(0x54BAEAB9C0C06F2E) && seq_left == 0 &&
++      ((seq_runs == 0 && elapsed > std::chrono::seconds(55)) ||
++       (seq_runs == 1 && elapsed > std::chrono::seconds(62)))) {
++    seq_left = 400;
++    ++seq_runs;
++  }
++  static int seq_index = 0;
++  if (vs == UINT64_C(0x54BAEAB9C0C06F2E)) seq_index = 0; else ++seq_index;
++  if (seq_left <= 0) return;
++  --seq_left;
++  std::string t;
++  uint32_t si, sm = used_texture_mask;
++  while (rex::bit_scan_forward(sm, &si)) {
++    sm &= ~(UINT32_C(1) << si);
++    const xenos::xe_gpu_texture_fetch_t sf = regs.GetTextureFetch(si);
++    t += fmt::format(" t{}={:08X}:{}x{}:f{}", si, uint32_t(sf.base_address) << 12,
++                     sf.size_2d.width + 1, sf.size_2d.height + 1, uint32_t(sf.format));
++  }
++  REXGPU_INFO("GRAW seq {} #{} vs {:016X} ps {:016X} verts {}{} pitch {} vte {:08X} blend {:08X} "
++              "depthctl {:08X} winoff {:08X} vport {:08X} {:08X} {:08X} {:08X} color0 {:08X} scis {:08X} {:08X}{}",
++              seq_runs, seq_index, vs, ps, verts, indexed ? " indexed" : "",
++              uint32_t(regs.Get<reg::RB_SURFACE_INFO>().surface_pitch),
++              regs[XE_GPU_REG_PA_CL_VTE_CNTL], regs[XE_GPU_REG_RB_BLENDCONTROL0],
++              regs[XE_GPU_REG_RB_DEPTHCONTROL], regs[XE_GPU_REG_PA_SC_WINDOW_OFFSET],
++              regs[XE_GPU_REG_PA_CL_VPORT_XSCALE], regs[XE_GPU_REG_PA_CL_VPORT_XOFFSET],
++              regs[XE_GPU_REG_PA_CL_VPORT_YSCALE], regs[XE_GPU_REG_PA_CL_VPORT_YOFFSET],
++              regs[XE_GPU_REG_RB_COLOR_INFO], regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL],
++              regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR], t);
++}
++
++REXCVAR_DEFINE_STRING(graw_skip_sampling, "", "GPU",
++                      "GRAW #1 experiment: drop draws that sample a texture whose base address is in "
++                      "this comma-separated hex list");
++
++namespace {
++bool GrawSkipBySampling(const RegisterFile& regs, uint32_t used_texture_mask,
++                        uint64_t vs_hash = 0) {
++  static const std::vector<uint32_t> list = [] {
++    std::vector<uint32_t> v;
++    std::string spec = REXCVAR_GET(graw_skip_sampling);
++    size_t start = 0;
++    while (start < spec.size()) {
++      size_t end = spec.find(',', start);
++      if (end == std::string::npos) end = spec.size();
++      const std::string item = spec.substr(start, end - start);
++      char* stop = nullptr;
++      const unsigned long value = std::strtoul(item.c_str(), &stop, 16);
++      if (stop != item.c_str() && item != "k8" && item.find('x') == std::string::npos) v.push_back(uint32_t(value));
++      start = end + 1;
++    }
++    REXGPU_INFO("GRAW skip sampling: '{}' -> {} addresses", spec, v.size());
++    return v;
++  }();
++  // "k8": any untiled single-channel (k_8) texture at least 640 wide - the CPU-written ones the
++  // tutorial's composition samples (their addresses move between runs).
++  static const bool k8 = REXCVAR_GET(graw_skip_sampling).find("k8") != std::string::npos;
++  // "WxHfF" items (e.g. 512x256f19): any texture of that size and format.
++  static const std::vector<std::array<uint32_t, 3>> sizes = [] {
++    std::vector<std::array<uint32_t, 3>> v;
++    std::stringstream in(REXCVAR_GET(graw_skip_sampling));
++    std::string item;
++    while (std::getline(in, item, ',')) {
++      unsigned w, h, f;
++      if (std::sscanf(item.c_str(), "%ux%uf%u", &w, &h, &f) == 3) v.push_back({w, h, f});
++    }
++    return v;
++  }();
++  if (list.empty() && !k8 && sizes.empty()) return false;
++  // A listed value equal to the vertex shader hash's low 32 bits also drops the draw.
++  if (vs_hash && std::find(list.begin(), list.end(), uint32_t(vs_hash)) != list.end()) return true;
++  uint32_t index, mask = used_texture_mask;
++  while (rex::bit_scan_forward(mask, &index)) {
++    mask &= ~(UINT32_C(1) << index);
++    const xenos::xe_gpu_texture_fetch_t fetch = regs.GetTextureFetch(index);
++    const uint32_t base = fetch.base_address << 12;
++    if (std::find(list.begin(), list.end(), base) != list.end()) return true;
++    for (const auto& z : sizes) {
++      if (fetch.size_2d.width + 1 == z[0] && fetch.size_2d.height + 1 == z[1] &&
++          uint32_t(fetch.format) == z[2]) {
++        return true;
++      }
++    }
++    if (k8 && uint32_t(fetch.format) == 2 && !fetch.tiled && fetch.size_2d.width + 1 >= 640) {
++      return true;
++    }
++  }
++  return false;
++}
++}  // namespace
++
  bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint32_t index_count,
                                        IndexBufferInfo* index_buffer_info,
                                        bool major_mode_explicit) {
-@@ -2285,6 +2412,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2277,6 +2712,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+ 
+   ID3D12Device* device = GetD3D12Provider().GetDevice();
+   const RegisterFile& regs = *register_file_;
++  GrawMemory() = memory_;
+ 
+   xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
+   if (edram_mode == xenos::EdramMode::kCopy) {
+@@ -2285,6 +2721,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    }
  
    bool surface_pitch_is_zero = regs.Get<reg::RB_SURFACE_INFO>().surface_pitch == 0;
@@ -280,7 +665,7 @@ index 19874a5..f271bce 100644
  
    // Vertex shader analysis.
    auto vertex_shader = static_cast<D3D12Shader*>(active_vertex_shader());
-@@ -2321,6 +2452,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2321,6 +2761,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      // cache.
      if (!memexport_used_vertex) {
        // This draw has no effect.
@@ -288,7 +673,7 @@ index 19874a5..f271bce 100644
        return true;
      }
    }
-@@ -2338,10 +2470,27 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2338,10 +2779,42 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    }
    if (!primitive_processing_result.host_draw_vertex_count) {
      // Nothing to draw.
@@ -297,6 +682,21 @@ index 19874a5..f271bce 100644
    }
  
    reg::RB_DEPTHCONTROL normalized_depth_control = draw_util::GetNormalizedDepthControl(regs);
++  if (vertex_shader->ucode_data_hash() == UINT64_C(0x9932BC1F8BCC0099)) {
++    static int grid_depth_logs = 0;
++    if (grid_depth_logs < 6 && graw_trace::Enabled()) {
++      ++grid_depth_logs;
++      REXGPU_INFO("GRAW grid depth: depthctl {:08X} normalized {:08X} depth_info {:08X} "
++                  "stencilref {:08X} colorctl {:08X} surface {:08X}",
++                  regs[XE_GPU_REG_RB_DEPTHCONTROL], normalized_depth_control.value,
++                  regs[XE_GPU_REG_RB_DEPTH_INFO], regs[XE_GPU_REG_RB_STENCILREFMASK],
++                  regs[XE_GPU_REG_RB_COLORCONTROL], regs[XE_GPU_REG_RB_SURFACE_INFO]);
++    }
++    if (REXCVAR_GET(graw_grid_no_depth)) {
++      normalized_depth_control.z_enable = 0;
++      normalized_depth_control.stencil_enable = 0;
++    }
++  }
 +  // Diagnostic only: alter normalized host state, never guest registers.
 +  if (REXCVAR_GET(graw_video_no_depth) && pixel_shader &&
 +      pixel_shader->ucode_data_hash() == 0x3445071A7FACCDE5ull &&
@@ -316,7 +716,7 @@ index 19874a5..f271bce 100644
  
    // Shader modifications.
    uint32_t ps_param_gen_pos = UINT32_MAX;
-@@ -2366,6 +2515,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2366,6 +2839,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
                     : 0;
    if (!render_target_cache_->Update(is_rasterization_done, normalized_depth_control,
                                      normalized_color_mask, *vertex_shader)) {
@@ -325,7 +725,7 @@ index 19874a5..f271bce 100644
      return false;
    }
  
-@@ -2400,6 +2551,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2400,6 +2875,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    }
    if (REXCVAR_GET(async_shader_compilation) &&
        pipeline_cache_->GetD3D12PipelineByHandle(pipeline_handle) == nullptr) {
@@ -334,7 +734,31 @@ index 19874a5..f271bce 100644
      return true;
    }
  
-@@ -2617,6 +2770,50 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2407,6 +2884,23 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+   uint32_t used_texture_mask =
+       vertex_shader->GetUsedTextureMaskAfterTranslation() |
+       (pixel_shader != nullptr ? pixel_shader->GetUsedTextureMaskAfterTranslation() : 0);
++  if (REXCVAR_GET(graw_invalidate_atlas)) {
++    // #1 experiment: once after 58 s, mark the HUD atlas (512x256 DXT3) as CPU-modified.
++    static bool done = false;
++    static const auto t0 = std::chrono::steady_clock::now();
++    uint32_t si, sm = used_texture_mask;
++    while (!done && rex::bit_scan_forward(sm, &si)) {
++      sm &= ~(UINT32_C(1) << si);
++      const xenos::xe_gpu_texture_fetch_t f = regs.GetTextureFetch(si);
++      if (f.dword_0 == 0x84024802u && f.size_2d.width == 511 && f.size_2d.height == 255 &&
++          std::chrono::steady_clock::now() - t0 > std::chrono::seconds(58)) {
++        done = true;
++        const uint32_t base = uint32_t(f.base_address) << 12;
++        shared_memory_->MemoryInvalidationCallback(base, 0x20000, true);
++        REXGPU_INFO("GRAW invalidated atlas {:08X}", base);
++      }
++    }
++  }
+   texture_cache_->RequestTextures(used_texture_mask);
+ 
+   // Bind the pipeline after configuring it and doing everything that may bind
+@@ -2617,6 +3111,50 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    SetPrimitiveTopology(primitive_topology);
    // Must not call anything that may change the primitive topology from now on!
  
@@ -385,34 +809,120 @@ index 19874a5..f271bce 100644
    // Draw.
    if (primitive_processing_result.index_buffer_type ==
        PrimitiveProcessor::ProcessedIndexBufferType::kNone) {
-@@ -2628,6 +2825,13 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2628,8 +3166,69 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      SubmitBarriers();
      PROFILE_DRAW_CALL();
      PROFILE_VERTICES(primitive_processing_result.host_draw_vertex_count);
+-    deferred_command_list_.D3DDrawInstanced(primitive_processing_result.host_draw_vertex_count, 1,
+-                                            0, 0);
 +    if (graw_rt) GrawNoteDraw(regs, "drawn", pixel_shader, normalized_color_mask,
 +                              primitive_processing_result.host_draw_vertex_count);
 +    if (graw_rt) GrawNoteDrawTextures(regs, used_texture_mask);
 +    if (graw_trace::Enabled()) {
++      GrawSeq(regs, used_texture_mask, vertex_shader->ucode_data_hash(),
++              pixel_shader ? pixel_shader->ucode_data_hash() : 0,
++              primitive_processing_result.host_draw_vertex_count, false);
++    }
++    if (graw_rt) {
++      // #1: shaders of small draws sampling a 1280x720 texture (the scene composite quad).
++      uint32_t gi, gm = used_texture_mask;
++      while (rex::bit_scan_forward(gm, &gi)) {
++        gm &= ~(UINT32_C(1) << gi);
++        const xenos::xe_gpu_texture_fetch_t gf = regs.GetTextureFetch(gi);
++        const bool scene = gf.size_2d.width + 1 == 1280 && gf.size_2d.height + 1 == 720 &&
++                           primitive_processing_result.host_draw_vertex_count <= 6;
++        const bool blur = gf.size_2d.width + 1 == 256 && gf.size_2d.height + 1 == 200 &&
++                          regs.Get<reg::RB_SURFACE_INFO>().surface_pitch == 1280;
++        if (scene || blur) {
++          auto fl = [&](uint32_t r) {
++            float v;
++            std::memcpy(&v, &regs[r], 4);
++            return v;
++          };
++          const std::string k = fmt::format(
++              "composite shaders vs {:016X} ps {:016X} fetch {} fmt {} base {:08X} | vte {:08X} "
++              "winoff {:08X} vport {} {} {} {} surface {:08X} wscissor {:08X} {:08X} clip {:08X} "
++              "verts {} blend {:08X} depthctl {:08X} stencil {:08X} colormask {:08X}",
++              vertex_shader->ucode_data_hash(), pixel_shader ? pixel_shader->ucode_data_hash() : 0,
++              gi, uint32_t(gf.format), uint32_t(gf.base_address) << 12,
++              regs[XE_GPU_REG_PA_CL_VTE_CNTL], regs[XE_GPU_REG_PA_SC_WINDOW_OFFSET],
++              fl(XE_GPU_REG_PA_CL_VPORT_XSCALE), fl(XE_GPU_REG_PA_CL_VPORT_XOFFSET),
++              fl(XE_GPU_REG_PA_CL_VPORT_YSCALE), fl(XE_GPU_REG_PA_CL_VPORT_YOFFSET),
++              regs[XE_GPU_REG_RB_SURFACE_INFO], regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL],
++              regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR], regs[XE_GPU_REG_PA_CL_CLIP_CNTL],
++              primitive_processing_result.host_draw_vertex_count,
++              regs[XE_GPU_REG_RB_BLENDCONTROL0], regs[XE_GPU_REG_RB_DEPTHCONTROL],
++              regs[XE_GPU_REG_RB_STENCILREFMASK], regs[XE_GPU_REG_RB_COLOR_MASK]);
++          if (graw_trace::Count(k, 1)) REXGPU_INFO("GRAW {}", k);
++          if (vertex_shader->ucode_data_hash() == UINT64_C(0x163102E6668FF616)) {
++            std::string c;
++            for (uint32_t ci : {0u, 1u, 2u, 3u, 12u, 240u}) {
++              c += fmt::format(" c{}=", ci);
++              for (uint32_t e = 0; e < 4; ++e) {
++                float v;
++                std::memcpy(&v, &regs[XE_GPU_REG_SHADER_CONSTANT_000_X + ci * 4 + e], 4);
++                c += fmt::format("{}{:.5g}", e ? "," : "", v);
++              }
++            }
++            if (graw_trace::Count("copyquad" + c, 1)) REXGPU_INFO("GRAW copy quad constants:{}", c);
++          }
++        }
++      }
++    }
++    if (graw_trace::Enabled()) {
 +      GrawNoteBlendDraw(regs, used_texture_mask,
 +                        primitive_processing_result.host_draw_vertex_count, false);
 +    }
-     deferred_command_list_.D3DDrawInstanced(primitive_processing_result.host_draw_vertex_count, 1,
-                                             0, 0);
++    if (!GrawSkipByIndex(vertex_shader->ucode_data_hash()) &&
++        !GrawSkipBySampling(regs, used_texture_mask, vertex_shader->ucode_data_hash())) {
++      deferred_command_list_.D3DDrawInstanced(primitive_processing_result.host_draw_vertex_count,
++                                              1, 0, 0);
++    }
    } else {
-@@ -2687,6 +2891,12 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+     D3D12_INDEX_BUFFER_VIEW index_buffer_view;
+     index_buffer_view.SizeInBytes = primitive_processing_result.host_draw_vertex_count;
+@@ -2687,8 +3286,22 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      SubmitBarriers();
      PROFILE_DRAW_CALL();
      PROFILE_VERTICES(primitive_processing_result.host_draw_vertex_count);
+-    deferred_command_list_.D3DDrawIndexedInstanced(
+-        primitive_processing_result.host_draw_vertex_count, 1, 0, 0, 0);
 +    if (graw_rt) GrawNoteDraw(regs, "drawn indexed", pixel_shader, normalized_color_mask,
 +                              primitive_processing_result.host_draw_vertex_count);
 +    if (graw_trace::Enabled()) {
 +      GrawNoteBlendDraw(regs, used_texture_mask,
 +                        primitive_processing_result.host_draw_vertex_count, true);
 +    }
-     deferred_command_list_.D3DDrawIndexedInstanced(
-         primitive_processing_result.host_draw_vertex_count, 1, 0, 0, 0);
++    if (graw_trace::Enabled()) {
++      GrawSeq(regs, used_texture_mask, vertex_shader->ucode_data_hash(),
++              pixel_shader ? pixel_shader->ucode_data_hash() : 0,
++              primitive_processing_result.host_draw_vertex_count, true);
++    }
++    if (!GrawSkipByIndex(vertex_shader->ucode_data_hash()) &&
++        !GrawSkipBySampling(regs, used_texture_mask, vertex_shader->ucode_data_hash())) {
++      deferred_command_list_.D3DDrawIndexedInstanced(
++          primitive_processing_result.host_draw_vertex_count, 1, 0, 0, 0);
++    }
      if (scratch_index_buffer != nullptr) {
-@@ -2879,9 +3089,57 @@ bool D3D12CommandProcessor::IssueCopy() {
+       ReleaseScratchGPUBuffer(scratch_index_buffer, D3D12_RESOURCE_STATE_INDEX_BUFFER);
+     }
+@@ -2871,6 +3484,15 @@ bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_s
+ }
+ 
+ bool D3D12CommandProcessor::IssueCopy() {
++  if (GrawSeqLeft() > 0) {
++    const RegisterFile& r = *register_file_;
++    REXGPU_INFO("GRAW seq copy ctl {:08X} dest {:08X} pitch {:08X} info {:08X} color0 {:08X} "
++                "scis {:08X} {:08X} winoff {:08X}",
++                r[XE_GPU_REG_RB_COPY_CONTROL], r[XE_GPU_REG_RB_COPY_DEST_BASE],
++                r[XE_GPU_REG_RB_COPY_DEST_PITCH], r[XE_GPU_REG_RB_COPY_DEST_INFO],
++                r[XE_GPU_REG_RB_COLOR_INFO], r[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL],
++                r[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR], r[XE_GPU_REG_PA_SC_WINDOW_OFFSET]);
++  }
+ #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
+   SCOPE_profile_cpu_f("gpu");
+ #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
+@@ -2879,9 +3501,57 @@ bool D3D12CommandProcessor::IssueCopy() {
    }
    ReadbackResolveMode readback_mode = GetReadbackResolveMode(REXCVAR_GET(d3d12_readback_resolve));
    if (readback_mode == ReadbackResolveMode::kDisabled) {
@@ -802,7 +1312,7 @@ index 76f5600..783cfea 100644
  }
  
 diff --git a/src/graphics/shared_memory.cpp b/src/graphics/shared_memory.cpp
-index ec0df7c..d0f7d5a 100644
+index ec0df7c..bf99de6 100644
 --- a/src/graphics/shared_memory.cpp
 +++ b/src/graphics/shared_memory.cpp
 @@ -17,6 +17,7 @@
@@ -813,7 +1323,64 @@ index ec0df7c..d0f7d5a 100644
  #include <rex/math.h>
  #include <rex/memory.h>
  
-@@ -461,6 +462,18 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
+@@ -263,6 +264,7 @@ void SharedMemory::RangeWrittenByGpu(uint32_t start, uint32_t length) {
+   uint32_t page_first = start >> page_size_log2_;
+   uint32_t page_last = end >> page_size_log2_;
+ 
++  graw_trace::Note('G', start, length);
+   // Trigger modification callbacks so, for instance, resolved data is loaded to
+   // the texture.
+   FireWatches(page_first, page_last, true);
+@@ -291,6 +293,35 @@ void SharedMemory::MakeRangeValid(uint32_t start, uint32_t length, bool written_
+   uint32_t valid_block_first = valid_page_first >> 6;
+   uint32_t valid_block_last = valid_page_last >> 6;
+ 
++  // GPU writes (resolves) can land after the guest has freed the memory, since the GPU runs
++  // behind the CPU. Freed pages can't be watched (EnableAccessCallbacks skips inaccessible
++  // pages), so if they were marked valid here, the CPU data written after the memory is
++  // allocated again would never be uploaded, and textures there would keep the stale resolved
++  // data (GRAW: the tutorial's HUD atlases showed the menu's last front buffer). Keep such pages
++  // invalid so they're reuploaded from guest memory when next used.
++  std::vector<uint64_t> unallocated;
++  if (written_by_gpu) {
++    memory::VirtualHeap* physical_heap = memory().GetPhysicalHeap();
++    for (uint32_t page = valid_page_first; page <= valid_page_last; ++page) {
++      uint32_t protect = 0;
++      if (!physical_heap->QueryProtect(page << page_size_log2_, &protect) ||
++          !(protect & (memory::kMemoryProtectRead | memory::kMemoryProtectWrite))) {
++        if (unallocated.empty()) {
++          unallocated.resize(valid_block_last - valid_block_first + 1);
++        }
++        unallocated[(page >> 6) - valid_block_first] |= uint64_t(1) << (page & 63);
++      }
++    }
++    if (!unallocated.empty() && graw_trace::Enabled()) {
++      uint32_t pages = 0;
++      for (uint64_t bits : unallocated) {
++        for (; bits; bits &= bits - 1) ++pages;
++      }
++      REXGPU_INFO("GRAW GPU write to {} freed pages in {:08X}+{:X} kept invalid", pages, start,
++                  length);
++    }
++  }
++
+   {
+     auto global_lock = global_critical_region_.Acquire();
+ 
+@@ -302,6 +333,12 @@ void SharedMemory::MakeRangeValid(uint32_t start, uint32_t length, bool written_
+       if (i == valid_block_last && (valid_page_last & 63) != 63) {
+         valid_bits &= (uint64_t(1) << ((valid_page_last & 63) + 1)) - 1;
+       }
++      if (!unallocated.empty()) {
++        const uint64_t freed = unallocated[i - valid_block_first];
++        system_page_flags_valid_[i] &= ~freed;
++        system_page_flags_valid_and_gpu_written_[i] &= ~freed;
++        valid_bits &= ~freed;
++      }
+       system_page_flags_valid_[i] |= valid_bits;
+       uint64_t& gpu_written = system_page_flags_valid_and_gpu_written_[i];
+       gpu_written = written_by_gpu ? (gpu_written | valid_bits) : (gpu_written & ~valid_bits);
+@@ -461,6 +498,21 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
    COUNT_profile_set("gpu/shared_memory/request_ranges_upload_count",
                      uint32_t(upload_ranges_.size()));
  
@@ -829,6 +1396,18 @@ index ec0df7c..d0f7d5a 100644
 +      }
 +    }
 +  }
++  for (const auto& r : upload_ranges_) {
++    graw_trace::Note('U', r.first << page_size_log2_, r.second << page_size_log2_);
++  }
    if (upload_ranges_.empty()) {
      return true;
    }
+@@ -528,6 +580,8 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+     system_page_flags_valid_and_gpu_written_[i] &= ~invalidate_bits;
+   }
+ 
++  graw_trace::Note('I', page_first << page_size_log2_,
++                   (page_last - page_first + 1) << page_size_log2_);
+   FireWatches(page_first, page_last, false);
+ 
+   return std::make_pair(page_first << page_size_log2_, (page_last - page_first + 1)

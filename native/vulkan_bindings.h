@@ -11,8 +11,9 @@
 //   set 3  pixel shader textures, the same; an empty layout for a shader without any
 // Pipeline layouts are made per (vertex, pixel) texture and sampler counts.
 //
-// M3c-2: textures are placeholders, a 1x1 opaque mid-grey image per view type (2D array,
-// cube, 3D, as the SDK's null images) and one sampler; texture_swizzled_signs stays unsigned.
+// Textures and samplers come from the backend (M4: vulkan_textures.h, Sampler()); bindings
+// without one get placeholders, a 1x1 transparent black image per view type (2D array, cube,
+// 3D, as D3D12's null views read) and one sampler.
 // Constant buffers go to a per-frame uniform upload pool, uploaded again only when their
 // contents change within the frame. Descriptor sets come from per-frame pools, reset when the
 // frame in flight slot comes round again.
@@ -87,6 +88,13 @@ class VulkanBindings {
   void EndFrame(uint64_t completed) { uniforms_.EndFrame(completed); }
 
   const VulkanBindingStats& stats() const { return stats_; }
+
+  // A descriptor set of `layout` from the pools of the frame being recorded (`frame`: its
+  // fence, as Bind's), for work outside draws (resolve shaders).
+  VkDescriptorSet AllocateFrameSet(VkDescriptorSetLayout layout, uint64_t frame) {
+    BeginFrame(frame);
+    return AllocateSet(layout);
+  }
 
  private:
   // A constant buffer's last contents and where they were uploaded this frame.

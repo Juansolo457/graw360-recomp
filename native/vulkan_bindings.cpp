@@ -6,12 +6,15 @@
 
 #include "guest_memory_mirror.h"
 
+#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include <algorithm>
 #include <bit>
 #include <cstring>
 #include <iterator>
+
+REXCVAR_DECLARE(int32_t, graw_native_vulkan_debug);
 
 namespace graw::native {
 
@@ -126,8 +129,8 @@ bool VulkanBindings::Initialize(VulkanMemory& memory, VkBuffer shared) {
   w.pBufferInfo = shared_infos.data();
   fn.vkUpdateDescriptorSets(d, 1, &w, 0, nullptr);
 
-  // Placeholder textures: opaque mid-grey (so textured surfaces show their shapes until the
-  // texture cache, M4), cleared by InitializePlaceholders.
+  // Placeholder textures: transparent black, what D3D12's null views read (bindings without a
+  // texture, or of another dimension or signedness), cleared by InitializePlaceholders.
   VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   ii.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
   ii.imageType = VK_IMAGE_TYPE_2D;
@@ -190,9 +193,9 @@ void VulkanBindings::InitializePlaceholders(VkCommandBuffer cmd) {
   }
   fn.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                           0, 0, nullptr, 0, nullptr, 2, b);
-  const VkClearColorValue grey{{0.5f, 0.5f, 0.5f, 1.0f}};
+  const VkClearColorValue zero{};
   for (uint32_t i = 0; i < 2; ++i)
-    fn.vkCmdClearColorImage(cmd, b[i].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &grey, 1,
+    fn.vkCmdClearColorImage(cmd, b[i].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1,
                             &b[i].subresourceRange);
   for (VkImageMemoryBarrier& x : b) {
     x.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -272,6 +275,8 @@ VkDescriptorPool VulkanBindings::NewPool() {
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kPoolSets * SpirvShaderTranslator::kConstantBufferCount},
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kPoolSets * 8},
       {VK_DESCRIPTOR_TYPE_SAMPLER, kPoolSets * 8},
+      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kPoolSets / 16},
+      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kPoolSets / 16},
   };
   VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pi.maxSets = kPoolSets;
@@ -379,6 +384,7 @@ VkSampler VulkanBindings::Sampler(const SamplerKey& k) {
   } else {
     si.maxLod = VK_LOD_CLAMP_NONE;
   }
+  if (REXCVAR_GET(graw_native_vulkan_debug) & 1) si.maxLod = si.minLod;  // debug: no mips
   VkSampler sampler = VK_NULL_HANDLE;
   if (!Check(device_.fn().vkCreateSampler(device_.device(), &si, nullptr, &sampler), "a sampler"))
     sampler = VK_NULL_HANDLE;

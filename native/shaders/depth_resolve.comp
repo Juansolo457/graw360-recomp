@@ -1,0 +1,61 @@
+// GRAW native renderer: the Vulkan backend's depth resolve (vulkan_resolve.h). Copies a
+// rectangle of a depth render target into an R32_SFLOAT image as the D3D12 Resolver's
+// depth_r32f (resolve.cpp's PackPixel with DEPTH): the value a k_24_8 / k_24_8_FLOAT texture
+// fetch of the guest's copy gives. Built with -DMSAA=0 / 1 by tools/vulkan_shaders.py.
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform Params {
+  ivec2 src_origin;   // source rectangle origin in the render target
+  uvec2 size;         // rectangle size
+  ivec2 dest_origin;  // destination point in the image
+  uint depth_format;  // xenos::DepthRenderTargetFormat: 0 kD24S8, 1 kD24FS8
+  uint host_sample;   // MSAA: the sample to copy (depth is never averaged)
+} p;
+
+#if MSAA
+layout(set = 0, binding = 0) uniform sampler2DMS src_depth;
+#else
+layout(set = 0, binding = 0) uniform sampler2D src_depth;
+#endif
+layout(set = 0, binding = 1, r32f) uniform writeonly image2D dest;
+
+// Xenia xenos::Float32To20e4 truncating, as ReXGlue's EDRAM store of host D32 depth
+// (PreClampedDepthTo20e4 with depth_float24_round off, the plugin's default).
+uint F20e4(float f) {
+  uint u = floatBitsToUint(clamp(f, 0.0, 1.99999988));
+  if (u < 0x38800000u) {
+    uint shift = 113u - (u >> 23);
+    u = shift < 24u ? (((u & 0x7FFFFFu) | 0x800000u) >> shift) : 0u;
+  } else {
+    u += 0xC8000000u;
+  }
+  return (u >> 3) & 0xFFFFFFu;
+}
+
+float F20e4ToF32(uint v) {
+  uint m = v & 0xFFFFFu, e = v >> 20;
+  if (e == 0u) {
+    if (m == 0u) return 0.0;
+    uint lz = uint(findMSB(m));  // 0..19
+    return uintBitsToFloat(((lz + 93u) << 23) | (((m << (20u - lz)) & 0xFFFFFu) << 3));
+  }
+  return uintBitsToFloat(((e + 112u) << 23) | (m << 3));
+}
+
+void main() {
+  uvec2 id = gl_GlobalInvocationID.xy;
+  if (any(greaterThanEqual(id, p.size))) return;
+  ivec2 s = p.src_origin + ivec2(id);
+#if MSAA
+  float d = texelFetch(src_depth, s, int(p.host_sample)).r;
+#else
+  float d = texelFetch(src_depth, s, 0).r;
+#endif
+  // kD24S8: rounded to the nearest even like ReXGlue's EDRAM store (OpRoundNE of d * 0xFFFFFF).
+  float v = p.depth_format == 1u ? F20e4ToF32(F20e4(d))
+                                 : float(uint(roundEven(clamp(d, 0.0, 1.0) * 16777215.0))) /
+                                       16777215.0;
+  imageStore(dest, p.dest_origin + ivec2(id), vec4(v));
+}

@@ -19,6 +19,9 @@
 REXCVAR_DEFINE_STRING(
     graw_native_resolve_dump, "", "GRAW native",
     "Directory for resolve oracle dumps; create <dir>\\dump.request to dump the next frame");
+REXCVAR_DEFINE_INT32(graw_native_resolve_dump_frame, -1, "GRAW native",
+                     "With --graw_native_resolve_dump: also dump the resolves of this native frame "
+                     "(-1: only on dump.request)");
 REXCVAR_DEFINE_BOOL(graw_native_resolve_selftest, false, "GRAW native",
                     "Check the resolve shader's format packing against known encodings at start");
 REXCVAR_DECLARE(int32_t, graw_native_capture_hold_ms);
@@ -187,7 +190,9 @@ void Resolver::DumpBeginFrame(uint64_t completed_fence) {
   }
   if (!d.recording && !d.guest_read) {
     std::error_code ec;
-    if (std::filesystem::remove(d.dir / "dump.request", ec)) {
+    const int32_t at = REXCVAR_GET(graw_native_resolve_dump_frame);
+    if (std::filesystem::remove(d.dir / "dump.request", ec) ||
+        (at >= 0 && frame_ == uint64_t(at))) {
       HoldFullReadback(true);  // before any of this frame's resolves reach the plugin
       d.recording = true;
       d.frame = frame_;

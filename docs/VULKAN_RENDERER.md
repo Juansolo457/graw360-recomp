@@ -462,6 +462,54 @@ crosshair and the waypoint markers.
   swizzles, the MSAA targets);
 - the image is darker and flatter than D3D12: the resolves' exponent bias, the gamma ramp (M5).
 
+## M4b status (2026-10-26): resolves as D3D12 does them, the wrong colors
+**Done: the 3D scene matches D3D12** (resolve dumps of the same frame, per channel), apart from
+the HUD's quad lists. The frame map came from a D3D12 draw log (`--graw_native_draw_log_from`).
+- **Depth resolves** (the shadow map atlas, two more shadow maps, the scene depth the final
+  composite reads): `shaders/depth_resolve.comp`, the D3D12 Resolver's depth path in GLSL,
+  into R32_SFLOAT images (20e4 truncation, one sample as ReXGlue picks it). They matched D3D12
+  to the fourth decimal in the dumps.
+- **Color resolves** through `shaders/color_resolve.comp`, the Resolver's color shader in GLSL:
+  sample selection and averaging, the 7e3 quantization, exponent bias, red/blue swap, and the
+  destination's exact texel bits through a uint view of a MUTABLE image (needs
+  `shaderStorageImageWriteWithoutFormat`; blits stay as the fallback). `tools/vulkan_shaders.py`
+  builds both into `native/shaders/bytecode/` with glslc; the headers are committed.
+- **Resolve clears** (EndTiling's and the post chain's), **EDRAM fills** (render_targets.h's,
+  now the `EdramFills` class both backends use), and **new render targets zeroed** as D3D12's
+  committed resources are. Replaced resolve images and their views are destroyed once the GPU
+  is done with them (a resolve address reused for another size had destroyed an image the
+  frame's command buffer still used).
+- **The wrong colors and the dots: NaN gradients.** In the 128x128 reflection view the lit
+  terrain shader drew garbage into the top-left pixel of about half the 2x2 quads (one or two
+  channels saturated); shiny materials (helmets, barrels, a trunk, the fence tops) sample that
+  view. Per-draw dumps narrowed it to one draw, then experiments to the explicit coarse
+  gradients of computed-LOD fetches: zero gradients removed most of it, fine ones made it
+  worse, gradients with NaN replaced removed all of it. Fix: `tools/patches/
+  rexglue-bd833a2-spirv-implicit-gradients.patch`, pgr4-native 0021 for the SPIR-V translator
+  (computed-LOD 1D/2D/cube pixel shader fetches sample with implicit derivatives and the LOD
+  bias, as the D3D12 path does by default). `--graw_native_implicit_gradients=false` switches
+  both translators back. Float controls, early depth tests and centroid were ruled out.
+- **Placeholders** are transparent black again, what D3D12's null views read.
+- **Debugging tools** (all off by default): `--graw_native_vulkan_resolve_dump=<dir>` with
+  `--graw_native_vulkan_resolve_dump_frame=N` and `_frames=M` (the D3D12
+  `--graw_native_resolve_dump`, now with `--graw_native_resolve_dump_frame`, writes the same
+  layout; `tools/compare_native_resolves.py` compares two dumps),
+  `--graw_native_vulkan_dump_target_draws=a-b` (color target 0 after each draw),
+  `--graw_native_vulkan_dump_shaders=<dir>` (SPIR-V and ucode of every translated shader),
+  `--graw_native_vulkan_skip_draws=a-b`, `--graw_native_vulkan_debug_blank_fetch=<mask>` and
+  `--graw_native_vulkan_debug` (1 first mip only, 2 no alpha to mask, 4 no cube textures, 8 no
+  guest-memory textures). Draw indices drift by a few between runs; dumps of several frames
+  are the robust comparison.
+
+**Test** (GRAW save, 120 s, coherency check on): with validation 0 errors (the same 10 warnings);
+without, 16.7 ms frames and 2.8 ms to record ~2,115 draws, every resolve done (none skipped).
+The first run after a shader change compiles every pipeline: ~20 s in all and up to 300 ms for
+one pipeline on this NVIDIA driver, against ~65 ms in all from its disk cache. Background
+compiles and a pipeline cache are needed before the Deck.
+**Left:** the HUD (quad lists: geometry shaders), which also carries the warm overlay D3D12's
+final image has; the menus (also quad lists); exponent bias in the front buffer and the gamma
+ramp (M5).
+
 ## Risks
 - **The SPIR-V translator's output for GRAW is unproven.** M0 exists to find gaps before
   anything else is built.

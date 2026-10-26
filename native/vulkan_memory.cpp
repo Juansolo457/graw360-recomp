@@ -59,6 +59,31 @@ bool VulkanMemory::CreateBuffer(uint64_t size, VkBufferUsageFlags usage, bool ho
   return true;
 }
 
+bool VulkanMemory::CreateReadbackBuffer(uint64_t size, Buffer* out, const char* what) {
+  VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  bi.size = size;
+  bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  VmaAllocationCreateInfo ai = {};
+  ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+  ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+  VmaAllocationInfo info = {};
+  const VkResult r =
+      vmaCreateBuffer(allocator_, &bi, &ai, &out->buffer, &out->allocation, &info);
+  if (r != VK_SUCCESS) {
+    REXLOG_ERROR("GRAW native Vulkan: {} ({} bytes) failed ({})", what, size, int(r));
+    *out = Buffer{};
+    return false;
+  }
+  out->mapped = static_cast<uint8_t*>(info.pMappedData);
+  out->size = size;
+  return true;
+}
+
+void VulkanMemory::Invalidate(const Buffer& buffer) {
+  if (buffer.allocation) vmaInvalidateAllocation(allocator_, buffer.allocation, 0, VK_WHOLE_SIZE);
+}
+
 void VulkanMemory::Destroy(Buffer& buffer) {
   if (buffer.buffer) vmaDestroyBuffer(allocator_, buffer.buffer, buffer.allocation);
   buffer = Buffer{};

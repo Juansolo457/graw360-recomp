@@ -10,6 +10,7 @@
 #include "vulkan_memory.h"
 #include "vulkan_pipelines.h"
 #include "vulkan_render_targets.h"
+#include "vulkan_resolve.h"
 #include "vulkan_shaders.h"
 #include "vulkan_textures.h"
 
@@ -20,7 +21,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <functional>
 #include <utility>
 
 REXCVAR_DEFINE_BOOL(graw_native_vulkan_validation, false, "GRAW native",
@@ -30,6 +34,31 @@ REXCVAR_DEFINE_BOOL(graw_native_vulkan_show_target, false, "GRAW native",
                     "With --graw_native_api=vulkan: show the color render target most of the "
                     "frame's draws went to (the 3D scene) instead of the front buffer, to check "
                     "the geometry before textures exist (M3d debugging)");
+REXCVAR_DEFINE_INT32(graw_native_vulkan_debug, 0, "GRAW native",
+                     "With --graw_native_api=vulkan, debug toggles (bits): 1 samplers stay on "
+                     "their first mip level, 2 alpha to mask off, 4 cube textures as "
+                     "placeholders, 8 textures from guest memory as placeholders");
+REXCVAR_DEFINE_STRING(graw_native_vulkan_resolve_dump, "", "GRAW native",
+                      "With --graw_native_api=vulkan, debug: directory for dumps of the resolves "
+                      "of frame --graw_native_vulkan_resolve_dump_frame, as the D3D12 "
+                      "--graw_native_resolve_dump's native texels (f<F>-r<i>-native.bin, tight "
+                      "rows; depth as R32 floats) and f<F>-resolves.jsonl");
+REXCVAR_DEFINE_INT32(graw_native_vulkan_debug_blank_fetch, 0, "GRAW native",
+                     "With --graw_native_api=vulkan, debug: bit i set binds the placeholder (zero) "
+                     "for texture fetch constant i");
+REXCVAR_DEFINE_STRING(graw_native_vulkan_skip_draws, "", "GRAW native",
+                      "With --graw_native_api=vulkan, debug: skip the draws first-last of every "
+                      "frame (indices as the D3D12 draw log's), to find the draw behind a "
+                      "difference");
+REXCVAR_DEFINE_STRING(graw_native_vulkan_dump_target_draws, "", "GRAW native",
+                      "With --graw_native_vulkan_resolve_dump, debug: also read back color target 0 "
+                      "after each of the draws first-last of the dumped frame "
+                      "(f<F>-d<draw>-rt.bin, in f<F>-targets.jsonl)");
+REXCVAR_DEFINE_INT32(graw_native_vulkan_resolve_dump_frames, 1, "GRAW native",
+                     "The frames --graw_native_vulkan_resolve_dump dumps from "
+                     "--graw_native_vulkan_resolve_dump_frame on");
+REXCVAR_DEFINE_INT32(graw_native_vulkan_resolve_dump_frame, -1, "GRAW native",
+                     "The native frame --graw_native_vulkan_resolve_dump dumps (-1: none)");
 REXCVAR_DECLARE(bool, graw_native_render_thread);
 REXCVAR_DECLARE(std::string, graw_native_watch_trace);
 REXCVAR_DECLARE(bool, graw_native_coherency_check);
@@ -39,6 +68,9 @@ namespace graw::native {
 struct VulkanBackend::ResolvedImage {
   VulkanMemory::Image image;
   VkFormat format = VK_FORMAT_UNDEFINED;
+  VkFormat format_signed = VK_FORMAT_UNDEFINED;  // MUTABLE images: their signed views' format
+  VkFormat storage_format = VK_FORMAT_UNDEFINED;  // resolve shaders: storage_view's format
+  VkImageView storage_view = VK_NULL_HANDLE;
   uint32_t width = 0, height = 0;
   bool written = false;
 };
@@ -58,6 +90,7 @@ struct VulkanBackend::Gpu {
   VulkanPipelines pipelines;
   // Host render targets for the guest's surfaces (destroyed before `memory`).
   VulkanRenderTargets targets;
+  VulkanResolveShaders resolve_shaders;
   // M4: guest textures (created once guest memory is known; destroyed before `memory`).
   std::unique_ptr<VulkanTextureCache> textures;
   // M3d: the images color resolves copied their source rectangles into, by destination address
@@ -66,12 +99,39 @@ struct VulkanBackend::Gpu {
   using Resolved = ResolvedImage;
   std::unordered_map<uint32_t, Resolved> resolved;
   Resolved msaa_temp;  // MSAA targets resolved before a converting blit
-  explicit Gpu(VulkanDevice& device) : bindings(device), pipelines(device), targets(device) {}
+  // Replaced images, destroyed once the GPU completed the frame that last used them.
+  struct Retired {
+    Resolved image;
+    uint64_t fence;
+  };
+  std::vector<Retired> retired;
+  // --graw_native_vulkan_resolve_dump: the dumped frame's resolves and their readbacks.
+  struct DumpEntry {
+    ResolveParams p;
+    uint32_t width = 0, height = 0, bpp = 0;
+    uint32_t after_draw = 0;  // the frame's draws before it
+    uint64_t frame = 0, fence = 0;  // the frame it belongs to, and its fence
+    int32_t target_draw = -1;  // a render target after this draw (DumpTarget), not a resolve
+    uint32_t target_format = 0, target_base = 0, target_pitch = 0, samples = 1;
+    VulkanMemory::Buffer readback;
+  };
+  std::vector<DumpEntry> dump;
+  std::unordered_map<uint64_t, size_t> dump_resolves;  // per frame: resolves written
+  VulkanDevice& device;
+  explicit Gpu(VulkanDevice& d)
+      : bindings(d), pipelines(d), targets(d), resolve_shaders(d), device(d) {}
   ~Gpu() {
     textures.reset();
-    for (auto& [address, r] : resolved) memory.Destroy(r.image);
-    memory.Destroy(msaa_temp.image);
+    for (auto& [address, r] : resolved) Destroy(r);
+    for (Retired& r : retired) Destroy(r.image);
+    for (DumpEntry& e : dump) memory.Destroy(e.readback);
+    Destroy(msaa_temp);
     memory.Destroy(shared);
+  }
+  void Destroy(Resolved& r) {
+    if (r.storage_view) device.fn().vkDestroyImageView(device.device(), r.storage_view, nullptr);
+    r.storage_view = VK_NULL_HANDLE;
+    memory.Destroy(r.image);
   }
 };
 
@@ -105,6 +165,7 @@ bool VulkanBackend::Initialize(const Options& o) {
     return false;
   if (!gpu_->bindings.Initialize(gpu_->memory, gpu_->shared.buffer)) return false;
   if (!gpu_->targets.Initialize(gpu_->memory)) return false;
+  if (!gpu_->resolve_shaders.Initialize()) return false;
   gpu_->textures = std::make_unique<VulkanTextureCache>(*device_, gpu_->memory, memory);
   gpu_->textures->SetResolvedLookup([gpu = gpu_.get()](uint32_t address) {
     VulkanResolvedImage out;
@@ -112,6 +173,7 @@ bool VulkanBackend::Initialize(const Options& o) {
     if (it != gpu->resolved.end() && it->second.written) {
       out.image = it->second.image.image;
       out.format = it->second.format;
+      out.format_signed = it->second.format_signed;
       out.width = it->second.width;
       out.height = it->second.height;
     }
@@ -208,8 +270,31 @@ void VulkanBackend::RecordCopies(const VertexCopy* copies, size_t count) {
                           0, nullptr);
 }
 
+// Bytes per texel of the formats resolve images have.
+static uint32_t FormatBytes(VkFormat f) {
+  switch (f) {
+    case VK_FORMAT_R8_UNORM:
+      return 1;
+    case VK_FORMAT_R8G8_UNORM:
+    case VK_FORMAT_R5G6B5_UNORM_PACK16:
+    case VK_FORMAT_R16_SFLOAT:
+    case VK_FORMAT_R16_UNORM:
+      return 2;
+    case VK_FORMAT_R16G16B16A16_SFLOAT:
+    case VK_FORMAT_R16G16B16A16_UNORM:
+    case VK_FORMAT_R16G16B16A16_SNORM:
+    case VK_FORMAT_R32G32_SFLOAT:
+      return 8;
+    case VK_FORMAT_R32G32B32A32_SFLOAT:
+      return 16;
+    default:
+      return 4;
+  }
+}
+
 void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
   using rex::graphics::xenos::ShaderType;
+  const uint32_t draw_index = frame_draw_++;
   if (prep) {
     // The guest thread copied the ranges (and marked their pages valid): they go into shared
     // memory whether or not the draw is issued.
@@ -243,6 +328,10 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
     }
   }
   if (!mods.pixel_shader_used) ps = nullptr;
+  if (draw_index >= skip_first_ && draw_index <= skip_last_) {
+    ++stats_.skipped;
+    return;
+  }
   if (!shaders_->Module(*vs, mods.vertex) || (ps && !shaders_->Module(*ps, mods.pixel))) {
     ++stats_.failed;
     return;
@@ -371,6 +460,7 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
                                    samplers_.data() + vs_samplers};
   SpirvShaderTranslator::SystemConstants sys;
   FillSpirvSystemConstants(regs, prim, polygonal, index_endian, vp, used_textures, signs, sys);
+  if (REXCVAR_GET(graw_native_vulkan_debug) & 2) sys.alpha_to_mask = 0;
   VulkanBoundTargets bound;
   if (!targets.Bind(cmd, SurfaceRegsFromRegisters(state.regs), rt_mask, depth_used, height,
                     &bound)) {
@@ -531,53 +621,392 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
     fn.vkCmdDraw(cmd, state.count, 1, 0, 0);
   }
   ++stats_.draws;
+  if (draw_index >= dump_target_first_ && draw_index <= dump_target_last_ && bound.color[0] &&
+      DumpingFrame())
+    DumpTarget(bound.color[0], draw_index);
+}
+
+void VulkanBackend::DumpTarget(VulkanRenderTarget* rt, uint32_t index) {
+  if (rt->samples != 1) return;  // MSAA images can't be copied to buffers
+  Gpu::DumpEntry e;
+  e.target_draw = int32_t(index);
+  e.target_format = rt->guest_format;
+  e.target_base = rt->edram_base;
+  e.target_pitch = rt->pitch;
+  e.width = rt->width;
+  e.height = std::min(rt->height, 2048u);
+  e.bpp = FormatBytes(rt->format);
+  if (!gpu_->memory.CreateReadbackBuffer(uint64_t(e.width) * e.height * e.bpp, &e.readback,
+                                         "render target dump readback"))
+    return;
+  VkCommandBuffer cmd = device_->command_buffer();
+  gpu_->targets.EndRendering(cmd);
+  const VulkanDevice::Functions& fn = device_->fn();
+  VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+  b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  b.image = rt->image.image;
+  b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  b.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  fn.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                          VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+  VkBufferImageCopy region{};
+  region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.imageExtent = {e.width, e.height, 1};
+  fn.vkCmdCopyImageToBuffer(cmd, rt->image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                            e.readback.buffer, 1, &region);
+  b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  b.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  b.srcAccessMask = 0;
+  b.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  fn.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                          VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr,
+                          1, &b);
+  e.frame = frame_index_;
+  e.fence = device_->frame_fence();
+  gpu_->dump.push_back(std::move(e));
 }
 
 void VulkanBackend::Clear(const ClearCall& clear) {
   gpu_->targets.Clear(device_->command_buffer(), clear);
 }
 
-// The host format of a resolve's destination texture format (VK_FORMAT_UNDEFINED: the
-// target's own).
-static VkFormat ResolveFormat(uint32_t dest_format) {
+// The host formats of a resolve's destination texture format (VK_FORMAT_UNDEFINED: the
+// target's own), unsigned and signed (UNDEFINED: none).
+static void ResolveFormats(uint32_t dest_format, VkFormat* unorm, VkFormat* snorm) {
   const HostFormat* host =
       GetHostFormat(rex::graphics::xenos::TextureFormat(dest_format & 63));
-  return host ? VulkanFormatOf(host->unorm) : VK_FORMAT_UNDEFINED;
+  *unorm = host ? VulkanFormatOf(host->unorm) : VK_FORMAT_UNDEFINED;
+  *snorm = host && *unorm != VK_FORMAT_UNDEFINED ? VulkanFormatOf(host->snorm)
+                                                 : VK_FORMAT_UNDEFINED;
 }
 
 void VulkanBackend::Resolve(const ResolveParams& p) {
-  // Color copies only (depth resolves feed the game's own reads: M5).
-  if (p.source > 3 || p.copy_command != 1) {
+  const bool depth = p.source == 4;
+  if (p.source > 4) {
     ++resolves_skipped_;
     return;
   }
   VulkanRenderTargets& targets = gpu_->targets;
   VkCommandBuffer cmd = device_->command_buffer();
   targets.EndRendering(cmd);
-  VulkanRenderTarget* rt =
-      targets.GetColor(cmd, p.regs, p.source, uint32_t(std::clamp(p.y1, 1, 2048)));
-  if (!rt || !rt->initialized) {
+  const uint32_t rows = uint32_t(std::clamp(p.y1, 1, 2048));
+  VulkanRenderTarget* rt = depth ? targets.GetDepth(cmd, p.regs, rows)
+                                 : targets.GetColor(cmd, p.regs, p.source, rows);
+  if (!rt) {
     ++resolves_skipped_;
     return;
   }
-  // The source rectangle, clipped to the target and to the destination level.
+  // The source rectangle on the target. The clears cover all of it, the copy only what fits in
+  // the destination level (as resolve.cpp).
   const int32_t x0 = std::max(p.x0, 0), y0 = std::max(p.y0, 0);
   const int32_t x1 = std::min(p.x1, int32_t(rt->width)), y1 = std::min(p.y1, int32_t(rt->height));
-  const int32_t dx = std::max(p.dest_x, 0), dy = std::max(p.dest_y, 0);
+  if (x1 <= x0 || y1 <= y0) return;  // nothing to copy or clear
+  const int32_t dx = p.dest_x + (x0 - p.x0), dy = p.dest_y + (y0 - p.y0);
   const int32_t w = std::min(x1 - x0, int32_t(p.dest_width) - dx);
   const int32_t h = std::min(y1 - y0, int32_t(p.dest_height) - dy);
-  if (w <= 0 || h <= 0 || !p.dest_width || !p.dest_height ||
-      !CopyTarget(rt, x0, y0, w, h, dx, dy, p.dest_width, p.dest_height, p.dest_base,
-                  ResolveFormat(p.dest_format))) {
-    ++resolves_skipped_;
-    return;
+  bool copied = false;
+  if (w > 0 && h > 0 && dx >= 0 && dy >= 0) {
+    targets.PrepareRead(cmd, rt);
+    if (depth) {
+      copied = CopyDepth(rt, x0, y0, w, h, dx, dy, p);
+      depth_resolves_ += copied;
+    } else if (p.copy_command == 1) {
+      copied = CopyColor(rt, x0, y0, w, h, dx, dy, p);
+      if (copied) {
+        ++shader_resolves_;
+      } else {
+        VkFormat unorm, snorm;
+        ResolveFormats(p.dest_format, &unorm, &snorm);
+        copied = CopyTarget(rt, x0, y0, w, h, dx, dy, p.dest_width, p.dest_height, p.dest_base,
+                            unorm, snorm);
+      }
+    }
   }
-  ++resolves_;
+  if (copied) {
+    ++resolves_;
+    if (DumpingFrame())
+      DumpRecord(p, uint32_t(dx + w), uint32_t(dy + h));
+  } else {
+    ++resolves_skipped_;
+  }
+  // Clears of the source surfaces over the source rectangle (after the copy).
+  if (p.clear_flags) {
+    ClearCall c;
+    c.p.flags = ((p.clear_flags & 0x100) ? (1u << (depth ? 0 : p.source)) : 0) |
+                ((p.clear_flags & 0x200) ? 0x30u : 0);
+    std::memcpy(c.p.color, p.clear_color, sizeof(c.p.color));
+    c.p.depth = p.clear_depth;
+    c.p.stencil = p.clear_stencil;
+    c.p.rects.push_back({LONG(x0), LONG(y0), LONG(x1), LONG(y1)});
+    if (p.edram_x || p.edram_y)
+      c.p.edram_rects.push_back(
+          {LONG(x0 - p.edram_x), LONG(y0 - p.edram_y), LONG(x1 - p.edram_x), LONG(y1 - p.edram_y)});
+    c.regs = p.regs;
+    c.bound_colors = 0xF;
+    c.depth_bound = true;
+    c.height = uint32_t(std::max(p.y1, 0));
+    targets.Clear(cmd, c);
+    ++resolve_clears_;
+  }
+}
+
+bool VulkanBackend::CopyDepth(VulkanRenderTarget* rt, int32_t x0, int32_t y0, int32_t w,
+                              int32_t h, int32_t dx, int32_t dy, const ResolveParams& p) {
+  const VkImageView src = gpu_->targets.DepthView(rt);
+  if (!src) return false;
+  ResolvedImage* r = EnsureImage(gpu_->resolved[p.dest_base], VK_FORMAT_R32_SFLOAT,
+                                 VK_FORMAT_UNDEFINED, p.dest_width, p.dest_height,
+                                 "depth resolve image", VK_FORMAT_R32_SFLOAT);
+  if (!r) {
+    gpu_->resolved.erase(p.dest_base);
+    return false;
+  }
+  VulkanResolveShaders::DepthParams params;
+  params.src_x = x0;
+  params.src_y = y0;
+  params.width = uint32_t(w);
+  params.height = uint32_t(h);
+  params.dest_x = dx;
+  params.dest_y = dy;
+  params.depth_format = rt->guest_format;
+  params.host_sample = VulkanResolveShaders::HostSample(rt->samples, p.sample_select);
+  return RunResolveShader(rt, src, r, [&](VkDescriptorSet set) {
+    gpu_->resolve_shaders.RecordDepth(device_->command_buffer(), rt->samples > 1, set, params);
+  });
+}
+
+bool VulkanBackend::CopyColor(VulkanRenderTarget* rt, int32_t x0, int32_t y0, int32_t w,
+                              int32_t h, int32_t dx, int32_t dy, const ResolveParams& p) {
+  const VkFormat storage = gpu_->resolve_shaders.ColorStorageFormat(p.dest_format);
+  if (storage == VK_FORMAT_UNDEFINED) return false;
+  VkFormat unorm, snorm;
+  ResolveFormats(p.dest_format, &unorm, &snorm);
+  if (unorm == VK_FORMAT_UNDEFINED) return false;
+  if (snorm == unorm) snorm = VK_FORMAT_UNDEFINED;
+  ResolvedImage* r = EnsureImage(gpu_->resolved[p.dest_base], unorm, snorm, p.dest_width,
+                                 p.dest_height, "resolve destination image", storage);
+  if (!r) {
+    gpu_->resolved.erase(p.dest_base);
+    return false;
+  }
+  VulkanResolveShaders::ColorParams params;
+  params.src_x = x0;
+  params.src_y = y0;
+  params.width = uint32_t(w);
+  params.height = uint32_t(h);
+  params.dest_x = uint32_t(dx);
+  params.dest_y = uint32_t(dy);
+  params.dest_format = p.dest_format;
+  params.src_format = rt->guest_format;
+  params.flags = (p.dest_swap ? 2u : 0u) | (p.sample_select << 4) | (rt->samples << 8) |
+                 (p.dest_number << 12);
+  params.exp_bias = p.exp_bias;
+  return RunResolveShader(rt, rt->view, r, [&](VkDescriptorSet set) {
+    gpu_->resolve_shaders.RecordColor(device_->command_buffer(), rt->samples > 1, set, params);
+  });
+}
+
+void VulkanBackend::DumpRecord(const ResolveParams& p, uint32_t width, uint32_t height) {
+  auto it = gpu_->resolved.find(p.dest_base);
+  if (it == gpu_->resolved.end() || !it->second.written) return;
+  ResolvedImage& r = it->second;
+  width = std::min(width, r.width);
+  height = std::min(height, r.height);
+  if (!width || !height) return;
+  Gpu::DumpEntry e;
+  e.p = p;
+  e.width = width;
+  e.height = height;
+  e.bpp = FormatBytes(r.format);
+  e.after_draw = frame_draw_;
+  if (!gpu_->memory.CreateReadbackBuffer(uint64_t(width) * height * e.bpp, &e.readback,
+                                         "resolve dump readback"))
+    return;
+  VkCommandBuffer cmd = device_->command_buffer();
+  gpu_->targets.EndRendering(cmd);
+  const VulkanDevice::Functions& fn = device_->fn();
+  VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+  b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  b.image = r.image.image;
+  b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+  b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  fn.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                          VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+  VkBufferImageCopy region{};
+  region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.imageExtent = {width, height, 1};
+  fn.vkCmdCopyImageToBuffer(cmd, r.image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                            e.readback.buffer, 1, &region);
+  b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  b.srcAccessMask = 0;
+  b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+  fn.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                          VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                          0, 0, nullptr, 0, nullptr, 1, &b);
+  e.frame = frame_index_;
+  e.fence = device_->frame_fence();
+  gpu_->dump.push_back(std::move(e));
+}
+
+bool VulkanBackend::DumpingFrame() const {
+  const int32_t at = REXCVAR_GET(graw_native_vulkan_resolve_dump_frame);
+  return at >= 0 && frame_index_ >= uint64_t(at) &&
+         frame_index_ < uint64_t(at) + uint64_t(std::max(1, REXCVAR_GET(graw_native_vulkan_resolve_dump_frames)));
+}
+
+void VulkanBackend::DumpWrite(uint64_t completed) {
+  const std::filesystem::path dir = REXCVAR_GET(graw_native_vulkan_resolve_dump);
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  size_t written = 0;
+  for (Gpu::DumpEntry& e : gpu_->dump) {
+    if (e.fence > completed || !e.readback.buffer) continue;
+    const ResolveParams& p = e.p;
+    const std::string prefix = "f" + std::to_string(e.frame);
+    gpu_->memory.Invalidate(e.readback);
+    if (e.target_draw >= 0) {
+      const std::string stem = prefix + "-d" + std::to_string(e.target_draw);
+      if (std::FILE* f = std::fopen((dir / (stem + "-rt.bin")).string().c_str(), "wb")) {
+        std::fwrite(e.readback.mapped, 1, size_t(e.width) * e.height * e.bpp, f);
+        std::fclose(f);
+      }
+      if (std::FILE* m = std::fopen((dir / (prefix + "-targets.jsonl")).string().c_str(), "ab")) {
+        std::fprintf(m,
+                     "{\"draw\":%d,\"format\":%u,\"base\":%u,\"pitch\":%u,\"width\":%u,"
+                     "\"height\":%u,\"bpp\":%u}\n",
+                     e.target_draw, e.target_format, e.target_base, e.target_pitch, e.width,
+                     e.height, e.bpp);
+        std::fclose(m);
+      }
+    } else {
+      const size_t i = gpu_->dump_resolves[e.frame]++;
+      const std::string stem = prefix + "-r" + std::to_string(i);
+      if (std::FILE* f = std::fopen((dir / (stem + "-native.bin")).string().c_str(), "wb")) {
+        std::fwrite(e.readback.mapped, 1, size_t(e.width) * e.height * e.bpp, f);
+        std::fclose(f);
+      }
+      if (std::FILE* m = std::fopen((dir / (prefix + "-resolves.jsonl")).string().c_str(), "ab")) {
+        std::fprintf(m,
+                     "{\"index\":%zu,\"source\":%u,\"surface_info\":%u,\"source_info\":%u,"
+                     "\"sample_select\":%u,\"copy_command\":%u,\"rect\":[%d,%d,%d,%d],"
+                     "\"dest_point\":[%d,%d],\"dest_base\":%u,\"dest_format\":%u,"
+                     "\"dest_width\":%u,\"dest_height\":%u,\"number\":%u,\"swap\":%d,"
+                     "\"exp_bias\":%d,\"bpp\":%u,\"native_width\":%u,\"native_height\":%u,"
+                     "\"clear_flags\":%u,\"after_draw\":%u}\n",
+                     i, p.source, p.regs.surface_info,
+                     p.source == 4 ? p.regs.depth_info : p.regs.color_info[p.source & 3],
+                     p.sample_select, p.copy_command, p.x0, p.y0, p.x1, p.y1, p.dest_x, p.dest_y,
+                     p.dest_base, p.dest_format, p.dest_width, p.dest_height, p.dest_number,
+                     p.dest_swap ? 1 : 0, p.exp_bias, e.bpp, e.width, e.height, p.clear_flags,
+                     e.after_draw);
+        std::fclose(m);
+      }
+    }
+    gpu_->memory.Destroy(e.readback);
+    ++written;
+  }
+  gpu_->dump.erase(std::remove_if(gpu_->dump.begin(), gpu_->dump.end(),
+                                  [](const Gpu::DumpEntry& e) { return !e.readback.buffer; }),
+                   gpu_->dump.end());
+  if (written)
+    REXLOG_INFO("GRAW native Vulkan: dumped {} resolves and targets to {}", written, dir.string());
+}
+
+bool VulkanBackend::RunResolveShader(VulkanRenderTarget* rt, VkImageView src_view,
+                                     ResolvedImage* r,
+                                     const std::function<void(VkDescriptorSet)>& record) {
+  VkCommandBuffer cmd = device_->command_buffer();
+  gpu_->targets.EndRendering(cmd);
+  VulkanResolveShaders& rs = gpu_->resolve_shaders;
+  VkDescriptorSet set = gpu_->bindings.AllocateFrameSet(rs.set_layout(), device_->frame_fence());
+  if (!set) return false;
+  const VulkanDevice::Functions& fn = device_->fn();
+  const VkImageLayout src_layout = rt->depth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                                             : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  VkDescriptorImageInfo images[2] = {};
+  images[0].sampler = rs.sampler();
+  images[0].imageView = src_view;
+  images[0].imageLayout = src_layout;
+  images[1].imageView = r->storage_view;
+  images[1].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+  VkWriteDescriptorSet wr[2] = {};
+  for (uint32_t i = 0; i < 2; ++i) {
+    wr[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    wr[i].dstSet = set;
+    wr[i].dstBinding = i;
+    wr[i].descriptorCount = 1;
+    wr[i].descriptorType =
+        i ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    wr[i].pImageInfo = &images[i];
+  }
+  fn.vkUpdateDescriptorSets(device_->device(), 2, wr, 0, nullptr);
+
+  // The source from its attachment layout, the destination from shader reads, to the compute
+  // shader; and back.
+  const VkPipelineStageFlags rt_stages =
+      rt->depth ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                      VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT
+                : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  const VkImageLayout rt_layout = rt->depth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+                                            : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  const VkAccessFlags rt_access = rt->depth ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                                  VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+                                            : VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                                                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  constexpr VkPipelineStageFlags kReaders = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                            VK_PIPELINE_STAGE_TRANSFER_BIT;
+  VkImageMemoryBarrier b[2] = {};
+  for (VkImageMemoryBarrier& x : b) {
+    x.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    x.srcQueueFamilyIndex = x.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  }
+  b[0].image = rt->image.image;
+  b[0].subresourceRange = {
+      rt->depth ? VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)
+                : VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT),
+      0, 1, 0, 1};
+  b[0].oldLayout = rt_layout;
+  b[0].newLayout = src_layout;
+  b[0].srcAccessMask = rt_access;
+  b[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  b[1].image = r->image.image;
+  b[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  b[1].oldLayout =
+      r->written ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+  b[1].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+  b[1].srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+  b[1].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  fn.vkCmdPipelineBarrier(cmd, rt_stages | kReaders, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
+                          nullptr, 0, nullptr, 2, b);
+  record(set);
+  b[0].oldLayout = src_layout;
+  b[0].newLayout = rt_layout;
+  b[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  b[0].dstAccessMask = rt_access;
+  b[1].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+  b[1].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  b[1].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  b[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+  fn.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, rt_stages | kReaders, 0, 0,
+                          nullptr, 0, nullptr, 2, b);
+  r->written = true;
+  return true;
 }
 
 bool VulkanBackend::CopyTarget(VulkanRenderTarget* rt, int32_t x0, int32_t y0, int32_t w,
                                int32_t h, int32_t dx, int32_t dy, uint32_t dest_w,
-                               uint32_t dest_h, uint32_t key, VkFormat dest_format) {
+                               uint32_t dest_h, uint32_t key, VkFormat dest_format,
+                               VkFormat dest_format_signed) {
   VkCommandBuffer cmd = device_->command_buffer();
   gpu_->targets.EndRendering(cmd);
   if (dest_format == VK_FORMAT_UNDEFINED) dest_format = rt->format;
@@ -587,12 +1016,15 @@ bool VulkanBackend::CopyTarget(VulkanRenderTarget* rt, int32_t x0, int32_t y0, i
   if (convert && !CanBlit(rt->format, dest_format)) return false;
   Gpu::Resolved* temp = nullptr;
   if (convert && rt->samples > 1) {
-    temp = EnsureImage(gpu_->msaa_temp, rt->format, std::max(rt->width, gpu_->msaa_temp.width),
+    temp = EnsureImage(gpu_->msaa_temp, rt->format, VK_FORMAT_UNDEFINED,
+                       std::max(rt->width, gpu_->msaa_temp.width),
                        std::max(rt->height, gpu_->msaa_temp.height), "MSAA resolve image");
     if (!temp) return false;
   }
-  Gpu::Resolved* r = EnsureImage(gpu_->resolved[key], dest_format, dest_w, dest_h,
-                                 "resolve destination image");
+  // A signed view only of another format than the unsigned one (float formats: the same).
+  if (dest_format_signed == dest_format) dest_format_signed = VK_FORMAT_UNDEFINED;
+  Gpu::Resolved* r = EnsureImage(gpu_->resolved[key], dest_format, dest_format_signed, dest_w,
+                                 dest_h, "resolve destination image");
   if (!r) {
     gpu_->resolved.erase(key);
     return false;
@@ -682,16 +1114,24 @@ bool VulkanBackend::CopyTarget(VulkanRenderTarget* rt, int32_t x0, int32_t y0, i
 }
 
 VulkanBackend::ResolvedImage* VulkanBackend::EnsureImage(ResolvedImage& r, VkFormat format,
-                                                        uint32_t width, uint32_t height,
-                                                        const char* what) {
-  if (r.image.image && r.format == format && r.width == width && r.height == height) return &r;
+                                                        VkFormat format_signed, uint32_t width,
+                                                        uint32_t height, const char* what,
+                                                        VkFormat storage_format) {
+  if (r.image.image && r.format == format && r.format_signed == format_signed &&
+      r.width == width && r.height == height &&
+      (storage_format == VK_FORMAT_UNDEFINED || storage_format == r.storage_format))
+    return &r;
   if (r.image.image) {
-    // Rare (a destination reused for another size or format): wait out its users.
-    device_->WaitIdle();
-    gpu_->textures->ForgetResolvedImage(r.image.image);
-    gpu_->memory.Destroy(r.image);
+    // A destination reused for another size or format: the frame being recorded may still use
+    // the old image.
+    gpu_->textures->ForgetResolvedImage(r.image.image, device_->frame_fence());
+    gpu_->retired.push_back({r, device_->frame_fence()});
   }
   VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+  const bool storage = storage_format != VK_FORMAT_UNDEFINED;
+  ii.flags = format_signed != VK_FORMAT_UNDEFINED || (storage && storage_format != format)
+                 ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT
+                 : 0;
   ii.imageType = VK_IMAGE_TYPE_2D;
   ii.format = format;
   ii.extent = {width, height, 1};
@@ -700,14 +1140,29 @@ VulkanBackend::ResolvedImage* VulkanBackend::EnsureImage(ResolvedImage& r, VkFor
   ii.samples = VK_SAMPLE_COUNT_1_BIT;
   ii.tiling = VK_IMAGE_TILING_OPTIMAL;
   ii.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-             VK_IMAGE_USAGE_SAMPLED_BIT;
+             VK_IMAGE_USAGE_SAMPLED_BIT | (storage ? VK_IMAGE_USAGE_STORAGE_BIT : 0);
   ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   r = {};
   if (!gpu_->memory.CreateImage(ii, &r.image, what)) return nullptr;
   r.format = format;
+  r.format_signed = format_signed;
+  r.storage_format = storage_format;
   r.width = width;
   r.height = height;
+  if (storage) {
+    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vi.image = r.image.image;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = storage_format;
+    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (device_->fn().vkCreateImageView(device_->device(), &vi, nullptr, &r.storage_view) !=
+        VK_SUCCESS) {
+      r.storage_view = VK_NULL_HANDLE;
+      gpu_->Destroy(r);
+      return nullptr;
+    }
+  }
   return &r;
 }
 
@@ -741,12 +1196,16 @@ void VulkanBackend::GetShaderTextures(const SpirvShader& shader, const DrawState
     if (gpu_->textures->Get(state.fetch(tb.fetch_constant), cmd, device_->frame_fence(),
                             end_rendering, &b)) {
       // The translator's image type: 2D array (1D, 2D, stacked), cube, or 3D.
-      const bool fits = tb.dimension == FetchOpDimension::kCube
+      bool fits = tb.dimension == FetchOpDimension::kCube
                             ? b.dimension == DataDimension::kCube
                         : tb.dimension == FetchOpDimension::k3DOrStacked
                             ? b.dimension == DataDimension::k3D
                             : b.dimension != DataDimension::k3D &&
                                   b.dimension != DataDimension::kCube;
+      const int32_t debug = REXCVAR_GET(graw_native_vulkan_debug);
+      if ((debug & 4) && b.dimension == DataDimension::kCube) fits = false;
+      if ((debug & 8) && !b.resolved) fits = false;
+      if (REXCVAR_GET(graw_native_vulkan_debug_blank_fetch) >> tb.fetch_constant & 1) fits = false;
       if (fits) view = tb.is_signed ? b.view_signed : b.view_unsigned;
       signs[tb.fetch_constant] = b.swizzled_signs;
     }
@@ -760,6 +1219,14 @@ void VulkanBackend::GetShaderTextures(const SpirvShader& shader, const DrawState
 
 void VulkanBackend::BeginFrame(uint64_t frame_index) {
   frame_index_ = frame_index;
+  frame_draw_ = 0;
+  const std::string dump_targets = REXCVAR_GET(graw_native_vulkan_dump_target_draws);
+  if (!dump_targets.empty() &&
+      std::sscanf(dump_targets.c_str(), "%u-%u", &dump_target_first_, &dump_target_last_) != 2)
+    dump_target_first_ = UINT32_MAX;
+  const std::string skip = REXCVAR_GET(graw_native_vulkan_skip_draws);
+  if (!skip.empty() && std::sscanf(skip.c_str(), "%u-%u", &skip_first_, &skip_last_) != 2)
+    skip_first_ = UINT32_MAX;
   gpu_->targets.BeginFrame(frame_index, device_->frame_fence(), device_->completed_fence());
 }
 
@@ -796,6 +1263,16 @@ void VulkanBackend::AfterSwap(uint64_t frame_index, uint64_t completed) {
   stats_.hash_copies = mirror_.hash_copies.exchange(0, std::memory_order_relaxed);
   gpu_->bindings.EndFrame(completed);
   gpu_->textures->EndFrame(completed);
+  if (!gpu_->dump.empty()) DumpWrite(completed);
+  for (size_t i = 0; i < gpu_->retired.size();) {
+    if (gpu_->retired[i].fence <= completed) {
+      gpu_->Destroy(gpu_->retired[i].image);
+      gpu_->retired[i] = gpu_->retired.back();
+      gpu_->retired.pop_back();
+    } else {
+      ++i;
+    }
+  }
   if (!threaded_) {
     mirror_.watch_frame.fetch_add(1, std::memory_order_relaxed);
     gpu_->vertex_upload.EndFrame(completed);
@@ -850,9 +1327,10 @@ Backend::SwapResult VulkanBackend::Swap(const SwapCall& swap, std::optional<bool
     REXLOG_INFO("GRAW native Vulkan pipelines: {} created ({:.0f} us total, max {:.0f} us), {} "
                 "failed; {} render targets",
                 p.created, p.create_us, p.max_create_us, p.failed, gpu_->targets.count());
-    REXLOG_INFO("GRAW native Vulkan resolves: {} copied, {} skipped; {} destination images; "
-                "front buffer {}",
-                resolves_, resolves_skipped_, gpu_->resolved.size(),
+    REXLOG_INFO("GRAW native Vulkan resolves: {} copied ({} depth, {} color by the shader), {} "
+                "skipped, {} with clears; {} destination images; front buffer {}",
+                resolves_, depth_resolves_, shader_resolves_, resolves_skipped_, resolve_clears_,
+                gpu_->resolved.size(),
                 front_buffer_found_ ? "shown" : "not found");
     const VulkanTextureStats& t = gpu_->textures->stats();
     REXLOG_INFO("GRAW native Vulkan textures: {} textures, {} created, {} uploads ({} KB), {} "

@@ -41,6 +41,10 @@ class VulkanMemory {
   bool CreateBuffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, Buffer* out,
                     const char* what);
   void Destroy(Buffer& buffer);
+  // Host-visible and mapped for CPU reads of what the GPU wrote (debug dumps); Invalidate
+  // before reading.
+  bool CreateReadbackBuffer(uint64_t size, Buffer* out, const char* what);
+  void Invalidate(const Buffer& buffer);
   // Device-local.
   bool CreateImage(const VkImageCreateInfo& info, Image* out, const char* what);
   void Destroy(Image& image);

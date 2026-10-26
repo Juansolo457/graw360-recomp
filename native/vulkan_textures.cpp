@@ -20,15 +20,10 @@ namespace {
 constexpr uint32_t kMemorySize = 512u << 20;
 
 // A host component swizzle (3 bits per component: 0-3 a host channel, 4 zero, 5 one) from the
-// fetch constant's guest swizzle and the host format's channel order.
+// fetch constant's guest swizzle and the host format's channel order, as D3D12's
+// GuestToHostComponentMapping (guest 6 and 7 are 0 and 1 too).
 uint32_t HostSwizzle(uint32_t guest_swizzle, uint32_t host_swizzle) {
-  uint32_t out = 0;
-  for (uint32_t i = 0; i < 4; ++i) {
-    const uint32_t g = (guest_swizzle >> (3 * i)) & 7;
-    const uint32_t c = g < 4 ? (host_swizzle >> (3 * g)) & 7 : g;
-    out |= c << (3 * i);
-  }
-  return out;
+  return GuestToHostComponentMapping(guest_swizzle, host_swizzle) & 0xFFF;
 }
 
 VkComponentSwizzle ComponentOf(uint32_t c) {
@@ -129,6 +124,7 @@ VulkanTextureCache::~VulkanTextureCache() {
   if (invalidation_handle_) guest_->UnregisterPhysicalMemoryInvalidationCallback(invalidation_handle_);
   VkDevice d = device_.device();
   for (auto& [key, view] : resolved_views_) device_.fn().vkDestroyImageView(d, view, nullptr);
+  for (const RetiredView& r : retired_views_) device_.fn().vkDestroyImageView(d, r.view, nullptr);
   for (auto& [key, t] : textures_) {
     for (auto& [vk, view] : t->views) device_.fn().vkDestroyImageView(d, view, nullptr);
     memory_.Destroy(t->image);
@@ -149,10 +145,10 @@ std::pair<uint32_t, uint32_t> VulkanTextureCache::Invalidate(uint32_t start, uin
   return {start, length};
 }
 
-void VulkanTextureCache::ForgetResolvedImage(VkImage image) {
+void VulkanTextureCache::ForgetResolvedImage(VkImage image, uint64_t frame) {
   for (auto it = resolved_views_.begin(); it != resolved_views_.end();) {
     if (it->first.image == image) {
-      device_.fn().vkDestroyImageView(device_.device(), it->second, nullptr);
+      if (it->second) retired_views_.push_back({it->second, frame});
       it = resolved_views_.erase(it);
     } else {
       ++it;
@@ -302,7 +298,7 @@ VkImageView VulkanTextureCache::View(Texture& t, bool is_signed, uint32_t swizzl
 }
 
 VkImageView VulkanTextureCache::ResolvedView(VkImage image, VkFormat format, uint32_t swizzle) {
-  const ResolvedViewKey key{image, swizzle};
+  const ResolvedViewKey key{image, format, swizzle};
   auto it = resolved_views_.find(key);
   if (it != resolved_views_.end()) return it->second;
   VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -346,8 +342,14 @@ bool VulkanTextureCache::Get(const uint32_t fetch[6], VkCommandBuffer cmd, uint6
     if (r.image && r.width == key.width && r.height == key.height &&
         r.format == VulkanFormatOf(host->unorm)) {
       out->view_unsigned = ResolvedView(r.image, r.format, swizzle);
-      out->view_signed = VK_NULL_HANDLE;
+      // Float and depth formats: signed components read the unsigned view's values.
+      const VkFormat sf = VulkanFormatOf(host->snorm);
+      out->view_signed = sf == r.format ? out->view_unsigned
+                         : sf != VK_FORMAT_UNDEFINED && sf == r.format_signed
+                             ? ResolvedView(r.image, sf, swizzle)
+                             : VK_NULL_HANDLE;
       ++stats_.resolved_binds;
+      out->resolved = true;
       return out->view_unsigned != VK_NULL_HANDLE;
     }
     if (r.image) {
@@ -381,6 +383,17 @@ bool VulkanTextureCache::Get(const uint32_t fetch[6], VkCommandBuffer cmd, uint6
   return out->view_unsigned != VK_NULL_HANDLE;
 }
 
-void VulkanTextureCache::EndFrame(uint64_t completed) { upload_.EndFrame(completed); }
+void VulkanTextureCache::EndFrame(uint64_t completed) {
+  upload_.EndFrame(completed);
+  for (size_t i = 0; i < retired_views_.size();) {
+    if (retired_views_[i].fence <= completed) {
+      device_.fn().vkDestroyImageView(device_.device(), retired_views_[i].view, nullptr);
+      retired_views_[i] = retired_views_.back();
+      retired_views_.pop_back();
+    } else {
+      ++i;
+    }
+  }
+}
 
 }  // namespace graw::native

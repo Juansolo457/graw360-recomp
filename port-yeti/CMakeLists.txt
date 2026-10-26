@@ -69,7 +69,8 @@ if(WIN32 AND EXISTS "${GRAW_REXGLUE_SDK_SRC}/src/graphics/pipeline/shader/dxbc_t
             "rexglue-bd833a2-gpu-skip-draws.patch|include/rex/graphics/command_processor.h|for presenters"
             "rexglue-bd833a2-gpu-skip-draws.patch|src/graphics/command_processor.cpp|gpu_skip_draws"
             "rexglue-bd833a2-implicit-gradients-switch.patch|src/graphics/pipeline/shader/dxbc_translator_fetch.cpp|bool g_dxbc_implicit_gradients"
-            "rexglue-bd833a2-spirv-exp-adjust.patch|src/graphics/pipeline/shader/spirv_translator_fetch.cpp|fetch_constant_word_3_signed")
+            "rexglue-bd833a2-spirv-exp-adjust.patch|src/graphics/pipeline/shader/spirv_translator_fetch.cpp|fetch_constant_word_3_signed"
+            "rexglue-bd833a2-spirv-implicit-gradients.patch|src/graphics/pipeline/shader/spirv_translator_fetch.cpp|bool g_spirv_implicit_gradients")
         string(REPLACE "|" ";" check "${check}")
         list(GET check 0 patch)
         list(GET check 1 file)

@@ -107,8 +107,9 @@ REXCVAR_DEFINE_INT32(graw_native_anisotropy, 1, "GRAW native",
                      "at least this many samples per pixel (2, 4, 8 or 16; 1: the game's own)");
 REXCVAR_DEFINE_BOOL(graw_native_implicit_gradients, true, "GRAW native",
                     "Experiment (Steam Deck shimmer): translate computed-LOD texture fetches in "
-                    "pixel shaders with sample_b and the GPU's own derivatives (pgr4-native 0021); "
-                    "false: sample_d with explicit coarse gradients, as before 0021");
+                    "pixel shaders with sample_b and the GPU's own derivatives (pgr4-native 0021; "
+                    "the Vulkan renderer's SPIR-V shaders too, with OpImageSampleImplicitLod); "
+                    "false: explicit coarse gradients, as before 0021");
 REXCVAR_DECLARE(std::string, graw_native_capture_dir);
 namespace rex::graphics {
 extern bool g_dxbc_implicit_gradients;  // dxbc_translator_fetch.cpp (local SDK experiment)

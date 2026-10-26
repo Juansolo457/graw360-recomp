@@ -6,9 +6,10 @@
 // Rendering uses dynamic rendering: a rendering instance stays open across draws while their
 // targets don't change, and is ended before anything that can't run inside one (copies into
 // shared memory, the frame's end). Clears are recorded when the guest makes them, as
-// vkCmdClearAttachments in a rendering instance on the cleared target (rectangles or all of it).
-// Not yet (M4): the EDRAM fills of render_targets.h (a clear's value read by another surface over
-// the same tiles) and dropping clears a later one covers.
+// vkCmdClearAttachments in a rendering instance on the cleared target (rectangles or all of it),
+// and as render_targets.h's EDRAM fills (a clear's value read by another surface over the same
+// tiles), applied the same way. New targets start zeroed, as D3D12's committed resources do.
+// Not yet: dropping clears a later one covers (render_targets.h defers them).
 //
 // Threading: the recording thread.
 #pragma once
@@ -36,8 +37,10 @@ struct VulkanRenderTarget {
   VkFormat format = VK_FORMAT_UNDEFINED;
   VulkanMemory::Image image;
   VkImageView view = VK_NULL_HANDLE;
+  VkImageView depth_view = VK_NULL_HANDLE;  // depth: the depth aspect alone, for sampling
   bool initialized = false;  // in its attachment layout (false: just created, UNDEFINED)
   uint64_t last_frame = 0;
+  uint64_t fill_seq = 0;  // EDRAM fills up to this sequence are applied (SyncEdram)
 };
 
 struct VulkanBoundTargets {
@@ -64,14 +67,25 @@ class VulkanRenderTargets {
   // the same attachments). height: rows the draw can touch.
   bool Bind(VkCommandBuffer cmd, const SurfaceRegs& regs, uint32_t color_mask, bool depth_used,
             uint32_t height, VulkanBoundTargets* out);
-  // The guest's Clear / ClearF.
+  // The guest's Clear / ClearF, and a Resolve's clears (bound_colors 0xF, depth_bound).
   void Clear(VkCommandBuffer cmd, const ClearCall& c);
+  // Before reading rt outside a draw (resolve sources): zeroed if new, and the EDRAM fills
+  // over its tiles since its last use applied. Ends the open rendering instance.
+  void PrepareRead(VkCommandBuffer cmd, VulkanRenderTarget* rt);
+  // A depth target's depth aspect view (created on first use), for sampling.
+  VkImageView DepthView(VulkanRenderTarget* rt);
+  // Forgets every recorded EDRAM fill.
+  void DropAllFills() { fills_.Clear(); }
   // The host target of guest color RT `index` (0..3), created if missing (resolve sources);
   // nullptr for an unsupported format. Between draws its layout is COLOR_ATTACHMENT_OPTIMAL
   // (`initialized`) or UNDEFINED.
   VulkanRenderTarget* GetColor(VkCommandBuffer cmd, const SurfaceRegs& regs, uint32_t index,
                                uint32_t height) {
     return Get(cmd, false, regs.surface_info, regs.color_info[index & 3], height);
+  }
+  // The host target of the depth surface, created if missing (depth resolve sources).
+  VulkanRenderTarget* GetDepth(VkCommandBuffer cmd, const SurfaceRegs& regs, uint32_t height) {
+    return Get(cmd, true, regs.surface_info, regs.depth_info, height);
   }
   // Ends the open rendering instance, if any.
   void EndRendering(VkCommandBuffer cmd);
@@ -88,6 +102,16 @@ class VulkanRenderTargets {
                           uint32_t height);
   bool Create(VulkanRenderTarget* rt, uint32_t height);
   void Retire(VulkanRenderTarget& rt);
+  // Zeroes a new target and moves it to its attachment layout (outside rendering instances).
+  void Initialize(VkCommandBuffer cmd, VulkanRenderTarget* rt);
+  // vkCmdClearAttachments of `att` over `rects` (none: all of rt) in a rendering instance on rt.
+  void ClearRects(VkCommandBuffer cmd, VulkanRenderTarget* rt, const VkClearAttachment& att,
+                  const D3D12_RECT* rects, size_t count);
+  // Clears color target rt to the EDRAM fills recorded over its tiles since its last use.
+  void SyncEdram(VkCommandBuffer cmd, VulkanRenderTarget* rt);
+  static EdramGrid GridOf(const VulkanRenderTarget& rt) {
+    return GetEdramGrid(rt.depth, rt.edram_base, rt.pitch, rt.samples, rt.guest_format);
+  }
   // Begins rendering on these attachments (color[i] may be null) unless that's what's open.
   void BeginRendering(VkCommandBuffer cmd, VulkanRenderTarget* const* color, uint32_t color_count,
                       VulkanRenderTarget* depth);
@@ -98,7 +122,7 @@ class VulkanRenderTargets {
   std::unordered_map<uint64_t, std::unique_ptr<VulkanRenderTarget>> targets_;
   struct Retired {
     VulkanMemory::Image image;
-    VkImageView view;
+    VkImageView view, depth_view;
     uint64_t fence;
   };
   std::vector<Retired> retired_;
@@ -108,6 +132,7 @@ class VulkanRenderTargets {
   std::array<VulkanRenderTarget*, 4> open_color_{};
   uint32_t open_color_count_ = 0;
   VulkanRenderTarget* open_depth_ = nullptr;
+  EdramFills fills_;
 };
 
 }  // namespace graw::native

@@ -1,0 +1,124 @@
+// GRAW native renderer: the Vulkan backend's color resolve (vulkan_resolve.h), resolve.cpp's
+// shader (the D3D12 Resolver's) in GLSL: copies a rectangle of a color render target into a
+// resolve destination image as the Xenos texel bits of the destination format, through a uint
+// view of the image's texel size. Sample selection and averaging, the 7e3 EDRAM quantization,
+// exponent bias and red/blue swap as there. Built with -DMSAA=0 / 1 by tools/vulkan_shaders.py.
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform Params {
+  ivec2 src_origin;   // source rectangle origin in the render target
+  uvec2 size;         // rectangle size
+  uvec2 dest_origin;  // destination point in the image
+  uint dest_format;   // xenos::TextureFormat
+  uint src_format;    // xenos::ColorRenderTargetFormat
+  uint flags;         // 2: red/blue swap, 4-6: sample select, 8-10: samples, 12-14: number
+  int exp_bias;
+} p;
+
+#if MSAA
+layout(set = 0, binding = 0) uniform sampler2DMS src;
+#else
+layout(set = 0, binding = 0) uniform sampler2D src;
+#endif
+// R8 / R16 / R32 / R32G32 / R32G32B32A32_UINT by the destination's texel size (written without
+// a format qualifier: shaderStorageImageWriteWithoutFormat).
+layout(set = 0, binding = 1) uniform writeonly uimage2D dst;
+
+uint SampleSelect() { return (p.flags >> 4) & 7u; }
+uint SampleCount() { return (p.flags >> 8) & 7u; }
+// Host sample of a guest sample s (0..3). SanitizeCopySampleSelect: 2x k2/k3 -> k0/k1, 1x -> 0.
+// Xenos 2x sample 0 is the top one, which is Vulkan's sample 1; 4x samples map 1:1.
+int HostSample(uint s) {
+  uint n = SampleCount();
+  return int(n == 4u ? s : (n == 2u ? 1u - (s & 1u) : 0u));
+}
+
+uint U(float v, float scale) { return uint(clamp(v, 0.0, 1.0) * scale + 0.5); }
+uint S8(float v) { return uint(int(roundEven(clamp(v, -1.0, 1.0) * 127.0))) & 0xFFu; }
+uint F16(float v) { return packHalf2x16(vec2(v, 0.0)) & 0xFFFFu; }
+
+// Float7e3To32(Float32To7e3(c)) without the encoding: from 2^-2 up, c rounded to nearest even
+// at 7 mantissa bits; below, in 7e3's denormal steps of 2^-9, from c * 2^25 truncated as
+// Float32To7e3's shift does (exact for the R16G16B16A16_SFLOAT host targets either way).
+vec3 Quantize7e3(vec3 c) {
+  c = clamp(c, 0.0, 31.875);
+  uvec3 u = floatBitsToUint(c);
+  vec3 normal = uintBitsToFloat((u + 0x7FFFu + ((u >> 16) & 1u)) & 0xFFFF0000u);
+  uvec3 t = uvec3(c * 33554432.0);
+  vec3 denormal = vec3((t + 0x7FFFu + ((t >> 16) & 1u)) >> 16) * (1.0 / 512.0);
+  return mix(normal, denormal, lessThan(c, vec3(0.25)));
+}
+
+// One sample as the Xenos EDRAM holds it: ReXGlue packs every sample of a 7e3 surface into
+// 7e3 (alpha 2-bit unorm) when it stores the target to EDRAM before a resolve.
+vec4 EdramSample(vec4 c) {
+  if (p.src_format == 3u || p.src_format == 12u)
+    return vec4(Quantize7e3(c.rgb), float(U(c.a, 3.0)) * (1.0 / 3.0));
+  return c;
+}
+
+vec4 Load(ivec2 q, int s) {
+#if MSAA
+  return EdramSample(texelFetch(src, q, s));
+#else
+  return EdramSample(texelFetch(src, q, 0));
+#endif
+}
+
+vec4 LoadColor(ivec2 q) {
+#if MSAA
+  uint n = SampleCount(), s = SampleSelect();
+  if (s <= 3u) return Load(q, HostSample(s));
+  if (n == 4u) {
+    if (s == 6u) return (Load(q, 0) + Load(q, 1) + Load(q, 2) + Load(q, 3)) * 0.25;
+    if (s == 5u) return (Load(q, 2) + Load(q, 3)) * 0.5;
+  }
+  return (Load(q, 0) + Load(q, 1)) * 0.5;
+#else
+  return Load(q, 0);
+#endif
+}
+
+// The copied color before the destination format: exponent bias and red/blue swap applied.
+vec4 Convert(vec4 c) {
+  c *= exp2(float(p.exp_bias));
+  return (p.flags & 2u) != 0u ? c.bgra : c;
+}
+
+// The texel bits of the destination format (as the texture cache's host layout), low word
+// first.
+uvec4 PackDest(vec4 c) {
+  uint number = (p.flags >> 12) & 7u;
+  switch (p.dest_format) {
+    case 2u: return uvec4(U(c.r, 255.0), 0u, 0u, 0u);                                // k_8
+    case 10u: return uvec4(U(c.r, 255.0) | (U(c.g, 255.0) << 8), 0u, 0u, 0u);        // k_8_8
+    // k_5_6_5 as B5G6R5 (guest R in bits 0-4 moves to 11-15), k_6_5_5 as B5G6R5 holding
+    // R | B << 5 | G << 11 (sampled with swizzle RBGG).
+    case 4u: return uvec4(U(c.b, 31.0) | (U(c.g, 63.0) << 5) | (U(c.r, 31.0) << 11), 0u, 0u, 0u);
+    case 5u: return uvec4(U(c.r, 31.0) | (U(c.b, 63.0) << 5) | (U(c.g, 31.0) << 11), 0u, 0u, 0u);
+    case 6u:                                                                          // k_8_8_8_8
+      if (number == 1u)
+        return uvec4(S8(c.r) | (S8(c.g) << 8) | (S8(c.b) << 16) | (S8(c.a) << 24), 0u, 0u, 0u);
+      return uvec4(U(c.r, 255.0) | (U(c.g, 255.0) << 8) | (U(c.b, 255.0) << 16) |
+                   (U(c.a, 255.0) << 24), 0u, 0u, 0u);
+    case 7u:                                                                          // k_2_10_10_10
+      return uvec4(U(c.r, 1023.0) | (U(c.g, 1023.0) << 10) | (U(c.b, 1023.0) << 20) |
+                   (U(c.a, 3.0) << 30), 0u, 0u, 0u);
+    case 30u: return uvec4(F16(c.r), 0u, 0u, 0u);
+    case 31u: return uvec4(F16(c.r) | (F16(c.g) << 16), 0u, 0u, 0u);
+    case 32u: return uvec4(F16(c.r) | (F16(c.g) << 16), F16(c.b) | (F16(c.a) << 16), 0u, 0u);
+    case 36u: return uvec4(floatBitsToUint(c.r), 0u, 0u, 0u);
+    case 37u: return uvec4(floatBitsToUint(c.r), floatBitsToUint(c.g), 0u, 0u);
+    case 38u: return floatBitsToUint(c);
+    default: return uvec4(0u);
+  }
+}
+
+void main() {
+  uvec2 id = gl_GlobalInvocationID.xy;
+  if (any(greaterThanEqual(id, p.size))) return;
+  vec4 c = Convert(LoadColor(p.src_origin + ivec2(id)));
+  imageStore(dst, ivec2(p.dest_origin + id), PackDest(c));
+}

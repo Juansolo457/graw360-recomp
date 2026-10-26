@@ -26,15 +26,18 @@ sdk_patches=(rexglue-bd833a2-vpkd3d128-alias rexglue-bd833a2-freed-page-resolve
              rexglue-bd833a2-vblank-pacing rexglue-bd833a2-gpu-skip-draws
              pgr4-native/0021-gpu-sample-computed-LOD-pixel-shader-fetches-with-sa
              pgr4-native/0022-gpu-add-a-pixel-shader-modification-for-textures-kno
-             rexglue-bd833a2-implicit-gradients-switch rexglue-bd833a2-spirv-exp-adjust)
-expected_tree=2fd253876480df2f8bf35e394a8163c2ba93c65c  # after the last patch
+             rexglue-bd833a2-implicit-gradients-switch rexglue-bd833a2-spirv-exp-adjust
+             rexglue-bd833a2-spirv-implicit-gradients)
+expected_tree=54ab5932e76ba1b8c9e454891c9ba52c16bfdda0  # after the last patch
 # Then, in their own commit: XamLoaderLaunchTitle kept a string_view to a freed temporary (the
 # requested program's path came out with glibc's free-list pointers in it).
 linux_patches=(rexglue-bd833a2-launch-title-path)
-linux_tree=ecaf46d0c9f324b0a43468f20edda3a6e787ab78
+linux_tree=379fa50a65a1bbf7ec9e525f0316489759223e00
 # Checkouts made by an earlier version of this script move forward by the patches added since,
 # rather than a new clone and full SDK build: "<tree> <patch>..." pairs, each tree -> the next.
-upgrades=("f9d5a19f96e3f2f7ed79ee5b08155eab343a5b9c rexglue-bd833a2-spirv-exp-adjust")
+upgrades=("f9d5a19f96e3f2f7ed79ee5b08155eab343a5b9c rexglue-bd833a2-spirv-exp-adjust"
+          "2fd253876480df2f8bf35e394a8163c2ba93c65c rexglue-bd833a2-spirv-implicit-gradients"
+          "ecaf46d0c9f324b0a43468f20edda3a6e787ab78 rexglue-bd833a2-spirv-implicit-gradients")
 force=0
 jobs=$(( $(nproc) > 2 ? $(nproc) - 2 : 1 ))
 while [[ $# -gt 0 ]]; do

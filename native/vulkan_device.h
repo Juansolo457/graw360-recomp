@@ -68,6 +68,7 @@ namespace graw::native {
   X(vkCreateShaderModule)           \
   X(vkDestroyShaderModule)          \
   X(vkCmdCopyBufferToImage)         \
+  X(vkCmdCopyImageToBuffer)         \
   X(vkCmdCopyBuffer)                \
   X(vkCreateDescriptorSetLayout)    \
   X(vkDestroyDescriptorSetLayout)   \
@@ -102,7 +103,10 @@ namespace graw::native {
   X(vkCmdClearAttachments)          \
   X(vkCmdBlitImage)                 \
   X(vkCmdResolveImage)              \
-  X(vkCmdCopyImage)
+  X(vkCmdCopyImage)                 \
+  X(vkCreateComputePipelines)       \
+  X(vkCmdDispatch)                  \
+  X(vkCmdPushConstants)
 
 class VulkanDevice {
  public:
@@ -134,6 +138,7 @@ class VulkanDevice {
     float max_sampler_anisotropy = 1.0f;
     bool sampler_mirror_clamp_to_edge = false;
     bool texture_compression_bc = false;
+    bool storage_image_write_without_format = false;  // the color resolve shader
     bool full_draw_index_uint32 = false;
     bool vertex_pipeline_stores_and_atomics = false;
     bool fragment_stores_and_atomics = false;

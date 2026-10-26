@@ -32,10 +32,11 @@ class Memory;
 namespace graw::native {
 
 // A resolve destination image at a guest physical address (VK_NULL_HANDLE: none), single
-// level and layer, in SHADER_READ_ONLY_OPTIMAL between uses.
+// level and layer, in SHADER_READ_ONLY_OPTIMAL between uses. format_signed: the format of its
+// signed views (a MUTABLE image's), or UNDEFINED.
 struct VulkanResolvedImage {
   VkImage image = VK_NULL_HANDLE;
-  VkFormat format = VK_FORMAT_UNDEFINED;
+  VkFormat format = VK_FORMAT_UNDEFINED, format_signed = VK_FORMAT_UNDEFINED;
   uint32_t width = 0, height = 0;
 };
 using VulkanResolvedLookup = std::function<VulkanResolvedImage(uint32_t guest_physical)>;
@@ -51,6 +52,7 @@ struct VulkanTextureBinding {
   VkImageView view_signed = VK_NULL_HANDLE;  // null: the format has no signed version
   rex::graphics::xenos::DataDimension dimension{};
   uint8_t swizzled_signs = 0;  // texture_util::SwizzleSigns
+  bool resolved = false;       // a resolve's image (not from guest memory)
 };
 
 class VulkanTextureCache {
@@ -67,8 +69,9 @@ class VulkanTextureCache {
   bool Get(const uint32_t fetch[6], VkCommandBuffer cmd, uint64_t frame,
            const std::function<void()>& end_rendering, VulkanTextureBinding* out);
 
-  // The backend destroys a resolve image (after the GPU finished with it): its views go.
-  void ForgetResolvedImage(VkImage image);
+  // The backend replaces a resolve image: its views go once the GPU finished `frame` (the
+  // fence of the frame being recorded, which may still use them).
+  void ForgetResolvedImage(VkImage image, uint64_t frame);
 
   // After the frame's submission: upload memory of completed frames is recycled.
   void EndFrame(uint64_t completed);
@@ -109,18 +112,25 @@ class VulkanTextureCache {
   };
   std::mutex watch_mutex_;
   std::vector<Watch> watches_;
-  // Views of resolved images, by (image, swizzle).
+  // Views of resolved images, by (image, view format, swizzle).
   struct ResolvedViewKey {
     VkImage image;
+    VkFormat format;
     uint32_t swizzle;
     bool operator==(const ResolvedViewKey&) const = default;
   };
   struct ResolvedViewHash {
     size_t operator()(const ResolvedViewKey& k) const {
-      return std::hash<const void*>()(k.image) ^ (size_t(k.swizzle) * 0x9E3779B97F4A7C15ull);
+      return std::hash<const void*>()(k.image) ^
+             ((size_t(k.swizzle) | size_t(k.format) << 16) * 0x9E3779B97F4A7C15ull);
     }
   };
   std::unordered_map<ResolvedViewKey, VkImageView, ResolvedViewHash> resolved_views_;
+  struct RetiredView {
+    VkImageView view;
+    uint64_t fence;
+  };
+  std::vector<RetiredView> retired_views_;
   VulkanUploadPool upload_{16u << 20, VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
   std::vector<uint8_t> scratch_;
   std::vector<HostSubresource> subresources_;

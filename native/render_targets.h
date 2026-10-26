@@ -17,7 +17,7 @@
 // surface's rows 0-479 hold the last tile's clear, alpha 0, and rows 480-719 the first
 // tile's, alpha 1). Clears
 // are therefore also recorded as EDRAM fills that other surfaces over the same tiles take
-// over when they are next used (EdramFill below).
+// over when they are next used (EdramFills below).
 //
 // Targets are keyed by the host view format, not the guest format: guest formats with one host
 // format (2_10_10_10_FLOAT, its _AS_16_16_16_16 variant and 16_16_16_16_FLOAT, all
@@ -38,6 +38,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -155,6 +156,60 @@ struct ClearCall {
   uint32_t height = 0;
 };
 
+// A surface's EDRAM layout: tiles of 80 dwords x 16 sample rows; a pixel takes 2 x 2 samples
+// with 4x MSAA and 1 x 2 with 2x, and a 64bpp sample takes 2 dwords.
+struct EdramGrid {
+  uint32_t base;   // tile
+  uint32_t pitch;  // tiles per row
+  uint32_t dx;     // dwords per pixel
+  uint32_t dy;     // sample rows per pixel
+};
+// guest_format: xenos::ColorRenderTargetFormat (ignored for depth).
+EdramGrid GetEdramGrid(bool depth, uint32_t edram_base, uint32_t pitch, uint32_t samples,
+                       uint32_t guest_format);
+
+// EDRAM residue, for the D3D12 and Vulkan render targets. A color clear leaves one value in
+// the EDRAM tiles it covers, and another surface of the same storage format over those tiles
+// reads it until something renders there. A fill is one cleared rectangle in EDRAM terms: dword
+// columns and sample rows on the cleared surface's tile grid (tiles of 80 dwords x 16 sample
+// rows, `pitch` tiles per row from tile `base`). A draw or a depth clear over any of its tiles
+// drops a fill whole.
+class EdramFills {
+ public:
+  struct Fill {
+    uint64_t seq = 0;
+    uint32_t base = 0, pitch = 1;  // tiles
+    uint32_t x0 = 0, x1 = 0;       // dword columns within a tile row
+    uint32_t y0 = 0, y1 = 0;       // sample rows from base's tile row
+    uint32_t format = 0;           // xenos color format as stored (the _AS_ variants folded)
+    float color[4] = {};
+    uint32_t first_tile() const { return base + y0 / 16 * pitch + x0 / 80; }
+    uint32_t end_tile() const { return base + (y1 - 1) / 16 * pitch + (x1 - 1) / 80 + 1; }
+  };
+
+  // A clear of `r` (pixels from the grid's base) on a surface of color format `format`.
+  void Record(const EdramGrid& g, uint32_t format, const D3D12_RECT& r, const float color[4]);
+  // Drops the fills over the grid's first `rows` rows of pixels.
+  void Drop(const EdramGrid& g, uint32_t rows);
+  void Clear() { fills_.clear(); }
+  bool empty() const { return fills_.empty(); }
+  // The sequence number of the last fill recorded (a surface that applied fills up to it is
+  // current).
+  uint64_t seq() const { return seq_; }
+  // The fills recorded after `since` over a color surface (grid g, color format `format`,
+  // width x height pixels), oldest first: `apply` gets each with its whole pixels as up to 3
+  // rectangles clipped to the surface. Fills of another storage format, or of a shape that
+  // does not map onto g, are skipped (logged).
+  void ForEach(uint64_t since, const EdramGrid& g, uint32_t format, uint32_t width,
+               uint32_t height,
+               const std::function<void(const Fill&, const D3D12_RECT*, uint32_t)>& apply) const;
+
+ private:
+  static constexpr size_t kMaxFills = 32;
+  std::vector<Fill> fills_;  // oldest first
+  uint64_t seq_ = 0;
+};
+
 class RenderTargets {
  public:
   RenderTargets();
@@ -200,7 +255,7 @@ class RenderTargets {
 
   // Forgets every recorded EDRAM fill, for clears that are not guest content (the resolve self
   // test), so no game surface over the same tiles takes them over.
-  void DropAllFills() { fills_.clear(); }
+  void DropAllFills() { fills_.Clear(); }
 
   // The draw log (DrawRenderer) while one is open: target creations and EDRAM fills applied.
   void SetLog(std::FILE* log) { log_ = log; }
@@ -208,23 +263,7 @@ class RenderTargets {
  private:
   static constexpr uint64_t kMaxAge = 120;
 
-  // EDRAM residue. A color clear leaves one value in the EDRAM tiles it covers, and another
-  // surface of the same storage format over those tiles reads it until something renders
-  // there. A fill is one cleared rectangle in EDRAM terms: dword columns and sample rows on the
-  // cleared surface's tile grid (tiles of 80 dwords x 16 sample rows, `pitch` tiles per row
-  // from tile `base`). A draw or a depth clear over any of its tiles drops a fill whole.
-  struct EdramFill {
-    uint64_t seq = 0;
-    uint32_t base = 0, pitch = 1;  // tiles
-    uint32_t x0 = 0, x1 = 0;       // dword columns within a tile row
-    uint32_t y0 = 0, y1 = 0;       // sample rows from base's tile row
-    uint32_t format = 0;           // xenos color format as stored (the _AS_ variants folded)
-    float color[4] = {};
-    uint32_t first_tile() const { return base + y0 / 16 * pitch + x0 / 80; }
-    uint32_t end_tile() const { return base + (y1 - 1) / 16 * pitch + (x1 - 1) / 80 + 1; }
-  };
-  static constexpr size_t kMaxFills = 32;
-  // `r`: pixels from rt's EDRAM base.
+  // EDRAM fills (EdramFills). `r`: pixels from rt's EDRAM base.
   void RecordFill(const RenderTarget& rt, const D3D12_RECT& r, const float color[4]);
   // Drops the fills over rt's first `rows` rows of pixels.
   void DropFills(const RenderTarget& rt, uint32_t rows);
@@ -265,8 +304,7 @@ class RenderTargets {
   };
   std::vector<Retired> retired_;
   uint64_t frame_ = 0, frame_fence_ = 0;
-  std::vector<EdramFill> fills_;  // oldest first
-  uint64_t fill_seq_ = 0;
+  EdramFills fills_;
   std::FILE* log_ = nullptr;
 };
 

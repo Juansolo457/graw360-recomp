@@ -28,6 +28,7 @@
 
 #include <rex/graphics/xenos.h>
 
+#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
@@ -111,19 +112,49 @@ class VulkanBackend final : public Backend, public GuestMemoryMirror::Sink {
   bool window_taken_ = false;  // OwnGameWindow disconnected ReXGlue's presenter from the window
   std::atomic<bool>* paces_frames_ = nullptr;
   uint64_t frame_index_ = 0;
+  // --graw_native_vulkan_skip_draws: this frame's draw count, and the range skipped.
+  uint32_t frame_draw_ = 0;
+  uint32_t skip_first_ = UINT32_MAX, skip_last_ = 0;
   DrawStats stats_;
   bool front_buffer_found_ = false;
   bool front_buffer_logged_ = false;
-  uint64_t resolves_ = 0, resolves_skipped_ = 0;
+  uint64_t resolves_ = 0, resolves_skipped_ = 0, resolve_clears_ = 0, depth_resolves_ = 0;
+  uint64_t shader_resolves_ = 0;  // color resolves through the shader (the rest: copies, blits)
   // Copies rt's (x0, y0, w, h) to (dx, dy) of the dest_w x dest_h image kept under `key` (a
   // resolve's destination address), resolving MSAA; the image is then ready to be shown.
   // dest_format: the image's format (VK_FORMAT_UNDEFINED: rt's); another one is blitted.
+  // dest_format_signed: its signed views' format (a MUTABLE image), or UNDEFINED.
   bool CopyTarget(VulkanRenderTarget* rt, int32_t x0, int32_t y0, int32_t w, int32_t h,
                   int32_t dx, int32_t dy, uint32_t dest_w, uint32_t dest_h, uint32_t key,
-                  VkFormat dest_format = VK_FORMAT_UNDEFINED);
-  // r, (re)created for the format and size (waiting for the GPU when it existed); null: failed.
-  ResolvedImage* EnsureImage(ResolvedImage& r, VkFormat format, uint32_t width,
-                             uint32_t height, const char* what);
+                  VkFormat dest_format = VK_FORMAT_UNDEFINED,
+                  VkFormat dest_format_signed = VK_FORMAT_UNDEFINED);
+  // Resolve shaders (vulkan_resolve.h): rt's (x0, y0, w, h) into the image at p.dest_base, at
+  // (dx, dy): depth targets into R32_SFLOAT, color targets as the destination format's texel
+  // bits. False: not done (a color format the shader can't write: CopyTarget instead).
+  bool CopyDepth(VulkanRenderTarget* rt, int32_t x0, int32_t y0, int32_t w, int32_t h,
+                 int32_t dx, int32_t dy, const ResolveParams& p);
+  bool CopyColor(VulkanRenderTarget* rt, int32_t x0, int32_t y0, int32_t w, int32_t h,
+                 int32_t dx, int32_t dy, const ResolveParams& p);
+  // --graw_native_vulkan_resolve_dump: reads back the image of a resolve of the dumped frame,
+  // texels (0, 0) to (width, height); AfterSwap writes them once the GPU finished the frame.
+  void DumpRecord(const ResolveParams& p, uint32_t width, uint32_t height);
+  void DumpWrite(uint64_t completed);
+  bool DumpingFrame() const;  // the frame being recorded is dumped
+  // --graw_native_vulkan_dump_target_draws: reads back color target rt after draw `index` of
+  // the dumped frame.
+  void DumpTarget(VulkanRenderTarget* rt, uint32_t index);
+  uint32_t dump_target_first_ = UINT32_MAX, dump_target_last_ = 0;
+  // Records a resolve shader reading rt (through `src_view`) and writing r's storage view:
+  // `record` dispatches with the descriptor set.
+  bool RunResolveShader(VulkanRenderTarget* rt, VkImageView src_view, ResolvedImage* r,
+                        const std::function<void(VkDescriptorSet)>& record);
+  // r, (re)created for the formats and size (the old image retired), with a storage view of
+  // `storage_format` (UNDEFINED: none needed; a MUTABLE image when it is another format);
+  // null: failed.
+  ResolvedImage* EnsureImage(ResolvedImage& r, VkFormat format, VkFormat format_signed,
+                             uint32_t width, uint32_t height, const char* what,
+                             VkFormat storage_format = VK_FORMAT_UNDEFINED);
+  void DestroyImage(ResolvedImage& r);
   bool CanBlit(VkFormat src, VkFormat dst);
   std::unordered_map<uint64_t, bool> blit_support_;
   // --graw_native_vulkan_show_target: this frame's draws and lowest drawn row per color target.

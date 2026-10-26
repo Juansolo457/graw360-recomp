@@ -270,6 +270,7 @@ bool VulkanDevice::CreateDevice() {
   caps_.max_sampler_anisotropy = props.limits.maxSamplerAnisotropy;
   caps_.sampler_mirror_clamp_to_edge = s12.samplerMirrorClampToEdge;
   caps_.texture_compression_bc = sf.textureCompressionBC;
+  caps_.storage_image_write_without_format = sf.shaderStorageImageWriteWithoutFormat;
   caps_.vertex_pipeline_stores_and_atomics = sf.vertexPipelineStoresAndAtomics;
   caps_.fragment_stores_and_atomics = sf.fragmentStoresAndAtomics;
   caps_.clip_distance = sf.shaderClipDistance;
@@ -302,6 +303,7 @@ bool VulkanDevice::CreateDevice() {
   enabled.features.fillModeNonSolid = sf.fillModeNonSolid;
   enabled.features.geometryShader = sf.geometryShader;
   enabled.features.textureCompressionBC = sf.textureCompressionBC;
+  enabled.features.shaderStorageImageWriteWithoutFormat = sf.shaderStorageImageWriteWithoutFormat;
   // M3 on: the SPIR-V translator's shaders use scalar block layout (docs/VULKAN_RENDERER.md, M0).
   VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
   f12.scalarBlockLayout = VK_TRUE;

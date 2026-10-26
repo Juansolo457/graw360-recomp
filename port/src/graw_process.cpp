@@ -3,6 +3,8 @@
 #include "graw_process.h"
 
 #include <algorithm>
+#include <fstream>
+#include <iterator>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -13,6 +15,15 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
+#else
+#include <signal.h>
+#include <spawn.h>
+#include <unistd.h>
+
+#include <chrono>
+#include <thread>
+
+extern char** environ;
 #endif
 
 REXCVAR_DEFINE_UINT32(graw_restart_wait_pid, 0, "GRAW",
@@ -71,7 +82,8 @@ std::filesystem::path OwnExecutable() {
   const DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
   return length ? std::filesystem::path(std::wstring(path, length)) : std::filesystem::path();
 #else
-  return {};
+  std::error_code error;
+  return std::filesystem::read_symlink("/proc/self/exe", error);
 #endif
 }
 
@@ -83,6 +95,16 @@ std::vector<std::string> OwnArguments() {
   if (!arguments) return out;
   for (int i = 1; i < count; ++i) out.push_back(Narrow(arguments[i]));
   LocalFree(arguments);
+#else
+  // NUL-separated, the program first.
+  std::ifstream in("/proc/self/cmdline", std::ios::binary);
+  const std::string all((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  size_t start = all.find('\0');
+  while (start != std::string::npos && start + 1 < all.size()) {
+    const size_t end = all.find('\0', start + 1);
+    out.push_back(all.substr(start + 1, end == std::string::npos ? end : end - start - 1));
+    start = end;
+  }
 #endif
   return out;
 }
@@ -136,10 +158,30 @@ bool StartAfterThis(const std::filesystem::path& executable, std::vector<std::st
   REXLOG_INFO("GRAW: started {}", executable.string());
   return true;
 #else
-  (void)executable;
-  (void)arguments;
-  (void)working_dir;
-  return false;
+  arguments = WithoutFlags(arguments, {"graw_restart_wait_pid"});
+  arguments.push_back("--graw_restart_wait_pid");
+  arguments.push_back(std::to_string(getpid()));
+  const std::string program = executable.string();
+  std::vector<char*> argv;
+  argv.push_back(const_cast<char*>(program.c_str()));
+  for (std::string& argument : arguments) argv.push_back(argument.data());
+  argv.push_back(nullptr);
+  // The new run gets none of this one's descriptors (the log, the GPU device, the window's
+  // connection) beyond stdin, stdout and stderr.
+  posix_spawn_file_actions_t actions;
+  posix_spawn_file_actions_init(&actions);
+  posix_spawn_file_actions_addclosefrom_np(&actions, 3);
+  const std::string directory = working_dir.string();
+  if (!directory.empty()) posix_spawn_file_actions_addchdir_np(&actions, directory.c_str());
+  pid_t pid = 0;
+  const int result = posix_spawn(&pid, program.c_str(), &actions, nullptr, argv.data(), environ);
+  posix_spawn_file_actions_destroy(&actions);
+  if (result != 0) {
+    REXLOG_ERROR("GRAW: couldn't start {} ({})", program, result);
+    return false;
+  }
+  REXLOG_INFO("GRAW: started {} (pid {})", program, pid);
+  return true;
 #endif
 }
 
@@ -150,6 +192,14 @@ void WaitForPreviousRun() {
   if (HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, pid)) {
     WaitForSingleObject(process, 30000);
     CloseHandle(process);
+  }
+#else
+  const uint32_t pid = REXCVAR_GET(graw_restart_wait_pid);
+  if (!pid) return;
+  // Not this process's child: poll until it's gone (kill with signal 0 only checks).
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (kill(pid_t(pid), 0) == 0 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
 #endif
 }

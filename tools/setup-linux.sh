@@ -3,7 +3,8 @@
 # Linux counterpart of tools/setup.ps1):
 #   1. third_party/rexglue-sdk-bd833a2: ReXGlue's source at the nightly 0.10.0.24-dev.gbd833a2's
 #      commit with this project's patches (tools/patches), checked against the same patched tree
-#      as on Windows;
+#      as on Windows, then the Linux-only ones on top (fixes in the SDK's runtime: on Windows the
+#      game links the prebuilt SDK's runtime, so they can't apply there);
 #   2. that SDK built and installed into its out/install/linux-amd64, RelWithDebInfo and Release:
 #      the libraries the game links, the patched renderer plugin (resolves into freed memory,
 #      vblank pacing, gpu_skip_draws) and the patched code generator (vpkd3d128,
@@ -27,6 +28,10 @@ sdk_patches=(rexglue-bd833a2-vpkd3d128-alias rexglue-bd833a2-freed-page-resolve
              pgr4-native/0022-gpu-add-a-pixel-shader-modification-for-textures-kno
              rexglue-bd833a2-implicit-gradients-switch)
 expected_tree=4854c57ebf6d8a8d818244959764980915c96c24  # after the last patch
+# Then, in their own commit: XamLoaderLaunchTitle kept a string_view to a freed temporary (the
+# requested program's path came out with glibc's free-list pointers in it).
+linux_patches=(rexglue-bd833a2-launch-title-path)
+linux_tree=f9d5a19f96e3f2f7ed79ee5b08155eab343a5b9c
 force=0
 jobs=$(( $(nproc) > 2 ? $(nproc) - 2 : 1 ))
 while [[ $# -gt 0 ]]; do
@@ -49,7 +54,7 @@ if [[ -d "$sdk" ]]; then
   # stopped partway or was changed by hand, and replacing it is --force's job.
   head=$(git -C "$sdk" rev-parse --verify --quiet 'HEAD^{tree}' 2>/dev/null || true)
   changes=$(git -C "$sdk" status --porcelain --ignore-submodules=all 2>/dev/null || true)
-  if [[ "$head" != "$expected_tree" || -n "$changes" ]]; then
+  if [[ ( "$head" != "$expected_tree" && "$head" != "$linux_tree" ) || -n "$changes" ]]; then
     echo "SDK source: $sdk is incomplete, on another commit or changed by hand: run with --force" >&2
     exit 1
   fi
@@ -75,6 +80,21 @@ else
       -m 'graw360-recomp patches'
   git -C "$sdk" switch --quiet -c graw360
 fi
+# The Linux-only patches (a checkout made before they existed gets them here).
+if [[ "$(git -C "$sdk" rev-parse 'HEAD^{tree}')" == "$expected_tree" ]]; then
+  echo "SDK source: applying ${#linux_patches[@]} Linux patch(es)"
+  for name in "${linux_patches[@]}"; do
+    sed 's/\r$//' "$root/tools/patches/$name.patch" | git -C "$sdk" apply -
+  done
+  git -C "$sdk" add -A
+  tree=$(git -C "$sdk" write-tree)
+  if [[ "$tree" != "$linux_tree" ]]; then
+    echo "The SDK tree with the Linux patches is $tree, not $linux_tree" >&2
+    exit 1
+  fi
+  git -C "$sdk" -c user.name=graw360-recomp -c user.email=setup@localhost commit --quiet \
+      -m 'graw360-recomp Linux patches'
+fi
 # Every run, so one that stopped while fetching them picks up where it left off.
 echo 'SDK source: fetching its submodules'
 git -C "$sdk" submodule update --init --recursive
@@ -83,7 +103,10 @@ git -C "$sdk" submodule update --init --recursive
 install="$sdk/out/install/linux-amd64"
 # RelWithDebInfo libraries carry the SDK's "rd" postfix (librexgpu-xenosrd.so); the code generator
 # is Release's bin/rexglue.
-if [[ -x "$install/bin/rexglue" && -f "$install/lib/librexruntimerd.so" && $force -eq 0 ]]; then
+# The install records the source tree it was built from, so a new patch rebuilds it.
+stamp="$install/graw360-sdk-tree"
+if [[ -x "$install/bin/rexglue" && -f "$install/lib/librexruntimerd.so" && $force -eq 0 &&
+      "$(cat "$stamp" 2>/dev/null)" == "$linux_tree" ]]; then
   echo "SDK: built ($install)"
 else
   (cd "$sdk" && cmake --preset linux-amd64 -DREXGLUE_BUILD_TESTS=OFF)
@@ -93,5 +116,6 @@ else
     cmake --install "$sdk/out/build/linux-amd64" --config "$config" --prefix "$install"
   done
   [[ -x "$install/bin/rexglue" ]] || { echo "SDK build: $install/bin/rexglue is missing" >&2; exit 1; }
+  echo "$linux_tree" > "$stamp"
 fi
 echo 'Setup done. Next: the disc files in port/assets (docs/SETUP.md), then tools/build-linux.sh.'

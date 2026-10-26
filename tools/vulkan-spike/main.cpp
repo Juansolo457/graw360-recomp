@@ -111,7 +111,59 @@ uint64_t MapModification(bool vertex, uint64_t dxbc_value) {
 
 }  // namespace
 
+// --xsh <NNNNNNNN.xsh> <out dir>: the Xenos plugin's shader storage (ucode only); writes the
+// ucode disassembly and the SPIR-V (default modification) of every pixel shader that samples
+// three or more textures, as <hash>.txt.
+int DumpXsh(const char* path, const char* out_dir) {
+  std::FILE* f = std::fopen(path, "rb");
+  if (!f) return 2;
+  uint32_t file_header[2];
+  if (std::fread(file_header, sizeof(file_header), 1, f) != 1) return 2;
+  SpirvShaderTranslator translator(SpirvShaderTranslator::Features(true), true, true, false);
+  spvtools::SpirvTools tools(SPV_ENV_VULKAN_1_2);
+  rex::string::StringBuffer disasm;
+  size_t dumped = 0, pixel = 0;
+  for (;;) {
+    uint64_t hash;
+    uint32_t bits;
+    if (std::fread(&hash, 8, 1, f) != 1 || std::fread(&bits, 4, 1, f) != 1) break;
+    const uint32_t dwords = bits & 0x7FFFFFFF;
+    const auto type = xenos::ShaderType(bits >> 31);
+    std::vector<uint32_t> ucode(dwords);
+    if (dwords && std::fread(ucode.data(), 4, dwords, f) != dwords) break;
+    if (type != xenos::ShaderType::kPixel) continue;
+    ++pixel;
+    auto shader = std::make_unique<SpirvShader>(type, hash, ucode.data(), ucode.size());
+    shader->AnalyzeUcode(disasm);
+    Shader::Translation* t = shader->GetOrCreateTranslation(
+        translator.GetDefaultPixelShaderModification(shader->GetDynamicAddressableRegisterCount(0)));
+    if (!translator.TranslateAnalyzedShader(*t) || !t->is_valid()) continue;
+    if (shader->GetTextureBindingsAfterTranslation().size() < 3) continue;
+    std::string spirv;
+    const auto& bin = t->translated_binary();
+    tools.Disassemble(reinterpret_cast<const uint32_t*>(bin.data()), bin.size() / 4, &spirv,
+                      SPV_BINARY_TO_TEXT_OPTION_FRIENDLY_NAMES | SPV_BINARY_TO_TEXT_OPTION_INDENT);
+    char name[512];
+    std::snprintf(name, sizeof(name), "%s/%016llX.txt", out_dir, (unsigned long long)hash);
+    if (std::FILE* o = std::fopen(name, "w")) {
+      std::fprintf(o, "textures:");
+      for (const auto& b : shader->GetTextureBindingsAfterTranslation())
+        std::fprintf(o, " tf%u/dim%u/%s", uint32_t(b.fetch_constant), uint32_t(b.dimension),
+                     b.is_signed ? "s" : "u");
+      std::fprintf(o, "\nsamplers: %zu\n\n%s\n\n%s\n",
+                   shader->GetSamplerBindingsAfterTranslation().size(),
+                   shader->ucode_disassembly().c_str(), spirv.c_str());
+      std::fclose(o);
+      ++dumped;
+    }
+  }
+  std::fclose(f);
+  std::printf("pixel shaders %zu, dumped %zu\n", pixel, dumped);
+  return 0;
+}
+
 int main(int argc, char** argv) {
+  if (argc > 3 && !std::strcmp(argv[1], "--xsh")) return DumpXsh(argv[2], argv[3]);
   if (argc < 2) {
     std::fprintf(stderr, "usage: graw_vulkan_spike <pipelines.bin> [<out.csv>]\n");
     return 2;

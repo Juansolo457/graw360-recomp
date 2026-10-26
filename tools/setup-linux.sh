@@ -26,12 +26,15 @@ sdk_patches=(rexglue-bd833a2-vpkd3d128-alias rexglue-bd833a2-freed-page-resolve
              rexglue-bd833a2-vblank-pacing rexglue-bd833a2-gpu-skip-draws
              pgr4-native/0021-gpu-sample-computed-LOD-pixel-shader-fetches-with-sa
              pgr4-native/0022-gpu-add-a-pixel-shader-modification-for-textures-kno
-             rexglue-bd833a2-implicit-gradients-switch)
-expected_tree=4854c57ebf6d8a8d818244959764980915c96c24  # after the last patch
+             rexglue-bd833a2-implicit-gradients-switch rexglue-bd833a2-spirv-exp-adjust)
+expected_tree=2fd253876480df2f8bf35e394a8163c2ba93c65c  # after the last patch
 # Then, in their own commit: XamLoaderLaunchTitle kept a string_view to a freed temporary (the
 # requested program's path came out with glibc's free-list pointers in it).
 linux_patches=(rexglue-bd833a2-launch-title-path)
-linux_tree=f9d5a19f96e3f2f7ed79ee5b08155eab343a5b9c
+linux_tree=ecaf46d0c9f324b0a43468f20edda3a6e787ab78
+# Checkouts made by an earlier version of this script move forward by the patches added since,
+# rather than a new clone and full SDK build: "<tree> <patch>..." pairs, each tree -> the next.
+upgrades=("f9d5a19f96e3f2f7ed79ee5b08155eab343a5b9c rexglue-bd833a2-spirv-exp-adjust")
 force=0
 jobs=$(( $(nproc) > 2 ? $(nproc) - 2 : 1 ))
 while [[ $# -gt 0 ]]; do
@@ -54,6 +57,19 @@ if [[ -d "$sdk" ]]; then
   # stopped partway or was changed by hand, and replacing it is --force's job.
   head=$(git -C "$sdk" rev-parse --verify --quiet 'HEAD^{tree}' 2>/dev/null || true)
   changes=$(git -C "$sdk" status --porcelain --ignore-submodules=all 2>/dev/null || true)
+  for upgrade in "${upgrades[@]}"; do
+    read -r from patches <<< "$upgrade"
+    if [[ "$head" == "$from" && -z "$changes" ]]; then
+      echo "SDK source: adding patches since the last setup: $patches"
+      for name in $patches; do
+        sed 's/\r$//' "$root/tools/patches/$name.patch" | git -C "$sdk" apply -
+      done
+      git -C "$sdk" add -A
+      git -C "$sdk" -c user.name=graw360-recomp -c user.email=setup@localhost commit --quiet \
+          -m "graw360-recomp patches: $patches"
+      head=$(git -C "$sdk" rev-parse 'HEAD^{tree}')
+    fi
+  done
   if [[ ( "$head" != "$expected_tree" && "$head" != "$linux_tree" ) || -n "$changes" ]]; then
     echo "SDK source: $sdk is incomplete, on another commit or changed by hand: run with --force" >&2
     exit 1

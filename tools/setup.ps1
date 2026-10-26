@@ -23,13 +23,14 @@ $downloads = Join-Path $tools 'downloads'
 $sdk = Join-Path $root 'third_party\rexglue-sdk-bd833a2'
 $sdkCommit = 'bd833a2ab69d305f99ddf57418fc38ffec8af93d'
 # In order; then pgr4-native's shader translator changes the native renderer compiles against
-# (docs/NATIVE_RENDERER.md), and a switch for 0021 (--graw_native_implicit_gradients).
+# (docs/NATIVE_RENDERER.md), a switch for 0021 (--graw_native_implicit_gradients), and the SPIR-V
+# translator's texture exponent bias read from fetch constant word 3 (the Vulkan renderers).
 $sdkPatches = @('rexglue-bd833a2-vpkd3d128-alias', 'rexglue-bd833a2-freed-page-resolve',
                 'rexglue-bd833a2-vblank-pacing', 'rexglue-bd833a2-gpu-skip-draws',
                 'pgr4-native/0021-gpu-sample-computed-LOD-pixel-shader-fetches-with-sa',
                 'pgr4-native/0022-gpu-add-a-pixel-shader-modification-for-textures-kno',
-                'rexglue-bd833a2-implicit-gradients-switch')
-$expectedTree = '4854c57ebf6d8a8d818244959764980915c96c24'   # after the last patch
+                'rexglue-bd833a2-implicit-gradients-switch', 'rexglue-bd833a2-spirv-exp-adjust')
+$expectedTree = '2fd253876480df2f8bf35e394a8163c2ba93c65c'   # after the last patch
 
 function Invoke-Git {
     & git.exe @args

@@ -7,6 +7,8 @@ instruction, the source operands must be read before the destination is written,
 bytes the same instruction already wrote is a hazard (the destination aliases a source).
 
     python tools/check_vector_aliasing.py port-yeti/generated/yeti_final_xenon
+
+Exits 1 when it finds a hazard (tools/build.ps1 relies on that).
 """
 
 import collections
@@ -98,7 +100,8 @@ def main():
     if not by_mnemonic:
         print('no read-after-write hazards found')
     print(f'checked {sum(checked.values())} vector instructions ({len(checked)} mnemonics)')
+    return 1 if by_mnemonic else 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

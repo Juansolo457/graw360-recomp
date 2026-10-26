@@ -31,9 +31,12 @@ compass ring and turn with the view.
 same register, the generated code copies vB to a local `vPackSrc` first and reads from that.
 37 of the campaign's 39 `vpkd3d128` sites are aliased and change.
 
-To use it here, the patched `rexglue` CLI is built from `third_party/rexglue-sdk-bd833a2` and run
-by hand before `tools/build.ps1` (the build itself runs the SDK's prebuilt CLI, which keeps the
-stamp and so leaves the regenerated sources alone):
+To use it here, the patched `rexglue` CLI is built from `third_party/rexglue-sdk-bd833a2`.
+`tools/build.ps1` still runs the SDK's prebuilt CLI, which regenerates whenever the manifest
+changes. That brought the bug back once (2026-10-25, #31: every hook added since had
+regenerated the campaign with the stock CLI). So after code generation the build runs the audit
+below. If the audit finds the hazard, the build regenerates with the patched CLI when it's built,
+or stops and points here when it isn't. By hand:
 
 ```
 <sdk>/out/win-amd64/RelWithDebInfo/rexgluerd.exe codegen --ignore-stamp port-yeti/grawyeti_manifest.toml

@@ -102,8 +102,10 @@ try {
         if (Test-Path $plugin) {
             Copy-Item $plugin (Join-Path $port "out/build/$preset/") -Force
             Write-Host "Installed the patched renderer plugin ($plugin)"
+        } elseif ($Configuration -ne 'RelWithDebInfo') {
+            throw "tools/setup.ps1 builds the patched renderer plugin for RelWithDebInfo only; build that SDK configuration yourself ($plugin) or build the campaign as RelWithDebInfo."
         } else {
-            Write-Warning "The patched renderer plugin isn't built ($plugin): the campaign keeps the SDK's stock one. Run tools/setup.ps1 (docs/SETUP.md)."
+            throw "The patched renderer plugin isn't built ($plugin): run tools/setup.ps1 (docs/SETUP.md)."
         }
     }
     Write-Host "Built $Project/out/build/$preset/$name.exe"

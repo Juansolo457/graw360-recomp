@@ -14,9 +14,9 @@ if ($LASTEXITCODE) { throw 'Extraction failed.' }
 foreach ($project in 'port-mp', 'port-yeti') {
     $link = Join-Path $root "$project\assets"
     $item = Get-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue
-    if ($item -and $item.LinkType -eq 'Junction' -and
-        [IO.Path]::GetFullPath($item.Target) -ne [IO.Path]::GetFullPath($assets)) {
-        $item.Delete()   # a junction to another copy of the disc: point it at this one
+    if ($item -and $item.LinkType -in 'Junction', 'SymbolicLink' -and
+        [IO.Path]::GetFullPath($item.LinkTarget, $item.Parent.FullName) -ne [IO.Path]::GetFullPath($assets)) {
+        $item.Delete()   # a link to another copy of the disc: point it at this one
         $item = $null
     } elseif ($item -and !$item.LinkType) {
         throw "$link is a folder of its own, not a link to port\assets: move it away and run this again."

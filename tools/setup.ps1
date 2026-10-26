@@ -87,12 +87,14 @@ foreach ($t in $toolchain) {
 # 2. The SDK source with this project's patches.
 if ((Test-Path $sdk) -and $Force) { Remove-Item -Recurse -Force $sdk }
 if (Test-Path $sdk) {
-    # A finished checkout has the graw360 branch at the expected tree. Anything else is a setup
-    # that stopped partway (or a tree made by hand): replacing it is -Force's job, since it may
-    # hold someone's own changes.
-    $done = & git -C $sdk rev-parse --verify --quiet 'graw360^{tree}' 2>$null
-    if ($done -ne $expectedTree) {
-        throw "SDK source: $sdk is incomplete or wasn't made by tools/setup.ps1. Run it with -Force to replace it."
+    # A finished checkout has HEAD at the expected tree and no changes of its own (the symlink
+    # copies below are inside submodules, which this ignores). Anything else is a setup that
+    # stopped partway, another commit checked out, or a tree changed by hand: replacing it is
+    # -Force's job, since it may hold someone's own changes.
+    $head = & git -C $sdk rev-parse --verify --quiet 'HEAD^{tree}' 2>$null
+    $changes = & git -C $sdk status --porcelain --ignore-submodules=all 2>$null
+    if ($head -ne $expectedTree -or $changes) {
+        throw "SDK source: $sdk is incomplete, on another commit or changed by hand. Run tools/setup.ps1 -Force to replace it."
     }
     Write-Host "SDK source: $sdk exists already (-Force replaces it)"
 } else {

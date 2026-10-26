@@ -44,8 +44,9 @@ void GetPreferredFacePolygonOffset(const RegisterFile& regs, bool primitive_poly
 uint32_t GetNormalizedColorMask(const RegisterFile& regs, uint32_t ps_writes_color_targets);
 // GetHostViewportInfo for the host render target path (see guest_draw_state.cpp).
 // viewport_bounds_max: the host's viewport bound (D3D12_VIEWPORT_BOUNDS_MAX, 32767, on D3D12).
+// origin_bottom_left: NDC +Y up (D3D12); false for Vulkan, whose +Y points down.
 void HostViewportInfo(const RegisterFile& regs, bool pixel_shader_writes_depth, ViewportInfo& out,
-                      uint32_t viewport_bounds_max = 32767);
+                      uint32_t viewport_bounds_max = 32767, bool origin_bottom_left = true);
 void HostScissor(const RegisterFile& regs, Scissor& out);
 
 // ---- blend factors ----

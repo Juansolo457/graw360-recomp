@@ -23,7 +23,7 @@ bool VulkanMemory::Initialize(const VulkanDevice& device) {
   functions.vkGetInstanceProcAddr = device.fn().vkGetInstanceProcAddr;
   functions.vkGetDeviceProcAddr = device.fn().vkGetDeviceProcAddr;
   VmaAllocatorCreateInfo ci = {};
-  ci.vulkanApiVersion = VK_API_VERSION_1_2;
+  ci.vulkanApiVersion = VK_API_VERSION_1_3;
   ci.physicalDevice = device.physical_device();
   ci.device = device.device();
   ci.instance = device.instance();

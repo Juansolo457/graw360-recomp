@@ -83,7 +83,7 @@ uint32_t GetNormalizedColorMask(const RegisterFile& regs, uint32_t ps_writes_col
 // with EDRAM ownership transfers, so depth stays in 0...1 (the Clear values RenderTargets uses,
 // and the shader-written depth: the system flags never carry kSysFlag_DepthFloat24).
 void HostViewportInfo(const RegisterFile& regs, bool pixel_shader_writes_depth, ViewportInfo& out,
-                      uint32_t viewport_bounds_max) {
+                      uint32_t viewport_bounds_max, bool origin_bottom_left) {
   auto clip = regs.Get<reg::PA_CL_CLIP_CNTL>();
   auto vte = regs.Get<reg::PA_CL_VTE_CNTL>();
   auto sc = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
@@ -171,8 +171,10 @@ void HostViewportInfo(const RegisterFile& regs, bool pixel_shader_writes_depth, 
   }
   out.z_min = z_min;
   out.z_max = z_max;
-  ndc_scale[1] = -ndc_scale[1];  // origin_bottom_left
-  ndc_offset[1] = -ndc_offset[1];
+  if (origin_bottom_left) {
+    ndc_scale[1] = -ndc_scale[1];
+    ndc_offset[1] = -ndc_offset[1];
+  }
   for (uint32_t i = 0; i < 3; ++i) {
     out.ndc_scale[i] = ndc_scale[i];
     out.ndc_offset[i] = ndc_offset[i];

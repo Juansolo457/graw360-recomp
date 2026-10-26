@@ -5,6 +5,8 @@
 #include "game_window.h"
 #include "vulkan_bindings.h"
 #include "vulkan_memory.h"
+#include "vulkan_pipelines.h"
+#include "vulkan_render_targets.h"
 #include "vulkan_shaders.h"
 
 #include <rex/cvar.h>
@@ -12,7 +14,9 @@
 #include <rex/system/kernel_state.h>
 #include <rex/system/xmemory.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <utility>
 
 REXCVAR_DEFINE_BOOL(graw_native_vulkan_validation, false, "GRAW native",
@@ -36,7 +40,10 @@ struct VulkanBackend::Gpu {
   // Descriptor sets, pipeline layouts, constant buffers, placeholder textures (the recording
   // thread's).
   VulkanBindings bindings;
-  explicit Gpu(VulkanDevice& device) : bindings(device) {}
+  VulkanPipelines pipelines;
+  // Host render targets for the guest's surfaces (destroyed before `memory`).
+  VulkanRenderTargets targets;
+  explicit Gpu(VulkanDevice& device) : bindings(device), pipelines(device), targets(device) {}
   ~Gpu() { memory.Destroy(shared); }
 };
 
@@ -69,6 +76,7 @@ bool VulkanBackend::Initialize(const Options& o) {
                                  false, &gpu_->shared, "shared memory buffer (512 MB)"))
     return false;
   if (!gpu_->bindings.Initialize(gpu_->memory, gpu_->shared.buffer)) return false;
+  if (!gpu_->targets.Initialize(gpu_->memory)) return false;
   threaded_ = REXCVAR_GET(graw_native_render_thread);
   if (!mirror_.Initialize(memory, this, REXCVAR_GET(graw_native_watch_trace),
                           REXCVAR_GET(graw_native_coherency_check)))
@@ -77,8 +85,8 @@ bool VulkanBackend::Initialize(const Options& o) {
                       threaded_ ? &prep_uploads_ : &stats_.uploads,
                       threaded_ ? &prep_diag_ : &diag_);
   REXLOG_INFO(
-      "GRAW native Vulkan: up; draws aren't recorded yet (M3c-2: shaders, guest memory, "
-      "descriptor sets, cleared frames)");
+      "GRAW native Vulkan: up (M3c-3: draws recorded into host render targets; the frame isn't "
+      "shown yet, cleared frames)");
   return true;
 }
 
@@ -133,6 +141,8 @@ void VulkanBackend::RecordCopies(const VertexCopy* copies, size_t count) {
   ++stats_.copy_batches;
   const VulkanDevice::Functions& fn = device_->fn();
   VkCommandBuffer cmd = device_->command_buffer();
+  // Copies can't be recorded inside a rendering instance.
+  gpu_->targets.EndRendering(cmd);
   // Earlier draws' reads of shared memory (vertex fetches, the index buffer) before the copies'
   // writes, and the copies before later draws' reads.
   VkBufferMemoryBarrier b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
@@ -198,36 +208,285 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
     return;
   }
 
-  // The descriptor sets (both shaders are translated now: their bindings are known), with the
-  // system constants as UpdateSystemConstantValues sets them for the host render target path.
   const RegisterFile& regs = *reinterpret_cast<const RegisterFile*>(state.regs);
   const auto prim = xenos::PrimitiveType(state.primitive);
+  auto unsupported = [&](const char* why) {
+    if (unsupported_logged_ < 16 && !unsupported_seen_.count(why)) {
+      unsupported_seen_.insert(why);
+      ++unsupported_logged_;
+      REXLOG_WARN("GRAW native Vulkan draw: {} unsupported (draw skipped)", why);
+    }
+    ++stats_.unsupported;
+  };
+  if (vs->memexport_eM_written() || (ps && ps->memexport_eM_written()))
+    return unsupported("memexport");
+  reg::VGT_DRAW_INITIATOR initiator;
+  initiator.value = 0;
+  initiator.prim_type = prim;
+  if (xenos::IsMajorModeExplicit(initiator.major_mode, initiator.prim_type) &&
+      regs.Get<reg::VGT_OUTPUT_PATH_CNTL>().path_select ==
+          xenos::VGTOutputPath::kTessellationEnable)
+    return unsupported("tessellation");
   const bool polygonal = rex::graphics::draw_util::IsPrimitivePolygonal(false, prim);
+  const bool rasterization = IsRasterizationPotentiallyDone(regs, polygonal);
+
+  // Host primitive. Points, rectangles and quads need the geometry shaders of
+  // geometry_shader.cpp (next in M3); fans are native on Vulkan.
+  VkPrimitiveTopology topology;
+  switch (prim) {
+    case xenos::PrimitiveType::kLineList:
+      topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+      break;
+    case xenos::PrimitiveType::kLineStrip:
+      topology = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
+      break;
+    case xenos::PrimitiveType::kTriangleList:
+      topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+      break;
+    case xenos::PrimitiveType::kTriangleStrip:
+      topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+      break;
+    case xenos::PrimitiveType::kTriangleFan:
+      topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
+      break;
+    case xenos::PrimitiveType::kPointList:
+      return unsupported("point list (geometry shader)");
+    case xenos::PrimitiveType::kRectangleList:
+      return unsupported("rectangle list (geometry shader)");
+    case xenos::PrimitiveType::kQuadList:
+      return unsupported("quad list (geometry shader)");
+    default:
+      return unsupported("primitive type");
+  }
+  if (!state.count) {
+    ++stats_.skipped;
+    return;
+  }
+
+  // Index buffer (the guest's, in shared memory; the vertex shader swaps the indices) and
+  // primitive reset, as draw.cpp.
   xenos::Endian index_endian = xenos::Endian::kNone;
+  bool restart = false;
   if (state.indexed) {
     index_endian = xenos::Endian(state.index_endian);
     if (!state.index_32bit && index_endian != xenos::Endian::kNone &&
         index_endian != xenos::Endian::k8in16)
       index_endian =
           index_endian == xenos::Endian::k8in32 ? xenos::Endian::k8in16 : xenos::Endian::kNone;
+    if (regs.Get<reg::PA_SU_SC_MODE_CNTL>().multi_prim_ib_ena &&
+        (prim == xenos::PrimitiveType::kLineStrip ||
+         prim == xenos::PrimitiveType::kTriangleStrip)) {
+      const uint32_t reset =
+          xenos::GpuSwap(regs.Get<reg::VGT_MULTI_PRIM_IB_RESET_INDX>().reset_indx, index_endian);
+      if (!state.index_32bit && reset <= 0xFFFF) {
+        if (reset != 0xFFFF) return unsupported("primitive reset index other than 0xFFFF");
+        restart = true;
+      } else if (state.index_32bit) {
+        restart = true;  // all 32 bits compared on the host, the low 24 on the guest
+      }
+    }
+    if (!state.index_address) {
+      ++stats_.failed;
+      return;
+    }
   }
+
+  // Render targets.
+  const reg::RB_DEPTHCONTROL depth_control = GetNormalizedDepthControl(regs);
+  const uint32_t color_mask = ps ? GetNormalizedColorMask(regs, ps->writes_color_targets()) : 0;
+  const bool depth_used =
+      rasterization && (depth_control.z_enable || depth_control.stencil_enable);
+  uint32_t rt_mask = 0;
+  for (uint32_t i = 0; i < 4; ++i)
+    if ((color_mask >> (4 * i)) & 0xF) rt_mask |= 1u << i;
+  if (!rt_mask && !depth_used) {
+    ++stats_.skipped;  // nothing to write
+    return;
+  }
+  Scissor scissor;
+  HostScissor(regs, scissor);
   ViewportInfo vp;
-  HostViewportInfo(regs, ps && ps->writes_depth(), vp);
+  HostViewportInfo(regs, ps && ps->writes_depth(), vp, 16384, /*origin_bottom_left=*/false);
+  const uint32_t height = std::clamp(scissor.offset[1] + scissor.extent[1], 1u, 2048u);
+
+  // System constants as UpdateSystemConstantValues sets them for the host render target path.
   const uint32_t used_textures = vs->GetUsedTextureMaskAfterTranslation() |
                                  (ps ? ps->GetUsedTextureMaskAfterTranslation() : 0);
-  static constexpr uint8_t kUnsignedSigns[32] = {};  // M3c-2: placeholder textures
+  static constexpr uint8_t kUnsignedSigns[32] = {};  // placeholder textures (M4: real ones)
   SpirvShaderTranslator::SystemConstants sys;
   FillSpirvSystemConstants(regs, prim, polygonal, index_endian, vp, used_textures, kUnsignedSigns,
                            sys);
+
   VulkanBindings& bindings = gpu_->bindings;
+  VulkanRenderTargets& targets = gpu_->targets;
   VkCommandBuffer cmd = device_->command_buffer();
-  bindings.InitializePlaceholders(cmd);
-  const VulkanBindings::Layout* layout = bindings.GetLayout(*vs, ps);
-  // M3c-2: shaders, vertex data and descriptor sets ready, not drawn yet.
-  if (layout && bindings.Bind(cmd, *layout, state.regs, *vs, ps, sys, device_->frame_fence()))
-    ++stats_.unsupported;
-  else
+  if (!bindings.placeholders_ready()) {
+    targets.EndRendering(cmd);
+    bindings.InitializePlaceholders(cmd);
+  }
+  VulkanBoundTargets bound;
+  if (!targets.Bind(cmd, SurfaceRegsFromRegisters(state.regs), rt_mask, depth_used, height,
+                    &bound)) {
     ++stats_.failed;
+    return;
+  }
+  const VulkanBindings::Layout* layout = bindings.GetLayout(*vs, ps);
+  if (!layout || !bindings.Bind(cmd, *layout, state.regs, *vs, ps, sys, device_->frame_fence())) {
+    ++stats_.failed;
+    return;
+  }
+
+  // The pipeline.
+  VulkanPipelineKey key;
+  std::memset(&key, 0, sizeof(key));
+  key.vs = shaders_->Module(*vs, mods.vertex);
+  key.ps = ps ? shaders_->Module(*ps, mods.pixel) : VK_NULL_HANDLE;
+  key.layout = layout->layout;
+  key.topology = uint8_t(topology);
+  key.primitive_restart = restart;
+  key.samples = uint8_t(bound.samples);
+  const auto sc = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
+  if (!rasterization) {
+    key.discard = 1;
+  } else {
+    if (polygonal) {
+      key.front_cw = sc.face != 0;
+      if (sc.cull_front) key.cull |= VK_CULL_MODE_FRONT_BIT;
+      if (sc.cull_back) key.cull |= VK_CULL_MODE_BACK_BIT;
+      if (sc.poly_mode == xenos::PolygonModeEnable::kDualMode &&
+          ((!sc.cull_front && sc.polymode_front_ptype != xenos::PolygonType::kTriangles) ||
+           (!sc.cull_back && sc.polymode_back_ptype != xenos::PolygonType::kTriangles)))
+        key.polygon_line = 1;
+    }
+    key.depth_clamp = regs.Get<reg::PA_CL_CLIP_CNTL>().clip_disable;
+  }
+  if (bound.depth) {
+    key.has_depth = 1;
+    key.depth_format = bound.depth->format;
+    uint32_t func = uint32_t(xenos::CompareFunction::kAlways);
+    if (depth_control.z_enable) {
+      func = uint32_t(depth_control.zfunc);
+      key.depth_write = depth_control.z_write_enable;
+    }
+    key.depth_compare = uint8_t(VK_COMPARE_OP_NEVER + func);
+    key.depth_test = func != uint32_t(xenos::CompareFunction::kAlways) || key.depth_write;
+    if (depth_control.stencil_enable) {
+      key.stencil_test = 1;
+      key.front[0] = uint8_t(VK_STENCIL_OP_KEEP + uint32_t(depth_control.stencilfail));
+      key.front[1] = uint8_t(VK_STENCIL_OP_KEEP + uint32_t(depth_control.stencilzpass));
+      key.front[2] = uint8_t(VK_STENCIL_OP_KEEP + uint32_t(depth_control.stencilzfail));
+      key.front[3] = uint8_t(VK_COMPARE_OP_NEVER + uint32_t(depth_control.stencilfunc));
+      if (polygonal && depth_control.backface_enable) {
+        key.back[0] = uint8_t(VK_STENCIL_OP_KEEP + uint32_t(depth_control.stencilfail_bf));
+        key.back[1] = uint8_t(VK_STENCIL_OP_KEEP + uint32_t(depth_control.stencilzpass_bf));
+        key.back[2] = uint8_t(VK_STENCIL_OP_KEEP + uint32_t(depth_control.stencilzfail_bf));
+        key.back[3] = uint8_t(VK_COMPARE_OP_NEVER + uint32_t(depth_control.stencilfunc_bf));
+      } else {
+        std::memcpy(key.back, key.front, 4);
+      }
+    }
+  }
+  static constexpr VkBlendFactor kVkBlend[] = {
+      VK_BLEND_FACTOR_ZERO,           VK_BLEND_FACTOR_ONE,
+      VK_BLEND_FACTOR_SRC_COLOR,      VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR,
+      VK_BLEND_FACTOR_SRC_ALPHA,      VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+      VK_BLEND_FACTOR_DST_COLOR,      VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR,
+      VK_BLEND_FACTOR_DST_ALPHA,      VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA,
+      VK_BLEND_FACTOR_CONSTANT_COLOR, VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR,
+      VK_BLEND_FACTOR_SRC_ALPHA_SATURATE,
+  };
+  static constexpr VkBlendOp kVkBlendOp[8] = {
+      VK_BLEND_OP_ADD, VK_BLEND_OP_SUBTRACT,         VK_BLEND_OP_MIN, VK_BLEND_OP_MAX,
+      VK_BLEND_OP_REVERSE_SUBTRACT, VK_BLEND_OP_ADD, VK_BLEND_OP_ADD, VK_BLEND_OP_ADD};
+  key.color_count = uint8_t(bound.color_count);
+  for (uint32_t i = 0; i < bound.color_count; ++i) {
+    if (!bound.color[i]) continue;
+    key.color_format[i] = bound.color[i]->format;
+    VulkanPipelineKey::Rt& rt = key.rt[i];
+    rt.mask = uint8_t((color_mask >> (i * 4)) & 0xF);
+    rt.src = rt.src_a = uint8_t(VK_BLEND_FACTOR_ONE);
+    rt.dst = rt.dst_a = uint8_t(VK_BLEND_FACTOR_ZERO);
+    if (!rt.mask) continue;
+    auto bc = regs.Get<reg::RB_BLENDCONTROL>(kBlendControlRegs[i]);
+    const BlendFactor src = kBlendFactorMap[uint32_t(bc.color_srcblend) & 31];
+    const BlendFactor dst = kBlendFactorMap[uint32_t(bc.color_destblend) & 31];
+    const BlendFactor src_a = kBlendFactorAlphaMap[uint32_t(bc.alpha_srcblend) & 31];
+    const BlendFactor dst_a = kBlendFactorAlphaMap[uint32_t(bc.alpha_destblend) & 31];
+    const uint32_t op = uint32_t(bc.color_comb_fcn) & 7, op_a = uint32_t(bc.alpha_comb_fcn) & 7;
+    if (src != BlendFactor::kOne || dst != BlendFactor::kZero || op != 0 ||
+        src_a != BlendFactor::kOne || dst_a != BlendFactor::kZero || op_a != 0) {
+      rt.blend = 1;
+      rt.src = uint8_t(kVkBlend[uint32_t(src)]);
+      rt.dst = uint8_t(kVkBlend[uint32_t(dst)]);
+      rt.op = uint8_t(kVkBlendOp[op]);
+      rt.src_a = uint8_t(kVkBlend[uint32_t(src_a)]);
+      rt.dst_a = uint8_t(kVkBlend[uint32_t(dst_a)]);
+      rt.op_a = uint8_t(kVkBlendOp[op_a]);
+    }
+  }
+  const VkPipeline pipeline = gpu_->pipelines.Get(key);
+  if (!pipeline) {
+    ++stats_.failed;
+    return;
+  }
+
+  // Dynamic state, then the draw.
+  const VulkanDevice::Functions& fn = device_->fn();
+  VkRect2D scissor_rect;
+  scissor_rect.offset = {int32_t(std::min(scissor.offset[0], bound.width)),
+                         int32_t(std::min(scissor.offset[1], bound.height))};
+  scissor_rect.extent = {
+      std::min(scissor.extent[0], bound.width - uint32_t(scissor_rect.offset.x)),
+      std::min(scissor.extent[1], bound.height - uint32_t(scissor_rect.offset.y))};
+  if (!vp.xy_extent[0] || !vp.xy_extent[1] || !scissor_rect.extent.width ||
+      !scissor_rect.extent.height) {
+    ++stats_.skipped;
+    return;
+  }
+  fn.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+  const VkViewport viewport{float(vp.xy_offset[0]), float(vp.xy_offset[1]),
+                            float(vp.xy_extent[0]), float(vp.xy_extent[1]), vp.z_min, vp.z_max};
+  fn.vkCmdSetViewport(cmd, 0, 1, &viewport);
+  fn.vkCmdSetScissor(cmd, 0, 1, &scissor_rect);
+  float poly_offset = 0.0f, poly_offset_scale = 0.0f;
+  if (rasterization) GetPreferredFacePolygonOffset(regs, polygonal, poly_offset_scale, poly_offset);
+  fn.vkCmdSetDepthBias(cmd,
+                       float(rex::graphics::draw_util::GetD3D10IntegerPolygonOffset(
+                           regs.Get<reg::RB_DEPTH_INFO>().depth_format, poly_offset)),
+                       0.0f, poly_offset_scale * xenos::kPolygonOffsetScaleSubpixelUnit);
+  const float blend_constants[4] = {regs.Get<float>(rex::graphics::XE_GPU_REG_RB_BLEND_RED),
+                                    regs.Get<float>(rex::graphics::XE_GPU_REG_RB_BLEND_GREEN),
+                                    regs.Get<float>(rex::graphics::XE_GPU_REG_RB_BLEND_BLUE),
+                                    regs.Get<float>(rex::graphics::XE_GPU_REG_RB_BLEND_ALPHA)};
+  fn.vkCmdSetBlendConstants(cmd, blend_constants);
+  const auto ref = regs.Get<reg::RB_STENCILREFMASK>();
+  const auto ref_bf = polygonal && depth_control.backface_enable
+                          ? regs.Get<reg::RB_STENCILREFMASK>(
+                                rex::graphics::XE_GPU_REG_RB_STENCILREFMASK_BF)
+                          : ref;
+  fn.vkCmdSetStencilCompareMask(cmd, VK_STENCIL_FACE_FRONT_BIT, ref.stencilmask);
+  fn.vkCmdSetStencilCompareMask(cmd, VK_STENCIL_FACE_BACK_BIT, ref_bf.stencilmask);
+  fn.vkCmdSetStencilWriteMask(cmd, VK_STENCIL_FACE_FRONT_BIT, ref.stencilwritemask);
+  fn.vkCmdSetStencilWriteMask(cmd, VK_STENCIL_FACE_BACK_BIT, ref_bf.stencilwritemask);
+  fn.vkCmdSetStencilReference(cmd, VK_STENCIL_FACE_FRONT_BIT, ref.stencilref);
+  fn.vkCmdSetStencilReference(cmd, VK_STENCIL_FACE_BACK_BIT, ref_bf.stencilref);
+  if (state.indexed) {
+    fn.vkCmdBindIndexBuffer(cmd, gpu_->shared.buffer, state.index_address,
+                            state.index_32bit ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
+    fn.vkCmdDrawIndexed(cmd, state.count, 1, 0, 0, 0);
+  } else {
+    fn.vkCmdDraw(cmd, state.count, 1, 0, 0);
+  }
+  ++stats_.draws;
+}
+
+void VulkanBackend::Clear(const ClearCall& clear) {
+  gpu_->targets.Clear(device_->command_buffer(), clear);
+}
+
+void VulkanBackend::BeginFrame(uint64_t frame_index) {
+  frame_index_ = frame_index;
+  gpu_->targets.BeginFrame(frame_index, device_->frame_fence(), device_->completed_fence());
 }
 
 PrepareCounters VulkanBackend::EndFramePrepare(uint64_t done) {
@@ -312,8 +571,13 @@ Backend::SwapResult VulkanBackend::Swap(const SwapCall& swap, std::optional<bool
     REXLOG_INFO("GRAW native Vulkan bindings: {} descriptor sets, {} constant uploads ({} KB), "
                 "{} draws kept the constants set",
                 b.sets, b.constant_uploads, b.constant_bytes >> 10, b.constant_set_reuses);
+    const VulkanPipelineStats& p = gpu_->pipelines.stats();
+    REXLOG_INFO("GRAW native Vulkan pipelines: {} created ({:.0f} us total, max {:.0f} us), {} "
+                "failed; {} render targets",
+                p.created, p.create_us, p.max_create_us, p.failed, gpu_->targets.count());
   }
   r.fence = device_->frame_fence();
+  gpu_->targets.EndRendering(device_->command_buffer());
   if (!device_->EndFrame(window_taken_, color)) return r;
   const VulkanDevice::EndFrameTimes& et = device_->end_frame_times();
   r.presented = et.presented;

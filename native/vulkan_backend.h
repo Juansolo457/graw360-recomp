@@ -9,6 +9,9 @@
 // recorded yet.
 // M3c-2: each draw's descriptor sets (vulkan_bindings.h): shared memory, the five constant
 // buffers with the system constants, placeholder textures, bound for its pipeline layout.
+// M3c-3: the draws recorded: host render targets (vulkan_render_targets.h, dynamic rendering),
+// pipelines from the render state (vulkan_pipelines.h), the guest's clears. Points, rectangles
+// and quads (geometry shaders) not yet; the frame isn't shown yet (M3d).
 // Primary mode only (--graw_native_primary), selected with --graw_native_api=vulkan.
 #pragma once
 
@@ -18,6 +21,7 @@
 #include <rex/graphics/xenos.h>
 
 #include <memory>
+#include <unordered_set>
 
 namespace rex::graphics {
 class SpirvShader;
@@ -48,9 +52,9 @@ class VulkanBackend final : public Backend, public GuestMemoryMirror::Sink {
 
   void AddPrepareCounters(const PrepareCounters& c) override;
   void LogFrames(uint32_t frames) override {}
-  void BeginFrame(uint64_t frame_index) override { frame_index_ = frame_index; }
+  void BeginFrame(uint64_t frame_index) override;
   void Draw(const DrawState& state, const DrawPrep* prep) override;
-  void Clear(const ClearCall& clear) override {}
+  void Clear(const ClearCall& clear) override;
   void Resolve(const ResolveParams& params) override {}
   SubmitResult SubmitEarly() override { return SubmitResult::kNotReady; }
   SwapResult Swap(const SwapCall& swap, std::optional<bool> own_window) override;
@@ -96,9 +100,10 @@ class VulkanBackend final : public Backend, public GuestMemoryMirror::Sink {
   bool window_taken_ = false;  // OwnGameWindow disconnected ReXGlue's presenter from the window
   std::atomic<bool>* paces_frames_ = nullptr;
   uint64_t frame_index_ = 0;
-  // M3a: draws whose shaders got modules count as unsupported (not recorded yet), the others as
-  // failed; dropped draws as skipped.
   DrawStats stats_;
+  // Reasons draws were unsupported, logged once each.
+  std::unordered_set<const char*> unsupported_seen_;
+  uint32_t unsupported_logged_ = 0;
   TextureStats texture_stats_;
   LumaProbe luma_;
 };

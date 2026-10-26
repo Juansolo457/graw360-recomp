@@ -12,8 +12,13 @@ and a native-only shimmer. D3D12 stays the Windows default and must not change b
 - **Deck target: 60 fps with no drops, on the native renderer.** The emulated renderer isn't
   shipped on the Deck. A Linux build with the emulated renderer is only a development step
   (booting the programs, host code) on the way to M7, not a release.
+- **The Linux build has the native Vulkan renderer only:** no switch to the emulated renderer
+  (no F9 toggle, no option).
+- **Deck steps:** a steady 30 fps first, as close to the 360 as possible, then a steady 60, then
+  more only with headroom; 4K/120 is a PC target.
 - **0021 isn't ported.** The shimmer seen through Proton is expected to go with the native
-  Vulkan path; M7 checks it.
+  Vulkan path; M7 checks it. (Deck test 3 on the SDK's emulated Vulkan renderer, which has no
+  0021, still shimmers, so this needs checking rather than assuming.)
 
 ## The Deck profile
 The Deck build is the Xbox 360 game, its own code, through the native Vulkan renderer, set up to
@@ -366,9 +371,43 @@ per-draw comparison.
 | D3D12 | - | 0 / 0 | 2,052 | 5.34 ms (before: 5.36 ms) | 16.7 ms |
 
 About 1.1 descriptor sets and 1.6 constant uploads per draw (about 4 MB of uniforms a frame;
-float constants change on most draws). The Vulkan draw time is with the validation layer, which
-checks every descriptor update; it still needs a run without validation before it says anything
-about the code.
+float constants change on most draws). The 24 ms is the validation layer's cost: the same run
+without validation (2026-10-26) takes **1.10 ms per frame** for 2,114 draws (0.49 us per draw),
+16.7 ms frames, 0 stale pages, 0 errors. (D3D12's 5.34 ms also records and submits the draws.)
+
+## M3c-3 status (2026-10-26): render targets, pipelines, draws
+**Done** (the frame isn't shown yet: M3d).
+- **`vulkan_render_targets.h/.cpp`:** a host image per guest surface (EDRAM base, pitch, MSAA,
+  host format), sized as `render_targets.cpp`. Color formats as D3D12's; kD24S8 depth as
+  `D24_UNORM_S8_UINT` where the GPU has it (not AMD's: there `D32_SFLOAT_S8_UINT`), kD24FS8 as
+  `D32_SFLOAT_S8_UINT`. Dynamic rendering: one rendering instance stays open while the draws'
+  targets don't change, ended before copies into shared memory and at the frame's end. The
+  guest's clears as `vkCmdClearAttachments` on the cleared target (rectangles or all of it).
+  Not yet (M4): the EDRAM fills and dropping covered clears.
+- **`vulkan_pipelines.h/.cpp`:** pipelines keyed like draw.cpp's `PipelineKey` (shaders, layout,
+  topology and restart, cull, fill, depth clamp, samples, depth/stencil, blending, attachment
+  formats), the SDK's dynamic state (viewport, scissor, depth bias, blend constants, stencil),
+  created on first use. Not yet: background compiles, a `VkPipelineCache`, our store.
+- **`VulkanBackend::Draw`:** draw.cpp's checks (memexport, tessellation, primitive reset,
+  nothing to write), then targets, descriptor sets, pipeline, dynamic state, the guest index
+  buffer from shared memory, `vkCmdDraw(Indexed)`. Triangle fans are native on Vulkan. Point,
+  rectangle and quad lists wait for the geometry shaders (`geometry_shader.cpp`, next).
+- **Vulkan 1.3 with dynamic rendering** is required now (the RTX 4090 and RADV on the Deck have
+  it). `HostViewportInfo` takes `origin_bottom_left` (Vulkan's NDC +Y points down; D3D12's
+  default is unchanged).
+
+**Test** (GRAW save, 120 s, coherency check on):
+
+| | validation | draws recorded/frame | unsupported | failed | pipelines | render targets |
+|---|---|---|---|---|---|---|
+| Vulkan (validation on) | 0 errors, 10 warnings | 2,105 | 56 (quad lists) | 0 | 315, 0 failed | 12 |
+| D3D12 | - | 1,692 (a different view this run) | - | 0 | - | - |
+
+The warnings: depth-only passes whose pixel shader also writes color 0 (unused output, harmless).
+Frame time with validation on is ~58 ms, from the layer and from pipelines created on the spot
+(~90 ms each under validation); background compiles fix the hitches. D3D12: 0 stale pages,
+16.7 ms frames; its lower draw count is the scene (the autopilot run ended elsewhere), not a
+regression: the same maximum (2,862) and 90th percentile as before.
 
 ## Risks
 - **The SPIR-V translator's output for GRAW is unproven.** M0 exists to find gaps before

@@ -153,7 +153,7 @@ bool VulkanDevice::CreateInstance(bool validation) {
   VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
   app.pApplicationName = "GRAW 360 Recompiled";
   app.pEngineName = "graw native";
-  app.apiVersion = VK_API_VERSION_1_2;
+  app.apiVersion = VK_API_VERSION_1_3;
   VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
   ci.pApplicationInfo = &app;
   ci.enabledExtensionCount = uint32_t(extensions.size());
@@ -197,13 +197,16 @@ bool VulkanDevice::PickDevice() {
   for (VkPhysicalDevice d : devices) {
     VkPhysicalDeviceProperties p;
     fn_.vkGetPhysicalDeviceProperties(d, &p);
-    if (p.apiVersion < VK_API_VERSION_1_2) continue;
+    if (p.apiVersion < VK_API_VERSION_1_3) continue;
+    VkPhysicalDeviceVulkan13Features f13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    f12.pNext = &f13;
     VkPhysicalDeviceFeatures2 f{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     f.pNext = &f12;
     fn_.vkGetPhysicalDeviceFeatures2(d, &f);
-    if (!f12.scalarBlockLayout) {
-      REXLOG_INFO("GRAW native Vulkan: {} lacks scalarBlockLayout, skipped", p.deviceName);
+    if (!f12.scalarBlockLayout || !f13.dynamicRendering) {
+      REXLOG_INFO("GRAW native Vulkan: {} lacks scalarBlockLayout or dynamicRendering, skipped",
+                  p.deviceName);
       continue;
     }
     uint32_t qn = 0;
@@ -248,9 +251,8 @@ bool VulkanDevice::CreateDevice() {
   VkPhysicalDeviceVulkan13Features s13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
   VkPhysicalDeviceVulkan12Features s12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
   VkPhysicalDeviceFeatures2 supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-  const bool vk13 = props.apiVersion >= VK_API_VERSION_1_3;
   supported.pNext = &s12;
-  if (vk13) s12.pNext = &s13;
+  s12.pNext = &s13;
   fn_.vkGetPhysicalDeviceFeatures2(physical_, &supported);
   VkPhysicalDeviceVulkan12Properties p12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
   VkPhysicalDeviceProperties2 props2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
@@ -269,7 +271,7 @@ bool VulkanDevice::CreateDevice() {
   caps_.clip_distance = sf.shaderClipDistance;
   caps_.cull_distance = sf.shaderCullDistance;
   caps_.sample_rate_shading = sf.sampleRateShading;
-  caps_.demote_to_helper_invocation = vk13 && s13.shaderDemoteToHelperInvocation;
+  caps_.demote_to_helper_invocation = s13.shaderDemoteToHelperInvocation;
   caps_.signed_zero_inf_nan_preserve_float32 = p12.shaderSignedZeroInfNanPreserveFloat32;
   caps_.denorm_flush_to_zero_float32 = p12.shaderDenormFlushToZeroFloat32;
   caps_.rounding_mode_rte_float32 = p12.shaderRoundingModeRTEFloat32;
@@ -300,8 +302,10 @@ bool VulkanDevice::CreateDevice() {
   f12.scalarBlockLayout = VK_TRUE;
   VkPhysicalDeviceVulkan13Features f13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
   f13.shaderDemoteToHelperInvocation = caps_.demote_to_helper_invocation;
+  // M3c-3: render targets without render pass objects.
+  f13.dynamicRendering = VK_TRUE;
   enabled.pNext = &f12;
-  if (vk13) f12.pNext = &f13;
+  f12.pNext = &f13;
   const char* extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
   VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
   ci.pNext = &enabled;

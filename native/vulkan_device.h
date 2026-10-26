@@ -3,8 +3,8 @@
 //
 // The loader is opened at run time (vulkan-1.dll, libvulkan.so.1) and every function used is
 // loaded into Functions (VK_NO_PROTOTYPES): the prebuilt SDK the game links has no Vulkan.
-// Requires Vulkan 1.2 with scalarBlockLayout, which the SDK's SPIR-V translator's shaders need
-// (M0). --graw_native_vulkan_validation enables VK_LAYER_KHRONOS_validation when installed.
+// Requires Vulkan 1.3 with scalarBlockLayout, which the SDK's SPIR-V translator's shaders need
+// (M0), and dynamic rendering (M3c-3). --graw_native_vulkan_validation enables VK_LAYER_KHRONOS_validation when installed.
 //
 // Like D3D12Device in primary mode, the swapchain exists only between AttachSwapchain and
 // DetachSwapchain, while the renderer owns the game window; the rest of the time ReXGlue's
@@ -29,6 +29,7 @@ namespace graw::native {
   X(vkDestroyInstance)                       \
   X(vkEnumeratePhysicalDevices)              \
   X(vkGetPhysicalDeviceProperties)           \
+  X(vkGetPhysicalDeviceFormatProperties)     \
   X(vkGetPhysicalDeviceFeatures2)            \
   X(vkGetPhysicalDeviceQueueFamilyProperties) \
   X(vkEnumerateDeviceExtensionProperties)    \
@@ -80,7 +81,24 @@ namespace graw::native {
   X(vkCreateImageView)              \
   X(vkDestroyImageView)             \
   X(vkCreateSampler)                \
-  X(vkDestroySampler)
+  X(vkDestroySampler)               \
+  X(vkCreateGraphicsPipelines)      \
+  X(vkDestroyPipeline)              \
+  X(vkCmdBindPipeline)              \
+  X(vkCmdBeginRendering)            \
+  X(vkCmdEndRendering)              \
+  X(vkCmdSetViewport)               \
+  X(vkCmdSetScissor)                \
+  X(vkCmdSetDepthBias)              \
+  X(vkCmdSetBlendConstants)         \
+  X(vkCmdSetStencilCompareMask)     \
+  X(vkCmdSetStencilWriteMask)       \
+  X(vkCmdSetStencilReference)       \
+  X(vkCmdBindIndexBuffer)           \
+  X(vkCmdDraw)                      \
+  X(vkCmdDrawIndexed)               \
+  X(vkCmdClearDepthStencilImage)    \
+  X(vkCmdClearAttachments)
 
 class VulkanDevice {
  public:

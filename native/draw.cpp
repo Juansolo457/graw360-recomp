@@ -1676,32 +1676,7 @@ DxbcShader* DrawRenderer::Impl::LoadShader(ShaderMemo* table, ShaderMemo*& last,
 // WriteFanIndices reads them from guest memory.
 bool DrawRenderer::Impl::RequestVertices(const DrawState& s, const DxbcShader& vs,
                                          std::vector<VertexCopy>& out) {
-  const RegisterFile& regs = *reinterpret_cast<const RegisterFile*>(s.regs);
-  const Shader::ConstantRegisterMap& vmap = vs.constant_register_map();
-  for (uint32_t w = 0; w < 3; ++w) {
-    uint32_t bits = vmap.vertex_fetch_bitmap[w];
-    while (bits) {
-      uint32_t b = uint32_t(std::countr_zero(bits));
-      bits &= bits - 1;
-      const uint32_t index = w * 32 + b;
-      xenos::xe_gpu_vertex_fetch_t f = regs.GetVertexFetch(index);
-      if (f.type != xenos::FetchConstantType::kVertex) {
-        GRAW_WARN_ONCE("GRAW native draw: vertex fetch {} has type {} ({:08X} {:08X})", index,
-                       uint32_t(f.type), f.dword_0, f.dword_1);
-        if (f.type != xenos::FetchConstantType::kInvalidVertex) return false;
-      }
-      const uint32_t start = f.address << 2, size = f.size << 2;
-      const bool inline_data = s.inline_vertices && start == s.inline_vertices;
-      if (mirror.coherency) mirror.coherency->slot = uint8_t(index);
-      if (!mirror.RequestRange(start, size, !inline_data, out)) return false;
-    }
-  }
-  if (mirror.coherency) mirror.coherency->slot = 0xFF;
-  if (!s.indexed) return true;
-  const uint32_t index_bytes = s.count * (s.index_32bit ? 4u : 2u);
-  if (xenos::PrimitiveType(s.primitive) == xenos::PrimitiveType::kTriangleFan)
-    return mirror.InSharedMemory(s.index_address, index_bytes);
-  return mirror.RequestRange(s.index_address, index_bytes, true, out);
+  return mirror.RequestVertices(s, vs, out);
 }
 
 void DrawRenderer::Impl::Prepare(const DrawState& s, uint64_t tag, DrawPrep* prep,

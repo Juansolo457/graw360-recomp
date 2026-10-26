@@ -65,7 +65,8 @@ namespace graw::native {
   X(vkAcquireNextImageKHR)          \
   X(vkQueuePresentKHR)              \
   X(vkCreateShaderModule)           \
-  X(vkDestroyShaderModule)
+  X(vkDestroyShaderModule)          \
+  X(vkCmdCopyBuffer)
 
 class VulkanDevice {
  public:
@@ -116,6 +117,10 @@ class VulkanDevice {
   // false on failure.
   bool Initialize(void* game_window, bool vsync, bool validation);
 
+  void WaitIdle() {
+    if (device_) fn_.vkDeviceWaitIdle(device_);
+  }
+
   // Primary mode: create or release the swapchain on the game window.
   bool AttachSwapchain();
   void DetachSwapchain();
@@ -136,6 +141,8 @@ class VulkanDevice {
 
   const Functions& fn() const { return fn_; }
   VkDevice device() const { return device_; }
+  VkInstance instance() const { return instance_; }
+  VkPhysicalDevice physical_device() const { return physical_; }
   const ShaderCaps& shader_caps() const { return caps_; }
 
  private:

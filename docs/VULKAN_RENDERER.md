@@ -310,6 +310,31 @@ The D3D12 default, run after it, is unchanged.
 The route reached a busier stretch in the M3b run (2,114 vs 1,662 draws/frame), hence the
 per-draw comparison.
 
+## M3c-1 status (2026-10-26): guest memory on Vulkan
+**Done.**
+- **`vulkan_memory.h/.cpp`:**
+  - VMA, implemented in our build from the SDK tree; it loads its Vulkan functions through
+    `vkGetInstanceProcAddr`/`vkGetDeviceProcAddr`;
+  - buffers;
+  - `VulkanUploadPool`, the counterpart of `upload_pool.h` with the same frame-number tags.
+- **`VulkanBackend`:**
+  - a 512 MB device-local shared-memory buffer (storage, transfer destination, index);
+  - it is the `GuestMemoryMirror::Sink`, with every shared-memory page committed up front for now
+    (no sparse binding yet);
+  - `Prepare` requests ranges and keeps copy segments as D3D12's does; `Draw` records the
+    copies between barriers;
+  - the frame-end counters and recycling follow D3D12's game-thread/render-thread split.
+- **`GuestMemoryMirror::RequestVertices`:** moved from `draw.cpp` (the vertex fetch constants'
+  ranges and the index range); D3D12 calls it.
+- **Not on Vulkan yet:** the coherency check's GPU readback half (the CPU half runs).
+
+**Test** (GRAW save, 120 s, coherency check on):
+
+| | validation | stale/late pages | upload/frame | draws/frame | watch faults/frame |
+|---|---|---|---|---|---|
+| Vulkan (validation on) | 0 errors, 0 warnings | 0 / 0 | 717 KB | 2,113 | 24 |
+| D3D12 | - | 0 / 0 (GPU readback too) | 732 KB | 2,098 | 27 |
+
 ## Risks
 - **The SPIR-V translator's output for GRAW is unproven.** M0 exists to find gaps before
   anything else is built.

@@ -17,6 +17,7 @@
 
 #include "backend.h"  // VertexCopy, PrepareDiag
 
+#include <rex/graphics/pipeline/shader/shader.h>
 #include <rex/system/xmemory.h>
 #undef DrawState  // winuser.h (via rex/platform.h) maps it to DrawStateA/W
 
@@ -160,6 +161,11 @@ class GuestMemoryMirror {
 
   // Whether [start, start + length) lies in guest physical memory (logged once if not).
   bool InSharedMemory(uint32_t start, uint32_t length);
+  // The vertex ranges a draw's vertex shader fetches (its vertex fetch constants) and its index
+  // range, through RequestRange; copies go to the end of `out`. Triangle fan indices are only
+  // checked: the backend converts them from guest memory itself.
+  bool RequestVertices(const DrawState& s, const rex::graphics::Shader& vs,
+                       std::vector<VertexCopy>& out);
   bool RequestRange(uint32_t start, uint32_t length, bool watch, std::vector<VertexCopy>& out);
   // Sets (or clears) the bits of pages [first, end) in a page bitmap (valid, pending). acq_rel
   // orders what each thread wrote before it ahead of the other's reads after it: RequestRange's

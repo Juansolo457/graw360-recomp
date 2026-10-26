@@ -93,9 +93,11 @@ if(WIN32 AND EXISTS "${GRAW_REXGLUE_SDK_SRC}/src/graphics/pipeline/shader/dxbc_t
         "${GRAW_REXGLUE_SDK_SRC}/src/graphics/pipeline/texture/info_formats.cpp")
     target_include_directories(graw_native BEFORE PRIVATE "${GRAW_REXGLUE_SDK_SRC}/include")
     target_include_directories(graw_native PRIVATE "${GRAW_NATIVE_SRC}" "${GRAW_REXGLUE_SDK_SRC}")
-    # The Vulkan backend (vulkan_device.h): headers only, the loader is opened at run time.
+    # The Vulkan backend (vulkan_device.h): headers only, the loader is opened at run time; VMA
+    # (vulkan_memory.cpp implements it).
     target_include_directories(graw_native PRIVATE
-        "${GRAW_REXGLUE_SDK_SRC}/thirdparty/vulkan-headers/include")
+        "${GRAW_REXGLUE_SDK_SRC}/thirdparty/vulkan-headers/include"
+        "${GRAW_REXGLUE_SDK_SRC}/thirdparty/vulkan-memory-allocator/include")
     rexglue_apply_target_settings(graw_native)
     target_link_libraries(graw_native PRIVATE rex::runtime rex::xxhash)
     include("${GRAW_NATIVE_SRC}/shader_xlate.cmake")

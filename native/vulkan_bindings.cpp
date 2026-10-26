@@ -125,7 +125,8 @@ bool VulkanBindings::Initialize(VulkanMemory& memory, VkBuffer shared) {
   w.pBufferInfo = shared_infos.data();
   fn.vkUpdateDescriptorSets(d, 1, &w, 0, nullptr);
 
-  // Placeholder textures: transparent black, cleared by InitializePlaceholders.
+  // Placeholder textures: opaque mid-grey (so textured surfaces show their shapes until the
+  // texture cache, M4), cleared by InitializePlaceholders.
   VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   ii.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
   ii.imageType = VK_IMAGE_TYPE_2D;
@@ -188,9 +189,9 @@ void VulkanBindings::InitializePlaceholders(VkCommandBuffer cmd) {
   }
   fn.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                           0, 0, nullptr, 0, nullptr, 2, b);
-  const VkClearColorValue black{};
+  const VkClearColorValue grey{{0.5f, 0.5f, 0.5f, 1.0f}};
   for (uint32_t i = 0; i < 2; ++i)
-    fn.vkCmdClearColorImage(cmd, b[i].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1,
+    fn.vkCmdClearColorImage(cmd, b[i].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &grey, 1,
                             &b[i].subresourceRange);
   for (VkImageMemoryBarrier& x : b) {
     x.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;

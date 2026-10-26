@@ -98,7 +98,10 @@ namespace graw::native {
   X(vkCmdDraw)                      \
   X(vkCmdDrawIndexed)               \
   X(vkCmdClearDepthStencilImage)    \
-  X(vkCmdClearAttachments)
+  X(vkCmdClearAttachments)          \
+  X(vkCmdBlitImage)                 \
+  X(vkCmdResolveImage)              \
+  X(vkCmdCopyImage)
 
 class VulkanDevice {
  public:
@@ -171,6 +174,19 @@ class VulkanDevice {
   // M2: the back buffer cleared to `color`, then presented when `present` and a swapchain
   // exists; the frame's command buffer is submitted either way. False on a device failure.
   bool EndFrame(bool present, const float color[4]);
+
+  // M3d: the frame to show, a single-sample image region. `layout`: the image's layout, which it
+  // is returned to after the copy (TRANSFER_SRC_OPTIMAL: no transitions).
+  struct FrameSource {
+    VkImage image = VK_NULL_HANDLE;
+    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkPipelineStageFlags stages = 0;  // the image's last writers (and next users)
+    VkAccessFlags access = 0;
+    int32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  };
+  // As EndFrame, with `source` scaled into the back buffer (aspect kept, black bars) instead of
+  // the clear color; null source: as EndFrame.
+  bool EndFrame(bool present, const float color[4], const FrameSource* source);
   const EndFrameTimes& end_frame_times() const { return times_; }
 
   const Functions& fn() const { return fn_; }

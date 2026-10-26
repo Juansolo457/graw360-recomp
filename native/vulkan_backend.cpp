@@ -3,6 +3,9 @@
 
 #include "vulkan_device.h"  // first: the Vulkan platform defines
 #include "game_window.h"
+#include "guest_memory.h"  // GpuAddress
+#include "present.h"       // SwapCall
+#include "resolve.h"       // ResolveParams
 #include "vulkan_bindings.h"
 #include "vulkan_memory.h"
 #include "vulkan_pipelines.h"
@@ -22,6 +25,10 @@
 REXCVAR_DEFINE_BOOL(graw_native_vulkan_validation, false, "GRAW native",
                     "With --graw_native_api=vulkan: enable the Khronos validation layer when it "
                     "is installed (the Vulkan SDK); its errors and warnings go to the log");
+REXCVAR_DEFINE_BOOL(graw_native_vulkan_show_target, false, "GRAW native",
+                    "With --graw_native_api=vulkan: show the color render target most of the "
+                    "frame's draws went to (the 3D scene) instead of the front buffer, to check "
+                    "the geometry before textures exist (M3d debugging)");
 REXCVAR_DECLARE(bool, graw_native_render_thread);
 REXCVAR_DECLARE(std::string, graw_native_watch_trace);
 REXCVAR_DECLARE(bool, graw_native_coherency_check);
@@ -43,8 +50,20 @@ struct VulkanBackend::Gpu {
   VulkanPipelines pipelines;
   // Host render targets for the guest's surfaces (destroyed before `memory`).
   VulkanRenderTargets targets;
+  // M3d: the images color resolves copied their source rectangles into, by destination address
+  // (physical); the Swap's front buffer is one of them. Between uses in TRANSFER_SRC_OPTIMAL.
+  struct Resolved {
+    VulkanMemory::Image image;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    uint32_t width = 0, height = 0;
+    bool written = false;
+  };
+  std::unordered_map<uint32_t, Resolved> resolved;
   explicit Gpu(VulkanDevice& device) : bindings(device), pipelines(device), targets(device) {}
-  ~Gpu() { memory.Destroy(shared); }
+  ~Gpu() {
+    for (auto& [address, r] : resolved) memory.Destroy(r.image);
+    memory.Destroy(shared);
+  }
 };
 
 VulkanBackend::VulkanBackend() = default;
@@ -330,6 +349,11 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
     ++stats_.failed;
     return;
   }
+  if (bound.color[0]) {
+    TargetUse& use = target_use_[bound.color[0]];
+    ++use.draws;
+    use.rows = std::max(use.rows, std::min(height, bound.color[0]->height));
+  }
   const VulkanBindings::Layout* layout = bindings.GetLayout(*vs, ps);
   if (!layout || !bindings.Bind(cmd, *layout, state.regs, *vs, ps, sys, device_->frame_fence())) {
     ++stats_.failed;
@@ -484,6 +508,118 @@ void VulkanBackend::Clear(const ClearCall& clear) {
   gpu_->targets.Clear(device_->command_buffer(), clear);
 }
 
+void VulkanBackend::Resolve(const ResolveParams& p) {
+  // Color copies only (depth resolves feed the game's own reads: M5).
+  if (p.source > 3 || p.copy_command != 1) {
+    ++resolves_skipped_;
+    return;
+  }
+  VulkanRenderTargets& targets = gpu_->targets;
+  VkCommandBuffer cmd = device_->command_buffer();
+  targets.EndRendering(cmd);
+  VulkanRenderTarget* rt =
+      targets.GetColor(cmd, p.regs, p.source, uint32_t(std::clamp(p.y1, 1, 2048)));
+  if (!rt || !rt->initialized) {
+    ++resolves_skipped_;
+    return;
+  }
+  // The source rectangle, clipped to the target and to the destination level.
+  const int32_t x0 = std::max(p.x0, 0), y0 = std::max(p.y0, 0);
+  const int32_t x1 = std::min(p.x1, int32_t(rt->width)), y1 = std::min(p.y1, int32_t(rt->height));
+  const int32_t dx = std::max(p.dest_x, 0), dy = std::max(p.dest_y, 0);
+  const int32_t w = std::min(x1 - x0, int32_t(p.dest_width) - dx);
+  const int32_t h = std::min(y1 - y0, int32_t(p.dest_height) - dy);
+  if (w <= 0 || h <= 0 || !p.dest_width || !p.dest_height ||
+      !CopyTarget(rt, x0, y0, w, h, dx, dy, p.dest_width, p.dest_height, p.dest_base)) {
+    ++resolves_skipped_;
+    return;
+  }
+  ++resolves_;
+}
+
+bool VulkanBackend::CopyTarget(VulkanRenderTarget* rt, int32_t x0, int32_t y0, int32_t w,
+                               int32_t h, int32_t dx, int32_t dy, uint32_t dest_w,
+                               uint32_t dest_h, uint32_t key) {
+  VkCommandBuffer cmd = device_->command_buffer();
+  gpu_->targets.EndRendering(cmd);
+  Gpu::Resolved& r = gpu_->resolved[key];
+  if (!r.image.image || r.format != rt->format || r.width != dest_w || r.height != dest_h) {
+    if (r.image.image) {
+      // Rare (a destination reused for another size or format): wait out its users.
+      device_->WaitIdle();
+      gpu_->memory.Destroy(r.image);
+    }
+    VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ii.imageType = VK_IMAGE_TYPE_2D;
+    ii.format = rt->format;
+    ii.extent = {dest_w, dest_h, 1};
+    ii.mipLevels = 1;
+    ii.arrayLayers = 1;
+    ii.samples = VK_SAMPLE_COUNT_1_BIT;
+    ii.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ii.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+               VK_IMAGE_USAGE_SAMPLED_BIT;
+    ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (!gpu_->memory.CreateImage(ii, &r.image, "resolve destination image")) {
+      gpu_->resolved.erase(key);
+      return false;
+    }
+    r.format = rt->format;
+    r.width = dest_w;
+    r.height = dest_h;
+    r.written = false;
+  }
+  const VulkanDevice::Functions& fn = device_->fn();
+  VkImageMemoryBarrier b[2] = {};
+  for (VkImageMemoryBarrier& x : b) {
+    x.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    x.srcQueueFamilyIndex = x.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    x.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  }
+  b[0].image = rt->image.image;
+  b[0].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  b[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  b[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  b[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  b[1].image = r.image.image;
+  b[1].oldLayout = r.written ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+  b[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  b[1].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  b[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  fn.vkCmdPipelineBarrier(cmd,
+                          VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                              VK_PIPELINE_STAGE_TRANSFER_BIT,
+                          VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, b);
+  const VkImageSubresourceLayers layers{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  if (rt->samples > 1) {
+    const VkImageResolve region{layers, {x0, y0, 0}, layers, {dx, dy, 0},
+                                {uint32_t(w), uint32_t(h), 1}};
+    fn.vkCmdResolveImage(cmd, rt->image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                         r.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+  } else {
+    const VkImageCopy region{layers, {x0, y0, 0}, layers, {dx, dy, 0},
+                             {uint32_t(w), uint32_t(h), 1}};
+    fn.vkCmdCopyImage(cmd, rt->image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, r.image.image,
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+  }
+  b[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  b[0].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  b[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  b[0].dstAccessMask =
+      VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  b[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  b[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  b[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  b[1].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  fn.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                          VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                              VK_PIPELINE_STAGE_TRANSFER_BIT,
+                          0, 0, nullptr, 0, nullptr, 2, b);
+  r.written = true;
+  return true;
+}
+
 void VulkanBackend::BeginFrame(uint64_t frame_index) {
   frame_index_ = frame_index;
   gpu_->targets.BeginFrame(frame_index, device_->frame_fence(), device_->completed_fence());
@@ -575,10 +711,54 @@ Backend::SwapResult VulkanBackend::Swap(const SwapCall& swap, std::optional<bool
     REXLOG_INFO("GRAW native Vulkan pipelines: {} created ({:.0f} us total, max {:.0f} us), {} "
                 "failed; {} render targets",
                 p.created, p.create_us, p.max_create_us, p.failed, gpu_->targets.count());
+    REXLOG_INFO("GRAW native Vulkan resolves: {} copied, {} skipped; {} destination images; "
+                "front buffer {}",
+                resolves_, resolves_skipped_, gpu_->resolved.size(),
+                front_buffer_found_ ? "shown" : "not found");
   }
+  // The front buffer: the image the frame's resolve into its address made.
+  VulkanDevice::FrameSource source;
+  const VulkanDevice::FrameSource* shown = nullptr;
+  front_buffer_found_ = false;
+  if (REXCVAR_GET(graw_native_vulkan_show_target)) {
+    VulkanRenderTarget* best = nullptr;
+    TargetUse best_use;
+    for (const auto& [rt, use] : target_use_)
+      if (use.draws > best_use.draws) {
+        best = rt;
+        best_use = use;
+      }
+    constexpr uint32_t kShowKey = 0xFFFFFFFFu;  // no guest address
+    if (best && best->initialized && best_use.rows &&
+        CopyTarget(best, 0, 0, int32_t(best->width), int32_t(best_use.rows), 0, 0, best->width,
+                   best_use.rows, kShowKey)) {
+      const Gpu::Resolved& r = gpu_->resolved[kShowKey];
+      source.image = r.image.image;
+      source.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+      source.x1 = int32_t(r.width);
+      source.y1 = int32_t(r.height);
+      shown = &source;
+    }
+  } else if (swap.texture) {
+    const uint32_t address = GpuAddress(swap.fetch[1] & 0xFFFFF000u);
+    auto it = gpu_->resolved.find(address);
+    if (it != gpu_->resolved.end() && it->second.written) {
+      source.image = it->second.image.image;
+      source.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+      source.x1 = int32_t(it->second.width);
+      source.y1 = int32_t(it->second.height);
+      shown = &source;
+      front_buffer_found_ = true;
+    } else if (!front_buffer_logged_) {
+      front_buffer_logged_ = true;
+      REXLOG_WARN("GRAW native Vulkan: no resolved image for the front buffer {:08X} yet",
+                  address);
+    }
+  }
+  target_use_.clear();
   r.fence = device_->frame_fence();
   gpu_->targets.EndRendering(device_->command_buffer());
-  if (!device_->EndFrame(window_taken_, color)) return r;
+  if (!device_->EndFrame(window_taken_, color, shown)) return r;
   const VulkanDevice::EndFrameTimes& et = device_->end_frame_times();
   r.presented = et.presented;
   r.presents = et.presents;

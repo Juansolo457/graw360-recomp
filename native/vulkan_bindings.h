@@ -11,7 +11,7 @@
 //   set 3  pixel shader textures, the same; an empty layout for a shader without any
 // Pipeline layouts are made per (vertex, pixel) texture and sampler counts.
 //
-// M3c-2: textures are placeholders, a 1x1 transparent black image per view type (2D array,
+// M3c-2: textures are placeholders, a 1x1 opaque mid-grey image per view type (2D array,
 // cube, 3D, as the SDK's null images) and one sampler; texture_swizzled_signs stays unsigned.
 // Constant buffers go to a per-frame uniform upload pool, uploaded again only when their
 // contents change within the frame. Descriptor sets come from per-frame pools, reset when the

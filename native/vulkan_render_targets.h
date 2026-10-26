@@ -66,6 +66,13 @@ class VulkanRenderTargets {
             uint32_t height, VulkanBoundTargets* out);
   // The guest's Clear / ClearF.
   void Clear(VkCommandBuffer cmd, const ClearCall& c);
+  // The host target of guest color RT `index` (0..3), created if missing (resolve sources);
+  // nullptr for an unsupported format. Between draws its layout is COLOR_ATTACHMENT_OPTIMAL
+  // (`initialized`) or UNDEFINED.
+  VulkanRenderTarget* GetColor(VkCommandBuffer cmd, const SurfaceRegs& regs, uint32_t index,
+                               uint32_t height) {
+    return Get(cmd, false, regs.surface_info, regs.color_info[index & 3], height);
+  }
   // Ends the open rendering instance, if any.
   void EndRendering(VkCommandBuffer cmd);
   bool rendering() const { return rendering_; }

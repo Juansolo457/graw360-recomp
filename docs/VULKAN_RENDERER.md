@@ -409,6 +409,28 @@ Frame time with validation on is ~58 ms, from the layer and from pipelines creat
 16.7 ms frames; its lower draw count is the scene (the autopilot run ended elsewhere), not a
 regression: the same maximum (2,862) and 90th percentile as before.
 
+## M3d status (2026-10-26): the frame shown
+**Done: the 3D scene is visible on Vulkan** (untextured).
+- **Resolves:** each color Resolve copies its source rectangle (`vkCmdCopyImage`, or
+  `vkCmdResolveImage` from MSAA) into an image kept per destination address, as D3D12's
+  Resolver keeps its images; the guest may clear the source right after (EndTiling).
+- **Swap:** the front buffer's address (`GpuAddress` of the fetch constant's base) picks its
+  image, blitted into the back buffer with the aspect kept (black bars). No gamma ramp,
+  exponent bias or the resolves' clears yet (M5).
+- **Placeholder textures are mid-grey now** (were transparent black). The front buffer comes
+  out of the game's final passes, which sample the resolved scene and the HUD's textures: with
+  placeholders it is a flat image until M4/M5.
+- **`--graw_native_vulkan_show_target`** (debugging): shows the color target most of the
+  frame's draws went to (the 3D scene) instead of the front buffer.
+
+**Test** (GRAW save, 120 s, coherency check on; `--graw_native_vulkan_show_target`, no
+validation): the mission scene renders right way up with correct depth and geometry (the squad,
+buildings, trees, vehicles), overexposed (the HDR scene target without the game's tone mapping,
+whose textures are placeholders) and with a fine dot pattern over bright areas (to look at with
+M4's render target work). **2.5 ms per frame** to record and submit ~2,115 draws and ~35 resolve
+copies (D3D12: 4.4-5.3 ms), 16.7 ms frames, 0 stale pages, 0 errors. With validation and the
+front buffer: 0 errors; the front buffer was found and shown (flat, as above).
+
 ## Risks
 - **The SPIR-V translator's output for GRAW is unproven.** M0 exists to find gaps before
   anything else is built.

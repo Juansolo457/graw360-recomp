@@ -11,16 +11,25 @@
 // buffers with the system constants, placeholder textures, bound for its pipeline layout.
 // M3c-3: the draws recorded: host render targets (vulkan_render_targets.h, dynamic rendering),
 // pipelines from the render state (vulkan_pipelines.h), the guest's clears. Points, rectangles
-// and quads (geometry shaders) not yet; the frame isn't shown yet (M3d).
+// and quads (geometry shaders) not yet.
+// M3d: the frame shown at Swap: each color Resolve copies its source rectangle (MSAA resolved to
+// 1x) into an image kept per destination address, as the D3D12 Resolver does (the guest may
+// clear the source right after); the Swap's front buffer address picks the image, which is
+// scaled into the back buffer. Not yet (M5): those images as the game's textures, the resolves'
+// clears, the exponent bias and the gamma ramp.
 // Primary mode only (--graw_native_primary), selected with --graw_native_api=vulkan.
 #pragma once
 
+#include "vulkan_device.h"  // first: the Vulkan platform defines
+
 #include "backend.h"
 #include "guest_memory_mirror.h"
+#include "render_targets.h"  // SurfaceRegs
 
 #include <rex/graphics/xenos.h>
 
 #include <memory>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace rex::graphics {
@@ -30,6 +39,7 @@ class SpirvShader;
 namespace graw::native {
 
 class VulkanDevice;
+struct VulkanRenderTarget;
 class VulkanShaderCache;
 struct ShaderRef;
 
@@ -55,7 +65,7 @@ class VulkanBackend final : public Backend, public GuestMemoryMirror::Sink {
   void BeginFrame(uint64_t frame_index) override;
   void Draw(const DrawState& state, const DrawPrep* prep) override;
   void Clear(const ClearCall& clear) override;
-  void Resolve(const ResolveParams& params) override {}
+  void Resolve(const ResolveParams& params) override;
   SubmitResult SubmitEarly() override { return SubmitResult::kNotReady; }
   SwapResult Swap(const SwapCall& swap, std::optional<bool> own_window) override;
   void AfterSwap(uint64_t frame_index, uint64_t completed) override;
@@ -66,7 +76,7 @@ class VulkanBackend final : public Backend, public GuestMemoryMirror::Sink {
   const TextureStats& texture_stats() const override { return texture_stats_; }
   uint64_t texture_resident_bytes() const override { return 0; }
   uint64_t texture_count() const override { return 0; }
-  bool front_buffer_found() const override { return false; }
+  bool front_buffer_found() const override { return front_buffer_found_; }
   const LumaProbe& luma_probe() const override { return luma_; }
   double gpu_last_frame_ms() const override { return 0.0; }
   void LogGpuTiming() override {}
@@ -101,6 +111,18 @@ class VulkanBackend final : public Backend, public GuestMemoryMirror::Sink {
   std::atomic<bool>* paces_frames_ = nullptr;
   uint64_t frame_index_ = 0;
   DrawStats stats_;
+  bool front_buffer_found_ = false;
+  bool front_buffer_logged_ = false;
+  uint64_t resolves_ = 0, resolves_skipped_ = 0;
+  // Copies rt's (x0, y0, w, h) to (dx, dy) of the dest_w x dest_h image kept under `key` (a
+  // resolve's destination address), resolving MSAA; the image is then ready to be shown.
+  bool CopyTarget(VulkanRenderTarget* rt, int32_t x0, int32_t y0, int32_t w, int32_t h,
+                  int32_t dx, int32_t dy, uint32_t dest_w, uint32_t dest_h, uint32_t key);
+  // --graw_native_vulkan_show_target: this frame's draws and lowest drawn row per color target.
+  struct TargetUse {
+    uint32_t draws = 0, rows = 0;
+  };
+  std::unordered_map<VulkanRenderTarget*, TargetUse> target_use_;
   // Reasons draws were unsupported, logged once each.
   std::unordered_set<const char*> unsupported_seen_;
   uint32_t unsupported_logged_ = 0;

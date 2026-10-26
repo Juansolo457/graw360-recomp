@@ -149,4 +149,9 @@ clang 21.
    yet).
 
 A build made on a recent distribution needs that distribution's glibc (2.43 on Ubuntu 26.04),
-which SteamOS doesn't have: Deck builds will need an older build environment.
+which SteamOS doesn't have. For the Steam Deck, `tools/build-deck.sh` (needs `podman`) does steps
+3 and 4 in an Ubuntu 22.04 container (`tools/linux/deck.Containerfile`, the environment ReXGlue's
+own Linux releases are built in), with its own SDK checkout and build folder
+(`port-yeti/out/build/deck-amd64-relwithdebinfo`), and checks the result: the campaign and its
+libraries need glibc 2.35 and libstdc++ `GLIBCXX_3.4.32` (GCC 13) at most, and otherwise only
+X11, xcb and Wayland client libraries.

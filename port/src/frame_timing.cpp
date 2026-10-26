@@ -261,14 +261,21 @@ double g_anim_banked = 0;  // scaled game time since the last animation tick
 void GrawAnimStep(PPCRegister& f0, PPCRegister& f1) {
   if (!REXCVAR_GET(graw_anim_tick_60)) return;
   // Frames of a 60 Hz pace vary by a fraction of a millisecond: within 1.5 ms of 1/60 s a frame
-  // still is a tick, so at 60 fps and below every frame is one. On a tick the step covers the
-  // banked time, but not less than the game's own (floored) step, which is then unchanged.
+  // still is a tick, so at 60 fps and below every frame is one, with the game's own (floored)
+  // step. A tick that banked several frames steps by the banked time, at least 1/60 s, and what
+  // that minimum took ahead of game time is owed by the next tick: steps add up to game time
+  // (at 130 fps, flooring each tick to 1/60 s ran animation 8% fast).
   constexpr double kTick = 1.0 / 60.0, kSlack = 0.0015;
+  const bool fresh = g_anim_banked == 0;
   g_anim_banked += f0.f64;
   const bool tick = g_anim_banked >= kTick - kSlack || f0.f64 <= 0.0;
   if (tick) {
-    if (g_anim_banked > f1.f64) f1.f64 = g_anim_banked;
-    g_anim_banked = 0;
+    if (fresh || f0.f64 <= 0.0) {
+      g_anim_banked = 0;
+    } else {
+      f1.f64 = g_anim_banked > kTick ? g_anim_banked : kTick;
+      g_anim_banked -= f1.f64;
+    }
   }
   g_anim_tick.store(tick, std::memory_order_release);
 }

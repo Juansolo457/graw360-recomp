@@ -78,7 +78,12 @@ if ($Nx -or $Project -eq 'port-yeti-nx') {
 }
 if ($Native) { $nxArguments += @('--graw_native_primary=true') }
 elseif ($NativeSide) { $nxArguments += @('--graw_native=true') }
-if ($Fps -gt 0) { $nxArguments += @('--graw_present_interval=0', "--graw_max_fps=$Fps") }
+if ($Fps -gt 0) {
+    # The present-interval and animation-tick hooks are only in port-yeti's manifest: port-yeti-nx
+    # would run uncapped presents with animation at the wrong speed.
+    if ($Nx -or $Project -eq 'port-yeti-nx') { throw '-Fps needs port-yeti (its hooks are not in port-yeti-nx); drop -Nx.' }
+    $nxArguments += @('--graw_present_interval=0', "--graw_max_fps=$Fps")
+}
 $running = Get-Process -Name graw, grawmp, grawyeti -ErrorAction SilentlyContinue
 if ($running) { throw "GRAW is already running (pid $($running.Id -join ', ')). Quit it first." }
 $executable = Join-Path $port "out\build\win-amd64-$($Configuration.ToLowerInvariant())\$exeName.exe"

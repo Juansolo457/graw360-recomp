@@ -67,6 +67,7 @@ namespace graw::native {
   X(vkQueuePresentKHR)              \
   X(vkCreateShaderModule)           \
   X(vkDestroyShaderModule)          \
+  X(vkCmdCopyBufferToImage)         \
   X(vkCmdCopyBuffer)                \
   X(vkCreateDescriptorSetLayout)    \
   X(vkDestroyDescriptorSetLayout)   \
@@ -128,6 +129,11 @@ class VulkanDevice {
     uint32_t max_storage_buffer_range = 0;
     uint64_t min_uniform_buffer_offset_alignment = 256;
     bool geometry_shader = false;
+    // M4: samplers and textures.
+    bool sampler_anisotropy = false;
+    float max_sampler_anisotropy = 1.0f;
+    bool sampler_mirror_clamp_to_edge = false;
+    bool texture_compression_bc = false;
     bool full_draw_index_uint32 = false;
     bool vertex_pipeline_stores_and_atomics = false;
     bool fragment_stores_and_atomics = false;

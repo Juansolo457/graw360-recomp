@@ -97,6 +97,7 @@ class VulkanBackend final : public Backend, public GuestMemoryMirror::Sink {
   std::unique_ptr<VulkanDevice> device_;
   std::unique_ptr<VulkanShaderCache> shaders_;
   struct Gpu;  // memory, the shared buffer, upload pools (vulkan_backend.cpp)
+  struct ResolvedImage;  // a resolve destination (vulkan_backend.cpp)
   std::unique_ptr<Gpu> gpu_;
   GuestMemoryMirror mirror_;
   bool threaded_ = false;  // --graw_native_render_thread: Prepare runs on the guest thread
@@ -116,13 +117,26 @@ class VulkanBackend final : public Backend, public GuestMemoryMirror::Sink {
   uint64_t resolves_ = 0, resolves_skipped_ = 0;
   // Copies rt's (x0, y0, w, h) to (dx, dy) of the dest_w x dest_h image kept under `key` (a
   // resolve's destination address), resolving MSAA; the image is then ready to be shown.
+  // dest_format: the image's format (VK_FORMAT_UNDEFINED: rt's); another one is blitted.
   bool CopyTarget(VulkanRenderTarget* rt, int32_t x0, int32_t y0, int32_t w, int32_t h,
-                  int32_t dx, int32_t dy, uint32_t dest_w, uint32_t dest_h, uint32_t key);
+                  int32_t dx, int32_t dy, uint32_t dest_w, uint32_t dest_h, uint32_t key,
+                  VkFormat dest_format = VK_FORMAT_UNDEFINED);
+  // r, (re)created for the format and size (waiting for the GPU when it existed); null: failed.
+  ResolvedImage* EnsureImage(ResolvedImage& r, VkFormat format, uint32_t width,
+                             uint32_t height, const char* what);
+  bool CanBlit(VkFormat src, VkFormat dst);
+  std::unordered_map<uint64_t, bool> blit_support_;
   // --graw_native_vulkan_show_target: this frame's draws and lowest drawn row per color target.
   struct TargetUse {
     uint32_t draws = 0, rows = 0;
   };
   std::unordered_map<VulkanRenderTarget*, TargetUse> target_use_;
+  // M4: the views, samplers and signs of a shader's texture bindings (uploading what changed,
+  // which ends the rendering instance); appended to texture_views_ / samplers_.
+  void GetShaderTextures(const rex::graphics::SpirvShader& shader, const DrawState& state,
+                      uint8_t signs[32]);
+  std::vector<VkImageView> texture_views_;
+  std::vector<VkSampler> samplers_;
   // Reasons draws were unsupported, logged once each.
   std::unordered_set<const char*> unsupported_seen_;
   uint32_t unsupported_logged_ = 0;

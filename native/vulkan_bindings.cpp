@@ -39,6 +39,7 @@ VulkanBindings::~VulkanBindings() {
   for (VkDescriptorSetLayout l : {empty_layout_, shared_layout_, constants_layout_})
     if (l) fn.vkDestroyDescriptorSetLayout(d, l, nullptr);
   if (sampler_) fn.vkDestroySampler(d, sampler_, nullptr);
+  for (auto& [key, s] : samplers_) fn.vkDestroySampler(d, s, nullptr);
   for (VkImageView v : {view_2d_array_, view_cube_, view_3d_})
     if (v) fn.vkDestroyImageView(d, v, nullptr);
   if (memory_)
@@ -338,21 +339,75 @@ bool VulkanBindings::Upload(Constants& c, const void* data, uint32_t size, uint6
   return true;
 }
 
+VkSampler VulkanBindings::Sampler(const SamplerKey& k) {
+  auto it = samplers_.find(k.value());
+  if (it != samplers_.end()) return it->second;
+  const VulkanDevice::ShaderCaps& caps = device_.shader_caps();
+  VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+  const bool aniso = xenos::AnisoFilter(k.aniso) != xenos::AnisoFilter::kDisabled;
+  if (aniso && caps.sampler_anisotropy) {
+    si.anisotropyEnable = VK_TRUE;
+    si.maxAnisotropy = std::min(float(1u << (uint32_t(k.aniso) - 1)), caps.max_sampler_anisotropy);
+    si.magFilter = si.minFilter = VK_FILTER_LINEAR;
+    si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  } else {
+    si.magFilter = k.mag_linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+    si.minFilter = k.min_linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+    si.mipmapMode = k.mip_linear ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+  }
+  // xenos::ClampMode, as draw.cpp's SamplerDesc (halfway clamps are edge clamps already).
+  const VkSamplerAddressMode mirror_once = caps.sampler_mirror_clamp_to_edge
+                                               ? VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE
+                                               : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  const VkSamplerAddressMode modes[8] = {
+      VK_SAMPLER_ADDRESS_MODE_REPEAT,          VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT,
+      VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,   mirror_once,
+      VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,   mirror_once,
+      VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER, mirror_once,
+  };
+  si.addressModeU = modes[k.clamp_x & 7];
+  si.addressModeV = modes[k.clamp_y & 7];
+  si.addressModeW = modes[k.clamp_z & 7];
+  // Vulkan's fixed border colors: white, else transparent black (the 0.5-chroma blacks of the
+  // YCbCr border modes are close enough for now).
+  si.borderColor = xenos::BorderColor(k.border) == xenos::BorderColor::k_ABGR_White
+                       ? VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE
+                       : VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+  si.minLod = float(k.mip_min_level);
+  if (k.mip_base_map) {
+    si.maxLod = si.minLod + (aniso ? 0.0f : 0.25f);
+  } else {
+    si.maxLod = VK_LOD_CLAMP_NONE;
+  }
+  VkSampler sampler = VK_NULL_HANDLE;
+  if (!Check(device_.fn().vkCreateSampler(device_.device(), &si, nullptr, &sampler), "a sampler"))
+    sampler = VK_NULL_HANDLE;
+  samplers_.emplace(k.value(), sampler);
+  return sampler;
+}
+
 VkDescriptorSet VulkanBindings::TextureSet(const Layout& layout, bool vertex,
-                                           const SpirvShader& shader) {
+                                           const SpirvShader& shader,
+                                           const ShaderTextures& bound) {
   const auto& textures = shader.GetTextureBindingsAfterTranslation();
   const auto& samplers = shader.GetSamplerBindingsAfterTranslation();
   VkDescriptorSet set = AllocateSet(vertex ? layout.textures_vertex : layout.textures_pixel);
   if (!set) return VK_NULL_HANDLE;
   image_infos_.clear();
-  for (const SpirvShader::TextureBinding& t : textures) {
+  for (size_t n = 0; n < textures.size(); ++n) {
+    const SpirvShader::TextureBinding& t = textures[n];
     VkDescriptorImageInfo& i = image_infos_.emplace_back();
-    i.imageView = t.dimension == xenos::FetchOpDimension::k3DOrStacked ? view_3d_
-                  : t.dimension == xenos::FetchOpDimension::kCube      ? view_cube_
-                                                                        : view_2d_array_;
+    i.imageView = bound.views ? bound.views[n] : VK_NULL_HANDLE;
+    if (!i.imageView)
+      i.imageView = t.dimension == xenos::FetchOpDimension::k3DOrStacked ? view_3d_
+                    : t.dimension == xenos::FetchOpDimension::kCube      ? view_cube_
+                                                                          : view_2d_array_;
     i.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   }
-  for (size_t s = 0; s < samplers.size(); ++s) image_infos_.emplace_back().sampler = sampler_;
+  for (size_t n = 0; n < samplers.size(); ++n) {
+    const VkSampler s = bound.samplers ? bound.samplers[n] : VK_NULL_HANDLE;
+    image_infos_.emplace_back().sampler = s ? s : sampler_;
+  }
   VkWriteDescriptorSet w[2] = {};
   uint32_t n = 0;
   if (!textures.empty()) {
@@ -379,7 +434,8 @@ VkDescriptorSet VulkanBindings::TextureSet(const Layout& layout, bool vertex,
 
 bool VulkanBindings::Bind(VkCommandBuffer cmd, const Layout& layout, const uint32_t* regs,
                           const SpirvShader& vs, const SpirvShader* ps,
-                          const SpirvShaderTranslator::SystemConstants& sys, uint64_t frame) {
+                          const SpirvShaderTranslator::SystemConstants& sys, uint64_t frame,
+                          const ShaderTextures& vs_textures, const ShaderTextures& ps_textures) {
   BeginFrame(frame);
   auto fail = [this](const char* what) {
     if (!bind_failed_logged_) {
@@ -448,10 +504,10 @@ bool VulkanBindings::Bind(VkCommandBuffer cmd, const Layout& layout, const uint3
   VkDescriptorSet sets[T::kDescriptorSetCount] = {shared_set_, constants_set_, VK_NULL_HANDLE,
                                                   VK_NULL_HANDLE};
   if (layout.textures_vertex != empty_layout_ &&
-      !(sets[T::kDescriptorSetTexturesVertex] = TextureSet(layout, true, vs)))
+      !(sets[T::kDescriptorSetTexturesVertex] = TextureSet(layout, true, vs, vs_textures)))
     return fail("vertex texture descriptor set");
   if (ps && layout.textures_pixel != empty_layout_ &&
-      !(sets[T::kDescriptorSetTexturesPixel] = TextureSet(layout, false, *ps)))
+      !(sets[T::kDescriptorSetTexturesPixel] = TextureSet(layout, false, *ps, ps_textures)))
     return fail("pixel texture descriptor set");
 
   // Sets 0 and 1, then the texture sets the shaders have.

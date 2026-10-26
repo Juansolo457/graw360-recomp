@@ -27,6 +27,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "guest_draw_state.h"  // SamplerKey
 #include "spirv_translate.h"
 
 namespace graw::native {
@@ -36,6 +37,14 @@ struct VulkanBindingStats {
   uint64_t constant_uploads = 0;  // constant buffers uploaded (not reused)
   uint64_t constant_bytes = 0;
   uint64_t constant_set_reuses = 0;  // draws that kept the previous constants set
+};
+
+// A shader's textures and samplers for its descriptor set, in the order of its bindings
+// (GetTextureBindingsAfterTranslation / GetSamplerBindingsAfterTranslation). A null array, or a
+// VK_NULL_HANDLE entry, binds the placeholder (of the binding's dimension) or sampler.
+struct ShaderTextures {
+  const VkImageView* views = nullptr;  // SHADER_READ_ONLY_OPTIMAL
+  const VkSampler* samplers = nullptr;
 };
 
 class VulkanBindings {
@@ -67,7 +76,12 @@ class VulkanBindings {
   // (their bindings are known); ps null without a pixel shader. False on failure (logged once).
   bool Bind(VkCommandBuffer cmd, const Layout& layout, const uint32_t* regs, const SpirvShader& vs,
             const SpirvShader* ps, const SpirvShaderTranslator::SystemConstants& sys,
-            uint64_t frame);
+            uint64_t frame, const ShaderTextures& vs_textures = {},
+            const ShaderTextures& ps_textures = {});
+
+  // The sampler of a guest sampler state, created on first use (M4).
+  VkSampler Sampler(const SamplerKey& key);
+  size_t sampler_count() const { return samplers_.size(); }
 
   // After the frame's submission: uniform memory of completed frames is recycled.
   void EndFrame(uint64_t completed) { uniforms_.EndFrame(completed); }
@@ -90,7 +104,8 @@ class VulkanBindings {
   VkDescriptorPool NewPool();
   void BeginFrame(uint64_t frame);
   // Writes a texture set for the shader's bindings with the placeholders.
-  VkDescriptorSet TextureSet(const Layout& layout, bool vertex, const SpirvShader& shader);
+  VkDescriptorSet TextureSet(const Layout& layout, bool vertex, const SpirvShader& shader,
+                             const ShaderTextures& textures);
   bool Check(VkResult r, const char* what);
 
   VulkanDevice& device_;
@@ -125,6 +140,7 @@ class VulkanBindings {
   VkImageView view_2d_array_ = VK_NULL_HANDLE, view_cube_ = VK_NULL_HANDLE,
               view_3d_ = VK_NULL_HANDLE;
   VkSampler sampler_ = VK_NULL_HANDLE;
+  std::unordered_map<uint32_t, VkSampler> samplers_;  // by SamplerKey::value
   bool placeholders_ready_ = false;
 
   std::vector<VkDescriptorImageInfo> image_infos_;

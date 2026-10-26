@@ -431,6 +431,37 @@ M4's render target work). **2.5 ms per frame** to record and submit ~2,115 draws
 copies (D3D12: 4.4-5.3 ms), 16.7 ms frames, 0 stale pages, 0 errors. With validation and the
 front buffer: 0 errors; the front buffer was found and shown (flat, as above).
 
+## M4 status (2026-10-26): textures and samplers
+**Done: the game is visible on Vulkan through its own final passes** (scene, post-processing,
+HUD markers). Not yet the whole HUD or the right colors everywhere.
+- **Texture cache (`vulkan_textures.h`):** one image per `TextureKey`, untiled on the CPU
+  (`texture_layout.h`, shared with D3D12) into upload memory and copied with
+  `vkCmdCopyBufferToImage`. Physical memory invalidation callbacks mark textures written since
+  their upload. Views are made per signedness and swizzle as the translator's bindings want them
+  (2D array for 1D/2D/stacked, cube, 3D). Not yet: worker-thread untiling, eviction.
+- **Signs:** each fetch constant's `SwizzleSigns` go into the system constants. Signed bindings
+  get the signed view (MUTABLE images) when the format has one, else the placeholder.
+- **Samplers:** cached per `SamplerKey` (filters, address modes including mirror-once via
+  `samplerMirrorClampToEdge`, white or transparent-black border, anisotropy, mip clamps).
+- **Resolve images as textures:** a 2D, single-level texture at a resolve destination binds that
+  image. Resolve images are now SHADER_READ_ONLY between uses. A resolve into another format
+  (the HDR scene, 16-bit float, into `k_2_10_10_10`) is a `vkCmdBlitImage` conversion, through
+  a single-sample copy when the target has MSAA. Without exponent bias yet (M5).
+- **Device:** `textureCompressionBC` and `samplerMirrorClampToEdge` are enabled when supported.
+
+**Test** (GRAW save, 120 s, coherency check on): 382 textures, 0 unsupported formats, 0
+failures, ~3,500 uploads; resolve images bound ~320,000 times with 0 format mismatches; 12
+samplers. With validation: 0 errors (10 warnings: a pixel shader writing a color output with
+no attachment bound, harmless). Without validation: 16.7-17.7 ms frames, 2.7-3.7 ms to record.
+The front buffer shows the mission: textured buildings, the readable sign, the squad, the
+crosshair and the waypoint markers.
+**Left, for the next steps:**
+- the HUD panels, text and frame: quad lists (56 per frame) need the geometry shaders;
+- wrong colors on some materials (the soldiers' gear in reds/blues, a green helmet) and the dot
+  pattern over the soldiers and lit windows: to compare with D3D12 per draw (formats, signs,
+  swizzles, the MSAA targets);
+- the image is darker and flatter than D3D12: the resolves' exponent bias, the gamma ramp (M5).
+
 ## Risks
 - **The SPIR-V translator's output for GRAW is unproven.** M0 exists to find gaps before
   anything else is built.

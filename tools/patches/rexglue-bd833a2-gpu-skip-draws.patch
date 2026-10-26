@@ -1,0 +1,126 @@
+diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
+index da8e432..503682c 100644
+--- a/include/rex/graphics/command_processor.h
++++ b/include/rex/graphics/command_processor.h
+@@ -129,6 +129,13 @@ class CommandProcessor {
+   bool Save(::rex::stream::ByteStream* stream);
+   bool Restore(::rex::stream::ByteStream* stream);
+ 
++  // The display gamma ramps as the guest's DC_LUT register writes left them, for presenters
++  // outside the backend. Written on the command processor thread.
++  const reg::DC_LUT_30_COLOR* gamma_ramp_256_entry_table() const {
++    return gamma_ramp_256_entry_table_;
++  }
++  const reg::DC_LUT_PWL_DATA* gamma_ramp_pwl_rgb() const { return gamma_ramp_pwl_rgb_[0]; }
++
+  protected:
+   struct IndexBufferInfo {
+     xenos::IndexFormat format = xenos::IndexFormat::kInt16;
+@@ -158,10 +165,6 @@ class CommandProcessor {
+   void WriteLoopRangeFromMem(uint32_t start_index, uint32_t* base, uint32_t num_registers);
+   void WriteREGISTERSRangeFromMem(uint32_t start_index, uint32_t* base, uint32_t num_registers);
+ 
+-  const reg::DC_LUT_30_COLOR* gamma_ramp_256_entry_table() const {
+-    return gamma_ramp_256_entry_table_;
+-  }
+-  const reg::DC_LUT_PWL_DATA* gamma_ramp_pwl_rgb() const { return gamma_ramp_pwl_rgb_[0]; }
+   virtual void OnGammaRamp256EntryTableValueWritten() {}
+   virtual void OnGammaRampPWLValueWritten() {}
+ 
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index a744375..8ba29fa 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -80,6 +80,12 @@ REXCVAR_DEFINE_BOOL(async_shader_compilation, true, "GPU",
+                     "pipelines are being prepared.")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
++REXCVAR_DEFINE_BOOL(gpu_skip_draws, false, "GPU",
++                    "Skip all host GPU work for draws, resolves, shader loads and swaps, for a "
++                    "host renderer that draws the guest's frames itself; fences, register and "
++                    "memory write-backs and interrupts still run")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
+ namespace rex::graphics {
+ 
+ using namespace rex::graphics::xenos;
+@@ -1259,6 +1265,11 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* re
+   // This command is send on query begin and end.
+   // As a workaround report some fixed amount of passed samples.
+   auto fake_sample_count = REXCVAR_GET(query_occlusion_fake_sample_count);
++  // Nothing is drawn to count samples of: report passed samples even when the fake count is
++  // disabled, so the title does not treat everything as occluded.
++  if (REXCVAR_GET(gpu_skip_draws) && fake_sample_count < 0) {
++    fake_sample_count = 1000;
++  }
+   if (fake_sample_count >= 0) {
+     auto* pSampleCounts = memory_->TranslatePhysical<xe_gpu_depth_sample_counts*>(
+         register_file_->values[XE_GPU_REG_RB_SAMPLE_COUNT_ADDR]);
+@@ -1370,7 +1381,8 @@ bool CommandProcessor::ExecutePacketType3Draw(memory::RingBuffer* reader, uint32
+ 
+   if (draw_succeeded) {
+     auto viz_query = register_file_->Get<reg::PA_SC_VIZ_QUERY>();
+-    if (!(viz_query.viz_query_ena && viz_query.kill_pix_post_hi_z)) {
++    if (!(viz_query.viz_query_ena && viz_query.kill_pix_post_hi_z) &&
++        !REXCVAR_GET(gpu_skip_draws)) {
+       // TODO(Triang3l): Don't drop the draw call completely if the vertex
+       // shader has memexport.
+       // TODO(Triang3l || JoelLinn): Handle this properly in the render
+@@ -1524,6 +1536,11 @@ bool CommandProcessor::ExecutePacketType3_IM_LOAD(memory::RingBuffer* reader, ui
+   uint32_t size_dwords = start_size & 0xFFFF;  // dwords
+   assert_true(start == 0);
+ 
++  // With gpu_skip_draws the active shaders stay as they were; after it is turned off, draws use
++  // them until the title loads the next shader of each type.
++  if (REXCVAR_GET(gpu_skip_draws)) {
++    return true;
++  }
+   auto shader =
+       LoadShader(shader_type, addr, memory_->TranslatePhysical<uint32_t*>(addr), size_dwords);
+   switch (shader_type) {
+@@ -1554,6 +1571,10 @@ bool CommandProcessor::ExecutePacketType3_IM_LOAD_IMMEDIATE(memory::RingBuffer*
+   assert_true(start == 0);
+   assert_true(reader->read_count() >= size_dwords * 4);
+   assert_true(count - 2 >= size_dwords);
++  if (REXCVAR_GET(gpu_skip_draws)) {
++    reader->AdvanceRead(size_dwords * sizeof(uint32_t));
++    return true;
++  }
+   auto shader = LoadShader(shader_type, uint32_t(reader->read_ptr()),
+                            reinterpret_cast<uint32_t*>(reader->read_ptr()), size_dwords);
+   switch (shader_type) {
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index 19874a5..5782755 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -47,6 +47,8 @@ REXCVAR_DEFINE_BOOL(d3d12_submit_on_primary_buffer_end, true, "GPU/D3D12",
+                     "Submit command list when PM4 primary buffer ends")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
++REXCVAR_DECLARE(bool, gpu_skip_draws);
++
+ namespace rex::graphics::d3d12 {
+ 
+ // Generated with `xb buildshaders`.
+@@ -152,7 +154,8 @@ void D3D12CommandProcessor::InitializeShaderStorage(const std::filesystem::path&
+ 
+ bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* reader,
+                                                                uint32_t packet, uint32_t count) {
+-  if (!REXCVAR_GET(occlusion_query_enable) || !occlusion_query_resources_available_) {
++  if (!REXCVAR_GET(occlusion_query_enable) || !occlusion_query_resources_available_ ||
++      REXCVAR_GET(gpu_skip_draws)) {
+     return CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(reader, packet, count);
+   }
+ 
+@@ -1910,6 +1913,11 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+     REXGPU_ERROR("IssueSwap: BeginSubmission failed");
+     return;
+   }
++  // Nothing to present, but the frame still ends here so its per-frame resources are released.
++  if (REXCVAR_GET(gpu_skip_draws)) {
++    EndSubmission(true);
++    return;
++  }
+ 
+   // Obtain the actual swap source texture size (resolution-scaled if it's a
+   // resolve destination, or not otherwise).

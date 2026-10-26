@@ -195,10 +195,11 @@ void GrawSleepUs(int64_t us) {
 void GrawRingWaitYield() { GrawSleepUs(REXCVAR_GET(graw_ring_wait_sleep_us)); }
 #else
 void GrawSleepUs(int64_t us) {
+  // nanosleep: sub-millisecond on Linux.
   if (us > 0) std::this_thread::sleep_for(std::chrono::microseconds(us));
 }
 
-void GrawRingWaitYield() {}
+void GrawRingWaitYield() { GrawSleepUs(REXCVAR_GET(graw_ring_wait_sleep_us)); }
 #endif
 
 #include <rex/ppc/context.h>

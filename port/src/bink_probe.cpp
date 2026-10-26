@@ -27,10 +27,7 @@
 #include <rex/system/xmemory.h>
 #include <rex/types.h>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
+#include "host_memory.h"
 
 REXCVAR_DEFINE_BOOL(graw_debug_bink, false, "GRAW",
                     "Log the campaign's Bink video objects (Cross-Com, #2): ready flag, state, "
@@ -43,17 +40,7 @@ uint8_t* Base() { return rex::system::kernel_memory()->virtual_membase(); }
 
 bool Readable(uint32_t a, size_t n) {
   if (a < 0x10000 || a >= 0xC0000000u) return false;
-  const uint8_t* p = Base() + a;
-  const uint8_t* end = p + n;
-  while (p < end) {
-    MEMORY_BASIC_INFORMATION info;
-    if (!VirtualQuery(p, &info, sizeof(info)) || info.State != MEM_COMMIT ||
-        (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) || info.Protect == 0) {
-      return false;
-    }
-    p = static_cast<const uint8_t*>(info.BaseAddress) + info.RegionSize;
-  }
-  return true;
+  return graw::HostReadable(Base() + a, n);
 }
 
 uint32_t Load32(uint32_t a) {

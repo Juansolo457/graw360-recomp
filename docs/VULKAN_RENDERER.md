@@ -335,6 +335,41 @@ per-draw comparison.
 | Vulkan (validation on) | 0 errors, 0 warnings | 0 / 0 | 717 KB | 2,113 | 24 |
 | D3D12 | - | 0 / 0 (GPU readback too) | 732 KB | 2,098 | 27 |
 
+## M3c-2 status (2026-10-26): descriptor sets and constants
+**Done.**
+- **`vulkan_bindings.h/.cpp`:** the SPIR-V translator's binding model (four sets, no push
+  constants):
+  - set 0: shared memory, `1 << GetSharedMemoryStorageBufferCountLog2` storage buffer bindings
+    (one on the 4090), written once;
+  - set 1: the five constant buffers, with the SDK's stage flags (system constants also to
+    geometry shaders when supported);
+  - sets 2/3: vertex/pixel sampled images then samplers, the empty layout without any;
+  - pipeline layouts cached by the four counts;
+  - descriptor pools per frame in flight, reset when the slot comes round, another added when
+    full;
+  - constant buffers in a per-frame uniform pool, uploaded again only when their contents
+    change within the frame; the constants set is kept when none changed;
+  - placeholder textures: 1x1 transparent black 2D array (cube compatible), cube and 3D views
+    and one sampler, cleared before the first draw.
+- **`FillSpirvSystemConstants` (`spirv_translate.cpp`):** `UpdateSystemConstantValues` for the
+  host render target path, with D3D12's choices (host index buffer, no float24 flag, no gamma
+  flag, snorm16 full range). Texture signs are unsigned (placeholders); `texture_swizzles` stays
+  0 (image view swizzles, which desktop GPUs and RADV have).
+- **`VulkanBackend::Draw`:** after the modules, fills the system constants and binds the sets;
+  still not drawn (counted as unsupported). The log has a bindings line every 150 frames.
+
+**Test** (GRAW save, 120 s, coherency check on):
+
+| | validation | stale/late pages | draws/frame | draw time/frame | frame time |
+|---|---|---|---|---|---|
+| Vulkan (validation on) | 0 errors, 0 warnings | 0 / 0 | 2,111 | 24.0 ms (M3c-1: 0.57 ms) | 24.5 ms |
+| D3D12 | - | 0 / 0 | 2,052 | 5.34 ms (before: 5.36 ms) | 16.7 ms |
+
+About 1.1 descriptor sets and 1.6 constant uploads per draw (about 4 MB of uniforms a frame;
+float constants change on most draws). The Vulkan draw time is with the validation layer, which
+checks every descriptor update; it still needs a run without validation before it says anything
+about the code.
+
 ## Risks
 - **The SPIR-V translator's output for GRAW is unproven.** M0 exists to find gaps before
   anything else is built.

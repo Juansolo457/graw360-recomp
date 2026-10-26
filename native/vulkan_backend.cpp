@@ -3,6 +3,7 @@
 
 #include "vulkan_device.h"  // first: the Vulkan platform defines
 #include "game_window.h"
+#include "vulkan_bindings.h"
 #include "vulkan_memory.h"
 #include "vulkan_shaders.h"
 
@@ -32,6 +33,10 @@ struct VulkanBackend::Gpu {
   // Vertex and index ranges copied into shared memory (the guest thread's with the render
   // thread: tagged by Prepare, recycled at EndFramePrepare).
   VulkanUploadPool vertex_upload{16u << 20, VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+  // Descriptor sets, pipeline layouts, constant buffers, placeholder textures (the recording
+  // thread's).
+  VulkanBindings bindings;
+  explicit Gpu(VulkanDevice& device) : bindings(device) {}
   ~Gpu() { memory.Destroy(shared); }
 };
 
@@ -54,7 +59,7 @@ bool VulkanBackend::Initialize(const Options& o) {
   rex::memory::Memory* memory = rex::system::kernel_memory();
   membase_ = memory->physical_membase();
 
-  gpu_ = std::make_unique<Gpu>();
+  gpu_ = std::make_unique<Gpu>(*device_);
   if (!gpu_->memory.Initialize(*device_)) return false;
   gpu_->vertex_upload.SetMemory(&gpu_->memory);
   if (!gpu_->memory.CreateBuffer(GuestMemoryMirror::kSharedMemorySize,
@@ -63,6 +68,7 @@ bool VulkanBackend::Initialize(const Options& o) {
                                      VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                                  false, &gpu_->shared, "shared memory buffer (512 MB)"))
     return false;
+  if (!gpu_->bindings.Initialize(gpu_->memory, gpu_->shared.buffer)) return false;
   threaded_ = REXCVAR_GET(graw_native_render_thread);
   if (!mirror_.Initialize(memory, this, REXCVAR_GET(graw_native_watch_trace),
                           REXCVAR_GET(graw_native_coherency_check)))
@@ -71,8 +77,8 @@ bool VulkanBackend::Initialize(const Options& o) {
                       threaded_ ? &prep_uploads_ : &stats_.uploads,
                       threaded_ ? &prep_diag_ : &diag_);
   REXLOG_INFO(
-      "GRAW native Vulkan: up; draws aren't recorded yet (M3c-1: shaders, guest memory, cleared "
-      "frames)");
+      "GRAW native Vulkan: up; draws aren't recorded yet (M3c-2: shaders, guest memory, "
+      "descriptor sets, cleared frames)");
   return true;
 }
 
@@ -186,10 +192,39 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
       return;
     }
   }
-  const bool ok = shaders_->Module(*vs, mods.vertex) &&
-                  (!mods.pixel_shader_used || shaders_->Module(*ps, mods.pixel));
-  // M3c-1: shaders and vertex data ready, not drawn yet.
-  if (ok)
+  if (!mods.pixel_shader_used) ps = nullptr;
+  if (!shaders_->Module(*vs, mods.vertex) || (ps && !shaders_->Module(*ps, mods.pixel))) {
+    ++stats_.failed;
+    return;
+  }
+
+  // The descriptor sets (both shaders are translated now: their bindings are known), with the
+  // system constants as UpdateSystemConstantValues sets them for the host render target path.
+  const RegisterFile& regs = *reinterpret_cast<const RegisterFile*>(state.regs);
+  const auto prim = xenos::PrimitiveType(state.primitive);
+  const bool polygonal = rex::graphics::draw_util::IsPrimitivePolygonal(false, prim);
+  xenos::Endian index_endian = xenos::Endian::kNone;
+  if (state.indexed) {
+    index_endian = xenos::Endian(state.index_endian);
+    if (!state.index_32bit && index_endian != xenos::Endian::kNone &&
+        index_endian != xenos::Endian::k8in16)
+      index_endian =
+          index_endian == xenos::Endian::k8in32 ? xenos::Endian::k8in16 : xenos::Endian::kNone;
+  }
+  ViewportInfo vp;
+  HostViewportInfo(regs, ps && ps->writes_depth(), vp);
+  const uint32_t used_textures = vs->GetUsedTextureMaskAfterTranslation() |
+                                 (ps ? ps->GetUsedTextureMaskAfterTranslation() : 0);
+  static constexpr uint8_t kUnsignedSigns[32] = {};  // M3c-2: placeholder textures
+  SpirvShaderTranslator::SystemConstants sys;
+  FillSpirvSystemConstants(regs, prim, polygonal, index_endian, vp, used_textures, kUnsignedSigns,
+                           sys);
+  VulkanBindings& bindings = gpu_->bindings;
+  VkCommandBuffer cmd = device_->command_buffer();
+  bindings.InitializePlaceholders(cmd);
+  const VulkanBindings::Layout* layout = bindings.GetLayout(*vs, ps);
+  // M3c-2: shaders, vertex data and descriptor sets ready, not drawn yet.
+  if (layout && bindings.Bind(cmd, *layout, state.regs, *vs, ps, sys, device_->frame_fence()))
     ++stats_.unsupported;
   else
     ++stats_.failed;
@@ -226,6 +261,7 @@ void VulkanBackend::AfterSwap(uint64_t frame_index, uint64_t completed) {
   stats_.watch_arm_ns = mirror_.watch_arm_ns.exchange(0, std::memory_order_relaxed);
   stats_.hash_pages = mirror_.hash_pages.exchange(0, std::memory_order_relaxed);
   stats_.hash_copies = mirror_.hash_copies.exchange(0, std::memory_order_relaxed);
+  gpu_->bindings.EndFrame(completed);
   if (!threaded_) {
     mirror_.watch_frame.fetch_add(1, std::memory_order_relaxed);
     gpu_->vertex_upload.EndFrame(completed);
@@ -272,6 +308,10 @@ Backend::SwapResult VulkanBackend::Swap(const SwapCall& swap, std::optional<bool
                 "{:.0f} us), {} modules, {} failed",
                 s.shaders, s.translations, s.translate_us, s.max_translate_us, s.modules,
                 s.failures);
+    const VulkanBindingStats& b = gpu_->bindings.stats();
+    REXLOG_INFO("GRAW native Vulkan bindings: {} descriptor sets, {} constant uploads ({} KB), "
+                "{} draws kept the constants set",
+                b.sets, b.constant_uploads, b.constant_bytes >> 10, b.constant_set_reuses);
   }
   r.fence = device_->frame_fence();
   if (!device_->EndFrame(window_taken_, color)) return r;

@@ -66,7 +66,21 @@ namespace graw::native {
   X(vkQueuePresentKHR)              \
   X(vkCreateShaderModule)           \
   X(vkDestroyShaderModule)          \
-  X(vkCmdCopyBuffer)
+  X(vkCmdCopyBuffer)                \
+  X(vkCreateDescriptorSetLayout)    \
+  X(vkDestroyDescriptorSetLayout)   \
+  X(vkCreatePipelineLayout)         \
+  X(vkDestroyPipelineLayout)        \
+  X(vkCreateDescriptorPool)         \
+  X(vkDestroyDescriptorPool)        \
+  X(vkResetDescriptorPool)          \
+  X(vkAllocateDescriptorSets)       \
+  X(vkUpdateDescriptorSets)         \
+  X(vkCmdBindDescriptorSets)        \
+  X(vkCreateImageView)              \
+  X(vkDestroyImageView)             \
+  X(vkCreateSampler)                \
+  X(vkDestroySampler)
 
 class VulkanDevice {
  public:
@@ -91,6 +105,8 @@ class VulkanDevice {
   struct ShaderCaps {
     uint32_t api_version = 0;
     uint32_t max_storage_buffer_range = 0;
+    uint64_t min_uniform_buffer_offset_alignment = 256;
+    bool geometry_shader = false;
     bool full_draw_index_uint32 = false;
     bool vertex_pipeline_stores_and_atomics = false;
     bool fragment_stores_and_atomics = false;

@@ -260,8 +260,10 @@ bool VulkanDevice::CreateDevice() {
   if (get_props2) get_props2(physical_, &props2);
   caps_.api_version = props.apiVersion;
   caps_.max_storage_buffer_range = props.limits.maxStorageBufferRange;
+  caps_.min_uniform_buffer_offset_alignment = props.limits.minUniformBufferOffsetAlignment;
   const VkPhysicalDeviceFeatures& sf = supported.features;
   caps_.full_draw_index_uint32 = sf.fullDrawIndexUint32;
+  caps_.geometry_shader = sf.geometryShader;
   caps_.vertex_pipeline_stores_and_atomics = sf.vertexPipelineStoresAndAtomics;
   caps_.fragment_stores_and_atomics = sf.fragmentStoresAndAtomics;
   caps_.clip_distance = sf.shaderClipDistance;

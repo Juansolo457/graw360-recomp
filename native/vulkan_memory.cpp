@@ -64,6 +64,23 @@ void VulkanMemory::Destroy(Buffer& buffer) {
   buffer = Buffer{};
 }
 
+bool VulkanMemory::CreateImage(const VkImageCreateInfo& info, Image* out, const char* what) {
+  VmaAllocationCreateInfo ai = {};
+  ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+  const VkResult r = vmaCreateImage(allocator_, &info, &ai, &out->image, &out->allocation, nullptr);
+  if (r != VK_SUCCESS) {
+    REXLOG_ERROR("GRAW native Vulkan: {} failed ({})", what, int(r));
+    *out = Image{};
+    return false;
+  }
+  return true;
+}
+
+void VulkanMemory::Destroy(Image& image) {
+  if (image.image) vmaDestroyImage(allocator_, image.image, image.allocation);
+  image = Image{};
+}
+
 VulkanUploadPool::~VulkanUploadPool() {
   for (auto* list : {&active_, &retired_, &free_})
     for (auto& b : *list) Release(b);

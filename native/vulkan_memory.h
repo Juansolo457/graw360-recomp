@@ -1,7 +1,7 @@
 // GRAW native renderer: memory for the Vulkan backend (docs/VULKAN_RENDERER.md, M3c).
 //
 // VulkanMemory: a Vulkan Memory Allocator (VMA, from the SDK source tree; implemented in
-// vulkan_memory.cpp, as the prebuilt SDK has no Vulkan) and buffers made with it.
+// vulkan_memory.cpp, as the prebuilt SDK has no Vulkan) and the buffers and images made with it.
 // VulkanUploadPool: CPU-to-GPU upload memory in persistently mapped host-visible blocks,
 // sub-allocated linearly and recycled once the GPU finished the frame that used them; the
 // Vulkan counterpart of upload_pool.h, with the same tags (fence values: frame numbers).
@@ -28,6 +28,11 @@ class VulkanMemory {
     uint64_t size = 0;
   };
 
+  struct Image {
+    VkImage image = VK_NULL_HANDLE;
+    VmaAllocation_T* allocation = nullptr;
+  };
+
   ~VulkanMemory();
   bool Initialize(const VulkanDevice& device);
 
@@ -36,6 +41,9 @@ class VulkanMemory {
   bool CreateBuffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, Buffer* out,
                     const char* what);
   void Destroy(Buffer& buffer);
+  // Device-local.
+  bool CreateImage(const VkImageCreateInfo& info, Image* out, const char* what);
+  void Destroy(Image& image);
 
  private:
   VmaAllocator_T* allocator_ = nullptr;

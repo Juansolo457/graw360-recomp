@@ -6,7 +6,10 @@
 // get shader modules (vulkan_shaders.h).
 // M3c-1: guest memory mirrored in a shared-memory storage buffer through GuestMemoryMirror (this
 // backend is its Sink): each draw's vertex and index ranges are copied there; the draws aren't
-// recorded yet. Primary mode only (--graw_native_primary), selected with --graw_native_api=vulkan.
+// recorded yet.
+// M3c-2: each draw's descriptor sets (vulkan_bindings.h): shared memory, the five constant
+// buffers with the system constants, placeholder textures, bound for its pipeline layout.
+// Primary mode only (--graw_native_primary), selected with --graw_native_api=vulkan.
 #pragma once
 
 #include "backend.h"

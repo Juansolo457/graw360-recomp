@@ -7,7 +7,9 @@
 #include <rex/graphics/registers.h>
 #include <rex/graphics/xenos.h>
 
+#include <algorithm>
 #include <bit>
+#include <cstring>
 
 namespace graw::native {
 
@@ -91,6 +93,79 @@ ShaderModifications SelectSpirvModifications(const SpirvShaderTranslator& transl
           : DepthStencilMode::kNoModifiers;
   out.pixel = pm.value;
   return out;
+}
+
+void FillSpirvSystemConstants(const RegisterFile& regs, xenos::PrimitiveType prim, bool polygonal,
+                              xenos::Endian index_endian, const ViewportInfo& vp,
+                              uint32_t used_textures, const uint8_t* signs,
+                              SpirvShaderTranslator::SystemConstants& sys) {
+  using T = SpirvShaderTranslator;
+  std::memset(&sys, 0, sizeof(sys));
+  auto vte = regs.Get<reg::PA_CL_VTE_CNTL>();
+  auto clip = regs.Get<reg::PA_CL_CLIP_CNTL>();
+  auto colorcontrol = regs.Get<reg::RB_COLORCONTROL>();
+  auto surface_info = regs.Get<reg::RB_SURFACE_INFO>();
+  uint32_t flags = 0;
+  if (vte.vtx_xy_fmt) flags |= T::kSysFlag_XYDividedByW;
+  if (vte.vtx_z_fmt) flags |= T::kSysFlag_ZDividedByW;
+  if (vte.vtx_w0_fmt) flags |= T::kSysFlag_WNotReciprocal;
+  if (polygonal) flags |= T::kSysFlag_PrimitivePolygonal;
+  if (rex::graphics::draw_util::IsPrimitiveLine(false, prim)) flags |= T::kSysFlag_PrimitiveLine;
+  flags |= uint32_t(surface_info.msaa_samples) << T::kSysFlag_MsaaSamples_Shift;
+  const xenos::CompareFunction alpha_func = colorcontrol.alpha_test_enable
+                                                ? colorcontrol.alpha_func
+                                                : xenos::CompareFunction::kAlways;
+  flags |= uint32_t(alpha_func) << T::kSysFlag_AlphaPassIfLess_Shift;
+  sys.flags = flags;
+  sys.vertex_index_endian = index_endian;
+  sys.vertex_base_index = regs.Get<int32_t>(rex::graphics::XE_GPU_REG_VGT_INDX_OFFSET);
+  sys.vertex_index_min = regs.Get<reg::VGT_MIN_VTX_INDX>().min_indx;
+  sys.vertex_index_max = regs.Get<reg::VGT_MAX_VTX_INDX>().max_indx;
+  if (!clip.clip_disable) {
+    float* ucp = sys.user_clip_planes[0];
+    uint32_t remaining = clip.ucp_ena;
+    while (remaining) {
+      uint32_t i = uint32_t(std::countr_zero(remaining));
+      remaining &= remaining - 1;
+      std::memcpy(ucp, &regs[rex::graphics::XE_GPU_REG_PA_CL_UCP_0_X + i * 4], 4 * sizeof(float));
+      ucp += 4;
+    }
+  }
+  sys.tessellation_factor_range_min =
+      regs.Get<float>(rex::graphics::XE_GPU_REG_VGT_HOS_MIN_TESS_LEVEL) + 1.0f;
+  sys.tessellation_factor_range_max =
+      regs.Get<float>(rex::graphics::XE_GPU_REG_VGT_HOS_MAX_TESS_LEVEL) + 1.0f;
+  for (uint32_t i = 0; i < 3; ++i) {
+    sys.ndc_scale[i] = vp.ndc_scale[i];
+    sys.ndc_offset[i] = vp.ndc_offset[i];
+  }
+  if (prim == xenos::PrimitiveType::kPointList) {
+    auto minmax = regs.Get<reg::PA_SU_POINT_MINMAX>();
+    auto size = regs.Get<reg::PA_SU_POINT_SIZE>();
+    sys.point_vertex_diameter_min = float(minmax.min_size) * (2.0f / 16.0f);
+    sys.point_vertex_diameter_max = float(minmax.max_size) * (2.0f / 16.0f);
+    sys.point_constant_diameter[0] = float(size.width) * (2.0f / 16.0f);
+    sys.point_constant_diameter[1] = float(size.height) * (2.0f / 16.0f);
+    sys.point_screen_diameter_to_ndc_radius[0] = 1.0f / float(std::max(vp.xy_extent[0], 1u));
+    sys.point_screen_diameter_to_ndc_radius[1] = 1.0f / float(std::max(vp.xy_extent[1], 1u));
+  }
+  uint32_t remaining = used_textures;
+  while (remaining) {
+    uint32_t i = uint32_t(std::countr_zero(remaining));
+    remaining &= remaining - 1;
+    sys.texture_swizzled_signs[i >> 2] |= uint32_t(signs[i]) << ((i & 3) * 8);
+  }
+  sys.alpha_test_reference = regs.Get<float>(rex::graphics::XE_GPU_REG_RB_ALPHA_REF);
+  sys.alpha_to_mask = colorcontrol.alpha_to_mask_enable ? (colorcontrol.value >> 24) | (1 << 8) : 0;
+  for (uint32_t i = 0; i < 4; ++i) {
+    auto ci = regs.Get<reg::RB_COLOR_INFO>(kColorInfoRegs[i]);
+    int32_t bias = ci.color_exp_bias;
+    if (ci.color_format == xenos::ColorRenderTargetFormat::k_16_16 ||
+        ci.color_format == xenos::ColorRenderTargetFormat::k_16_16_16_16)
+      bias -= 5;
+    uint32_t bits = uint32_t(0x3F800000 + (bias << 23));
+    std::memcpy(&sys.color_exp_bias[i], &bits, 4);
+  }
 }
 
 }  // namespace graw::native

@@ -67,4 +67,11 @@ python3 -I "$root/tools/check_vector_aliasing.py" "generated/$out" >/dev/null ||
 }
 if [[ $first_time -eq 1 ]]; then cmake "${args[@]}"; fi
 cmake --build --preset "$preset" --parallel "$jobs"
+# The program finds its shared libraries beside itself ($ORIGIN): the SDK stages the renderer
+# plugin there, but its runtime and Tracy libraries only on Windows and macOS.
+bin="$port/out/build/$preset"
+postfix=$(case "$config" in Debug) echo d ;; RelWithDebInfo) echo rd ;; *) echo ;; esac)
+for lib in librexruntime libTracyClient; do
+  cp -u "$sdk_install/lib/$lib$postfix.so" "$bin/"
+done
 echo "Built $project/out/build/$preset/$name"

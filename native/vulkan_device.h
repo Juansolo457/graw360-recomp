@@ -123,6 +123,10 @@ class VulkanDevice {
     PFN_vkEnumerateInstanceLayerProperties vkEnumerateInstanceLayerProperties = nullptr;
 #if defined(_WIN32)
     PFN_vkCreateWin32SurfaceKHR vkCreateWin32SurfaceKHR = nullptr;
+#else
+    // Null when the instance has no such extension.
+    PFN_vkCreateXcbSurfaceKHR vkCreateXcbSurfaceKHR = nullptr;
+    PFN_vkCreateWaylandSurfaceKHR vkCreateWaylandSurfaceKHR = nullptr;
 #endif
 #define GRAW_VK_DECLARE(name) PFN_##name name = nullptr;
     GRAW_VK_INSTANCE_FUNCTIONS(GRAW_VK_DECLARE)
@@ -165,8 +169,8 @@ class VulkanDevice {
   ~VulkanDevice();
 
   // Loader, instance, physical and logical device, queue, frame objects. `game_window`: the
-  // window the swapchain is created on by AttachSwapchain (HWND on Windows). Logs and returns
-  // false on failure.
+  // window the swapchain is created on by AttachSwapchain (HWND on Windows; elsewhere the SDL
+  // window, game_window.h, on X11 through xcb or on Wayland). Logs and returns false on failure.
   bool Initialize(void* game_window, bool vsync, bool validation);
 
   void WaitIdle() {
@@ -229,6 +233,7 @@ class VulkanDevice {
   bool PickDevice();
   bool CreateDevice();
   bool CreateSwapchain();
+  bool CreateSurface();  // surface_ on game_window_
   void DestroySwapchainObjects();
   bool BeginSlot();  // waits for the slot's previous frame and opens its command buffer
   bool Check(VkResult r, const char* what);

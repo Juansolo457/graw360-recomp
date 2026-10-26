@@ -26,7 +26,7 @@
 
 #include "backend.h"
 #include "guest_memory_mirror.h"
-#include "render_targets.h"  // SurfaceRegs
+#include "surfaces.h"  // SurfaceRegs
 
 #include <rex/graphics/xenos.h>
 

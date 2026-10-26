@@ -12,6 +12,8 @@
 #if defined(_WIN32)
 #include <windows.h>
 #else
+#include <SDL3/SDL_properties.h>
+#include <SDL3/SDL_video.h>
 #include <dlfcn.h>
 #endif
 
@@ -133,6 +135,19 @@ bool VulkanDevice::CreateInstance(bool validation) {
   std::vector<const char*> extensions = {VK_KHR_SURFACE_EXTENSION_NAME};
 #if defined(_WIN32)
   extensions.push_back(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
+#else
+  // The window's surface is X11 or Wayland, whichever SDL runs on: both, where the loader has them.
+  {
+    uint32_t n = 0;
+    fn_.vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
+    std::vector<VkExtensionProperties> available(n);
+    fn_.vkEnumerateInstanceExtensionProperties(nullptr, &n, available.data());
+    for (const char* name :
+         {VK_KHR_XCB_SURFACE_EXTENSION_NAME, VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME})
+      if (std::any_of(available.begin(), available.end(),
+                      [&](const auto& e) { return !std::strcmp(e.extensionName, name); }))
+        extensions.push_back(name);
+  }
 #endif
   std::vector<const char*> layers;
   if (validation) {
@@ -170,6 +185,11 @@ bool VulkanDevice::CreateInstance(bool validation) {
   GRAW_VK_INSTANCE_FUNCTIONS(GRAW_VK_LOAD)
 #if defined(_WIN32)
   GRAW_VK_LOAD(vkCreateWin32SurfaceKHR)
+#else
+  fn_.vkCreateXcbSurfaceKHR = reinterpret_cast<PFN_vkCreateXcbSurfaceKHR>(
+      fn_.vkGetInstanceProcAddr(instance_, "vkCreateXcbSurfaceKHR"));
+  fn_.vkCreateWaylandSurfaceKHR = reinterpret_cast<PFN_vkCreateWaylandSurfaceKHR>(
+      fn_.vkGetInstanceProcAddr(instance_, "vkCreateWaylandSurfaceKHR"));
 #endif
 #undef GRAW_VK_LOAD
   if (!layers.empty()) {
@@ -337,17 +357,7 @@ bool VulkanDevice::CreateDevice() {
 bool VulkanDevice::AttachSwapchain() {
   if (swapchain_) return true;
   if (!surface_) {
-#if defined(_WIN32)
-    VkWin32SurfaceCreateInfoKHR si{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
-    si.hinstance = GetModuleHandleW(nullptr);
-    si.hwnd = static_cast<HWND>(game_window_);
-    if (!Check(fn_.vkCreateWin32SurfaceKHR(instance_, &si, nullptr, &surface_),
-               "vkCreateWin32SurfaceKHR"))
-      return false;
-#else
-    REXLOG_ERROR("GRAW native Vulkan: no window surface on this platform yet");
-    return false;
-#endif
+    if (!CreateSurface()) return false;
     VkBool32 supported = VK_FALSE;
     fn_.vkGetPhysicalDeviceSurfaceSupportKHR(physical_, queue_family_, surface_, &supported);
     if (!supported) {
@@ -356,6 +366,58 @@ bool VulkanDevice::AttachSwapchain() {
     }
   }
   return CreateSwapchain();
+}
+
+bool VulkanDevice::CreateSurface() {
+#if defined(_WIN32)
+  VkWin32SurfaceCreateInfoKHR si{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
+  si.hinstance = GetModuleHandleW(nullptr);
+  si.hwnd = static_cast<HWND>(game_window_);
+  return Check(fn_.vkCreateWin32SurfaceKHR(instance_, &si, nullptr, &surface_),
+               "vkCreateWin32SurfaceKHR");
+#else
+  // As the SDK's WindowSDL::CreateSurfaceImpl: Wayland when SDL runs there, else X11.
+  SDL_Window* window = static_cast<SDL_Window*>(game_window_);
+  const SDL_PropertiesID props = SDL_GetWindowProperties(window);
+  void* display = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, nullptr);
+  void* surface = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, nullptr);
+  if (display && surface) {
+    if (!fn_.vkCreateWaylandSurfaceKHR) {
+      REXLOG_ERROR("GRAW native Vulkan: the window is on Wayland; the loader has no Wayland "
+                   "surfaces");
+      return false;
+    }
+    VkWaylandSurfaceCreateInfoKHR si{VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR};
+    si.display = static_cast<wl_display*>(display);
+    si.surface = static_cast<wl_surface*>(surface);
+    REXLOG_INFO("GRAW native Vulkan: Wayland surface");
+    return Check(fn_.vkCreateWaylandSurfaceKHR(instance_, &si, nullptr, &surface_),
+                 "vkCreateWaylandSurfaceKHR");
+  }
+  void* x11_display = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, nullptr);
+  const auto x11_window =
+      uint32_t(SDL_GetNumberProperty(props, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0));
+  if (x11_display && x11_window) {
+    // libX11-xcb is loaded already: the SDK's runtime links it for the same call.
+    using GetXcbConnection = xcb_connection_t* (*)(void* display);
+    const auto get_connection =
+        reinterpret_cast<GetXcbConnection>(dlsym(RTLD_DEFAULT, "XGetXCBConnection"));
+    if (!fn_.vkCreateXcbSurfaceKHR || !get_connection) {
+      REXLOG_ERROR("GRAW native Vulkan: the window is on X11, no xcb surface (loader {}, "
+                   "libX11-xcb {})",
+                   fn_.vkCreateXcbSurfaceKHR != nullptr, get_connection != nullptr);
+      return false;
+    }
+    VkXcbSurfaceCreateInfoKHR si{VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR};
+    si.connection = get_connection(x11_display);
+    si.window = x11_window;
+    REXLOG_INFO("GRAW native Vulkan: X11 surface (xcb)");
+    return Check(fn_.vkCreateXcbSurfaceKHR(instance_, &si, nullptr, &surface_),
+                 "vkCreateXcbSurfaceKHR");
+  }
+  REXLOG_ERROR("GRAW native Vulkan: the game window has neither a Wayland nor an X11 surface");
+  return false;
+#endif
 }
 
 void VulkanDevice::DetachSwapchain() {
@@ -386,13 +448,21 @@ bool VulkanDevice::CreateSwapchain() {
              "vkGetPhysicalDeviceSurfaceCapabilitiesKHR"))
     return false;
   VkExtent2D extent = caps.currentExtent;
-#if defined(_WIN32)
   if (extent.width == UINT32_MAX) {
+    // The surface takes the swapchain's size (Wayland): the window's.
+#if defined(_WIN32)
     RECT r{};
     GetClientRect(static_cast<HWND>(game_window_), &r);
     extent = {uint32_t(r.right - r.left), uint32_t(r.bottom - r.top)};
-  }
+#else
+    int w = 0, h = 0;
+    SDL_GetWindowSizeInPixels(static_cast<SDL_Window*>(game_window_), &w, &h);
+    extent = {uint32_t(std::max(w, 0)), uint32_t(std::max(h, 0))};
 #endif
+    extent.width = std::clamp(extent.width, caps.minImageExtent.width, caps.maxImageExtent.width);
+    extent.height =
+        std::clamp(extent.height, caps.minImageExtent.height, caps.maxImageExtent.height);
+  }
   if (!extent.width || !extent.height) return true;  // minimized: no swapchain for now
   uint32_t n = 0;
   fn_.vkGetPhysicalDeviceSurfaceFormatsKHR(physical_, surface_, &n, nullptr);

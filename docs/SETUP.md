@@ -133,10 +133,11 @@ Saves stay in `port/user`.
 
 ## Linux (in progress, #38)
 
-The three programs build on Linux x86-64, with the hand-over between them ported (not yet seen
-working there), but they run on ReXGlue's emulated renderer, which isn't meant for the Steam Deck, until the native
-renderer's Vulkan backend draws (docs/VULKAN_RENDERER.md). Built on Ubuntu 26.04 (WSL2) with
-clang 21, and for the Deck in the container below; the campaign boots on SteamOS 3.9.
+The three programs build on Linux x86-64, with the hand-over between them ported. The campaign
+draws with the native renderer's Vulkan backend, on by default there with no switch to the
+emulated renderer (docs/VULKAN_RENDERER.md). The front end and Instant Action still run
+ReXGlue's emulated renderer. Built on Ubuntu 26.04 (WSL2) with clang 21, and for the Deck in the
+container below; the campaign boots on SteamOS 3.9.
 
 1. Packages (Ubuntu names): `clang lld cmake ninja-build git python3 autoconf libgtk-3-dev
    libx11-xcb-dev libxss-dev libwayland-dev wayland-protocols libxkbcommon-dev libdecor-0-dev

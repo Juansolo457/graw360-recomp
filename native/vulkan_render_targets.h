@@ -23,7 +23,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "render_targets.h"  // SurfaceRegs, ClearCall
+#include "surfaces.h"  // SurfaceRegs, ClearCall
 
 namespace graw::native {
 
@@ -106,7 +106,7 @@ class VulkanRenderTargets {
   void Initialize(VkCommandBuffer cmd, VulkanRenderTarget* rt);
   // vkCmdClearAttachments of `att` over `rects` (none: all of rt) in a rendering instance on rt.
   void ClearRects(VkCommandBuffer cmd, VulkanRenderTarget* rt, const VkClearAttachment& att,
-                  const D3D12_RECT* rects, size_t count);
+                  const Rect* rects, size_t count);
   // Clears color target rt to the EDRAM fills recorded over its tiles since its last use.
   void SyncEdram(VkCommandBuffer cmd, VulkanRenderTarget* rt);
   static EdramGrid GridOf(const VulkanRenderTarget& rt) {

@@ -44,6 +44,7 @@ using VulkanResolvedLookup = std::function<VulkanResolvedImage(uint32_t guest_ph
 struct VulkanTextureStats {
   uint64_t uploads = 0, upload_bytes = 0, created = 0, resolved_binds = 0;
   uint64_t unsupported = 0, failed = 0, resolved_mismatches = 0;
+  uint64_t with_mips = 0;  // created with more than one level
 };
 
 // What a draw binds for one texture fetch constant.

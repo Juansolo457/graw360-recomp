@@ -2,8 +2,8 @@
 # Build a GRAW program on Linux x86-64 (#38; the Linux counterpart of tools/build.ps1) against the
 # SDK tools/setup-linux.sh built. Codegen (translating the disc's executable to C++) runs as part
 # of the build whenever the manifest or the executable changed; the first run takes a few minutes.
-# The native renderer isn't built on Linux yet (its Vulkan backend: docs/VULKAN_RENDERER.md), so
-# this is ReXGlue's emulated renderer on Vulkan, a development step only.
+# The campaign gets the native renderer's Vulkan backend (docs/VULKAN_RENDERER.md), compiled
+# against the same SDK checkout; the front end and Instant Action run ReXGlue's emulated renderer.
 #   tools/build-linux.sh                         # the campaign (port-yeti -> grawyeti)
 #   tools/build-linux.sh --project port --jobs 12
 #   tools/build-linux.sh --config Release
@@ -40,7 +40,8 @@ case "$config" in
 esac
 
 port="$root/$project"
-sdk_install="${GRAW_SDK_DIR:-$root/third_party/rexglue-sdk-bd833a2}/out/install/linux-amd64"
+sdk_src="${GRAW_SDK_DIR:-$root/third_party/rexglue-sdk-bd833a2}"
+sdk_install="$sdk_src/out/install/linux-amd64"
 [[ -x "$sdk_install/bin/rexglue" ]] || { echo "The SDK isn't built: run tools/setup-linux.sh" >&2; exit 1; }
 [[ -f "$port/assets/$xex" ]] || { echo "$project/assets/$xex is missing (docs/SETUP.md)" >&2; exit 1; }
 if [[ "$(sha256sum "$port/assets/$xex" | cut -d' ' -f1)" != "$sha" ]]; then
@@ -53,6 +54,7 @@ preset="linux-amd64-${config,,}"
 # clang-20; any clang 20 or later works.
 build="${GRAW_BUILD_DIR:-$port/out/build/$preset}"
 args=(--preset "$preset" -B "$build" -DCMAKE_PREFIX_PATH="$sdk_install"
+      -DGRAW_REXGLUE_SDK_SRC="$sdk_src"
       -DCMAKE_C_COMPILER="${CC:-clang}" -DCMAKE_CXX_COMPILER="${CXX:-clang++}"
       -DCMAKE_C_FLAGS=-march=x86-64-v3 -DCMAKE_CXX_FLAGS=-march=x86-64-v3)
 cd "$port"

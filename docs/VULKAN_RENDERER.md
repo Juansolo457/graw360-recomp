@@ -613,7 +613,56 @@ controller's gamma ramp.
 - the capture tools on Vulkan (front buffer PNGs, luma probe, glitch catcher);
 - GPU timing;
 - checking the tactical map and the Cross-Com feed over a full GRAW-save run;
-- the Linux build of `native/`.
+- the Linux build of `native/` (done: M7a below).
+
+HDR on Vulkan is parked with the upscalers until after the Deck pass (#43).
+
+## M7a status (2026-10-26): the Linux build of `native/`
+**Done: the campaign draws with the native Vulkan renderer on Linux**, on by default there with
+no F9 switch to the emulated renderer (`kNativeOnly` in `renderer.cpp`). The front end and
+Instant Action still run the emulated renderer.
+- **API-free code out of the D3D12 files** (M1's leftovers):
+  - `surfaces.h`: surface registers, decoded clears (`DecodeClear`) and `EdramFills`, with
+    rectangles as `Rect` (RECT on Windows, so D3D12 calls take them as they are);
+  - `resolve_params.h`: `ResolveParams` and `DecodeResolve`;
+  - `present_swap.cpp`: `Presenter::ReadSwap`;
+  - `native_cvars.cpp`: the cvars both backends read (pipelines, coherency check, implicit
+    gradients, luma probe);
+  - `host_types.h`: `DXGI_FORMAT` (the texture cache's host format IDs) defined off Windows;
+  - `native_thread.h`: thread names and ids.
+- **CMake** builds `native/` on Linux without the D3D12 files (device, draws, textures,
+  resolver, present, frame pacer, DXBC shaders), against the SDK checkout `tools/build-linux.sh`
+  passes (`GRAW_REXGLUE_SDK_SRC`).
+- **`sdk_linux_shim.cpp`**: the sample-position tables and the `dump_shaders` cvar that the
+  translators need are private to the Linux renderer plugin, so the app has its own copies.
+- **The window:** the SDK's windows are SDL3's. `GameWindowHandle` finds the game's SDL window,
+  and the device creates a Wayland surface or an X11 one (xcb), as the SDK's presenter does. SDL
+  and `XGetXCBConnection` come from the SDK runtime, which links them.
+- **The frame pacer** is D3D12's (a DXGI waitable and a fence). On Linux the renderer creates
+  none, and the game keeps its vblank pacing; Vulkan pacing on the display
+  (`VK_KHR_present_wait`) is still to do.
+- **vsync** on Linux follows the SDK's `vsync` cvar (on by default: FIFO).
+
+**Test:**
+- **WSL2 (Ubuntu 26.04, clang 21):** llvmpipe is WSL's only Vulkan device, so this checks
+  correctness, not speed. 4-5 minutes on the autopilot's save route:
+  - X11 surface, 1280x720 FIFO swapchain, the front buffer through the game's gamma table;
+  - the Campaign menu and the training mission drew right (HUD, objective text, Cross-Com icon);
+  - 0 errors; the second run prewarmed 180 pipelines from the first run's store.
+- **The Deck build:** `tools/build-deck.sh` (Ubuntu 22.04 container, clang 20) built all three
+  programs, which need glibc 2.35 and `GLIBCXX_3.4.32` at most. The test package's own launcher
+  ran the campaign in WSL with the same results, read `grawyeti.toml`, and wrote the frame CSV.
+- **Windows** after the split: D3D12 and Vulkan runs with 0 errors, 16.7 ms frames.
+- **Mips** (a shimmer suspect: a texture sampled without its mip levels aliases at a distance):
+  362 of 501 textures have them, and with mips forced off
+  (`--graw_native_vulkan_debug=1`) gameplay frames had ~20% more fine detail. Mips are in use.
+
+**Found, not fixed:** a depth resolve at 1E5D8000 (1280x720) is sampled as `k_8_8_8_8` texels,
+the depth bits read as color (6,108 binds in a 130 s run). D3D12's resolver writes those bits
+(`(d24 << 8) | stencil`) beside the float depth image; the Vulkan backend writes only the float
+image, so the read falls back to guest memory, which the native renderer never writes.
+**Next:** the Steam Deck test (shimmer, 30 fps pacing, performance); the depth-bits fix above;
+Vulkan frame pacing on the display.
 
 ## Risks
 - **The SPIR-V translator's output for GRAW is unproven.** M0 exists to find gaps before

@@ -357,7 +357,7 @@ void VulkanRenderTargets::Initialize(VkCommandBuffer cmd, VulkanRenderTarget* rt
 }
 
 void VulkanRenderTargets::ClearRects(VkCommandBuffer cmd, VulkanRenderTarget* rt,
-                                     const VkClearAttachment& att, const D3D12_RECT* rects,
+                                     const VkClearAttachment& att, const Rect* rects,
                                      size_t count) {
   VulkanRenderTarget* none[1] = {nullptr};
   if (rt->depth)
@@ -369,7 +369,7 @@ void VulkanRenderTargets::ClearRects(VkCommandBuffer cmd, VulkanRenderTarget* rt
     out.push_back({{{0, 0}, {rt->width, rt->height}}, 0, 1});
   } else {
     for (size_t i = 0; i < count; ++i) {
-      const D3D12_RECT& r = rects[i];
+      const Rect& r = rects[i];
       const int32_t x0 = std::clamp<int32_t>(r.left, 0, int32_t(rt->width));
       const int32_t y0 = std::clamp<int32_t>(r.top, 0, int32_t(rt->height));
       const int32_t x1 = std::clamp<int32_t>(r.right, 0, int32_t(rt->width));
@@ -387,7 +387,7 @@ void VulkanRenderTargets::SyncEdram(VkCommandBuffer cmd, VulkanRenderTarget* rt)
   rt->fill_seq = fills_.seq();
   if (rt->depth || since == rt->fill_seq) return;
   fills_.ForEach(since, GridOf(*rt), rt->guest_format, rt->width, rt->height,
-                 [&](const EdramFills::Fill& f, const D3D12_RECT* rects, uint32_t n) {
+                 [&](const EdramFills::Fill& f, const Rect* rects, uint32_t n) {
     VkClearAttachment att{};
     att.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     std::memcpy(att.clearValue.color.float32, f.color, sizeof(f.color));
@@ -426,11 +426,11 @@ void VulkanRenderTargets::Clear(VkCommandBuffer cmd, const ClearCall& c) {
   const ClearParams& p = c.p;
   // What the clear leaves in the EDRAM, in pixels from the surface's base. A whole-surface
   // clear covers the rows of the call's height hint (the target itself may be taller).
-  const std::vector<D3D12_RECT>& edram = p.edram_rects.empty() ? p.rects : p.edram_rects;
+  const std::vector<Rect>& edram = p.edram_rects.empty() ? p.rects : p.edram_rects;
   auto edram_rows = [&](const VulkanRenderTarget& rt) {
     if (edram.empty()) return c.height ? std::min(c.height, rt.height) : rt.height;
     uint32_t rows = 0;
-    for (const D3D12_RECT& r : edram) rows = std::max(rows, uint32_t(std::max<LONG>(r.bottom, 0)));
+    for (const Rect& r : edram) rows = std::max(rows, uint32_t(std::max<int32_t>(r.bottom, 0)));
     return rows;
   };
   for (uint32_t i = 0; i < 4; ++i) {
@@ -445,10 +445,10 @@ void VulkanRenderTargets::Clear(VkCommandBuffer cmd, const ClearCall& c) {
     std::memcpy(att.clearValue.color.float32, p.color, sizeof(p.color));
     ClearRects(cmd, rt, att, p.rects.data(), p.rects.size());
     if (edram.empty()) {
-      fills_.Record(GridOf(*rt), rt->guest_format, {0, 0, LONG(rt->pitch), LONG(edram_rows(*rt))},
+      fills_.Record(GridOf(*rt), rt->guest_format, {0, 0, int32_t(rt->pitch), int32_t(edram_rows(*rt))},
                     p.color);
     } else {
-      for (const D3D12_RECT& r : edram) fills_.Record(GridOf(*rt), rt->guest_format, r, p.color);
+      for (const Rect& r : edram) fills_.Record(GridOf(*rt), rt->guest_format, r, p.color);
     }
     rt->fill_seq = fills_.seq();
   }

@@ -62,27 +62,17 @@
 #include <unordered_set>
 #include <vector>
 
-REXCVAR_DEFINE_BOOL(graw_native_async_pipelines, true, "GRAW native",
-                    "Compile new pipeline states on worker threads, the frame's draws that need "
-                    "them skipped, instead of compiling each at its draw");
-REXCVAR_DEFINE_INT32(graw_native_pipeline_threads, 0, "GRAW native",
-                     "Pipeline compile threads with --graw_native_async_pipelines (0: a quarter "
-                     "of the hardware threads, 1 to 4)");
-REXCVAR_DEFINE_BOOL(graw_native_pipeline_wait, true, "GRAW native",
-                    "With --graw_native_async_pipelines, a frame whose draws need pipelines still "
-                    "compiling is not shown and waits for them at its end, up to 0.5 s (false: "
-                    "show it without those draws)");
+REXCVAR_DECLARE(bool, graw_native_async_pipelines);
+REXCVAR_DECLARE(int32_t, graw_native_pipeline_threads);
+REXCVAR_DECLARE(bool, graw_native_pipeline_wait);
+REXCVAR_DECLARE(bool, graw_native_pipeline_cache);
+REXCVAR_DECLARE(std::string, graw_native_watch_trace);
+REXCVAR_DECLARE(bool, graw_native_coherency_check);
+REXCVAR_DECLARE(bool, graw_native_implicit_gradients);
 REXCVAR_DEFINE_BOOL(graw_native_generic_pipelines, true, "GRAW native",
                     "With --graw_native_async_pipelines, a draw whose bool or texture-sign "
                     "specialization is still compiling uses the pipeline of its unspecialized "
                     "shaders when that one is ready (false: it waits for the specialization)");
-REXCVAR_DEFINE_BOOL(graw_native_pipeline_cache, true, "GRAW native",
-                    "Keep the shaders and pipelines the native renderer creates under "
-                    "<cache_root>\\pgr4-native and compile them at start-up in later runs "
-                    "(prewarm, plus a D3D12 pipeline library)");
-REXCVAR_DEFINE_STRING(graw_native_watch_trace, "", "GRAW native",
-                      "Binary log of vertex write-watch events (arms and faults, one 64-bit "
-                      "record each, see WatchTrace) for offline analysis of the watch policy");
 REXCVAR_DEFINE_BOOL(graw_native_dynamic_depth_bias, true, "GRAW native",
                     "Set the polygon offset with RSSetDepthBias instead of baking it into the "
                     "pipeline state, where the driver supports it (the game animates it, which "
@@ -90,12 +80,6 @@ REXCVAR_DEFINE_BOOL(graw_native_dynamic_depth_bias, true, "GRAW native",
 REXCVAR_DEFINE_BOOL(graw_native_bool_specialize, true, "GRAW native",
                     "Translate shaders whose control flow tests bool constants for each draw's "
                     "values, without the branches (shader_specialize.h)");
-REXCVAR_DEFINE_BOOL(graw_native_coherency_check, false, "GRAW native",
-                    "Debug: keep a CPU copy of what shared memory holds and compare the vertex and "
-                    "index ranges draws read with guest memory, per request and again at the Swap "
-                    "(stale pages: a write the page watch missed; late pages: data rewritten after "
-                    "a draw of the frame read it), and check copy segments against every read. "
-                    "Slow (512 MB of host memory, a memcmp of every range read)");
 REXCVAR_DEFINE_INT32(graw_native_draw_log_from, -1, "GRAW native",
                      "Debug: from this native frame on, log the draws of each frame to "
                      "<capture dir>/draws-f<frame>.txt, as bit 16 of <capture dir>/draw-debug.txt "
@@ -106,11 +90,6 @@ REXCVAR_DEFINE_INT32(graw_native_draw_log_frames, 1, "GRAW native",
 REXCVAR_DEFINE_INT32(graw_native_anisotropy, 1, "GRAW native",
                      "Anisotropic filtering of the game's linearly filtered textures with mips, "
                      "at least this many samples per pixel (2, 4, 8 or 16; 1: the game's own)");
-REXCVAR_DEFINE_BOOL(graw_native_implicit_gradients, true, "GRAW native",
-                    "Experiment (Steam Deck shimmer): translate computed-LOD texture fetches in "
-                    "pixel shaders with sample_b and the GPU's own derivatives (pgr4-native 0021; "
-                    "the Vulkan renderer's SPIR-V shaders too, with OpImageSampleImplicitLod); "
-                    "false: explicit coarse gradients, as before 0021");
 REXCVAR_DECLARE(std::string, graw_native_capture_dir);
 namespace rex::graphics {
 extern bool g_dxbc_implicit_gradients;  // dxbc_translator_fetch.cpp (local SDK experiment)

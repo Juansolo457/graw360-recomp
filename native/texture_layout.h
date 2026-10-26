@@ -21,7 +21,7 @@
 #include <cstdint>
 #include <vector>
 
-#include <dxgiformat.h>
+#include "host_types.h"  // DXGI_FORMAT
 
 namespace graw::native {
 

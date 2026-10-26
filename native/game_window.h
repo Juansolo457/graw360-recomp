@@ -14,6 +14,11 @@ inline rex::ui::Window* GameWindow() {
   return runtime ? runtime->display_window() : nullptr;
 }
 
+// What the backend creates its swapchain on (Backend::Options::game_window): the window's HWND
+// on Windows; elsewhere its SDL window (the SDK's windows are SDL's, game_window.cpp), whose
+// properties give the X11 or Wayland surface. Null while the window isn't open.
+void* GameWindowHandle();
+
 inline rex::ui::Presenter* SdkPresenter() {
   rex::Runtime* runtime = rex::Runtime::instance();
   rex::system::IGraphicsSystem* graphics = runtime ? runtime->graphics_system() : nullptr;

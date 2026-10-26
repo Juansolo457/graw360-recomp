@@ -4,15 +4,18 @@
 #include "async_file.h"
 #include "backend.h"
 #include "clock.h"
+#if defined(_WIN32)
 #include "d3d12_backend.h"
+#endif
 #include "vulkan_backend.h"
 #include "d3d_state.h"
 #include "frame_pacer.h"
 #include "game_window.h"
 #include "present.h"
 #include "profile.h"
-#include "render_targets.h"
-#include "resolve.h"
+#include "native_thread.h"
+#include "resolve_params.h"
+#include "surfaces.h"
 
 #include <rex/kernel/xam/module.h>
 #include <rex/logging.h>
@@ -40,12 +43,21 @@
 // runtime has no such patch, so the column stays 0.
 static uint64_t rex_xam_take_frame_pad() { return 0; }
 
+// The Linux build has the native renderer's Vulkan backend only: the campaign's output from the
+// start, with no switch to the Xenos plugin (docs/VULKAN_RENDERER.md, Decisions).
+#if defined(_WIN32)
+constexpr bool kNativeOnly = false;
+#else
+constexpr bool kNativeOnly = true;
+#endif
+
 REXCVAR_DEFINE_BOOL(graw_native, false, "GRAW native",
                     "Run the native D3D12 renderer beside the Xenos plugin (debug window)");
-REXCVAR_DEFINE_BOOL(graw_native_primary, false, "GRAW native",
+REXCVAR_DEFINE_BOOL(graw_native_primary, kNativeOnly, "GRAW native",
                     "The native renderer is the game's output: it presents into the game window "
                     "and the Xenos plugin skips all draws, resolves and swaps (gpu_skip_draws, "
-                    "tools/patches/pgr4-native/0031); implies --graw_native");
+                    "tools/patches/pgr4-native/0031); implies --graw_native. On by default on "
+                    "Linux");
 REXCVAR_DEFINE_STRING(graw_native_csv, "", "GRAW native",
                       "Per-frame CSV of the native path: counts and CPU time per hook class");
 REXCVAR_DEFINE_INT32(graw_native_width, 1280, "GRAW native", "Debug window width");
@@ -73,9 +85,10 @@ REXCVAR_DEFINE_INT32(graw_native_submit_draws, 256, "GRAW native",
                      "Submit the frame's commands every this many draws, so the GPU starts on them "
                      "while the rest of the frame is recorded (0: one submission per frame, at the "
                      "Swap)");
-REXCVAR_DEFINE_BOOL(graw_native_renderer_switch, true, "GRAW native",
+REXCVAR_DEFINE_BOOL(graw_native_renderer_switch, !kNativeOnly, "GRAW native",
                     "With --graw_native_primary, the key bind_renderer_switch (F9) switches "
-                    "between the native renderer and the Xenos plugin at the next Swap");
+                    "between the native renderer and the Xenos plugin at the next Swap (off by "
+                    "default on Linux)");
 REXCVAR_DEFINE_INT32(graw_native_frame_latency, 0, "GRAW native",
                      "With --graw_native_primary: pace the game's frames on the display, with at "
                      "most this many frames begun but not yet shown (1-3, frame_pacer.h); 0 (the "
@@ -336,8 +349,13 @@ bool NativeRenderer::Initialize() {
   uint32_t h = uint32_t(std::max(64, REXCVAR_GET(graw_native_height)));
   const bool primary = primary_ = REXCVAR_GET(graw_native_primary);
   const bool paced = primary && REXCVAR_GET(graw_native_frame_latency) > 0;
-  // The pacer, or with the CSV only its log of the presents shown.
+  // The pacer, or with the CSV only its log of the presents shown. Windows only for now
+  // (frame_pacer.h).
+#if defined(_WIN32)
   const bool pacer = paced || (primary && !REXCVAR_GET(graw_native_csv).empty());
+#else
+  const bool pacer = false;
+#endif
   Backend::Options options;
   options.width = w;
   options.height = h;
@@ -345,9 +363,8 @@ bool NativeRenderer::Initialize() {
   if (primary) {
     // The first D3D call comes after the SDK opened its window; wait briefly in case not.
     for (int i = 0; i < 100 && !options.game_window; ++i) {
-      if (rex::ui::Window* window = GameWindow())
-        options.game_window = window->GetNativeWindowHandle();
-      if (!options.game_window) Sleep(50);
+      options.game_window = GameWindowHandle();
+      if (!options.game_window) std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     if (!options.game_window) {
       REXLOG_ERROR("GRAW native: --graw_native_primary: no game window found");
@@ -356,7 +373,11 @@ bool NativeRenderer::Initialize() {
     // The pacer needs FIFO: vkd3d-proton releases the frame latency waitable on the display's
     // present feedback only for capped present modes, and on the blit for the others. Without
     // the pacer, the same switch as the SDK presenter's.
+#if defined(_WIN32)
     options.vsync = paced || FlagOn("d3d12_present_vsync");
+#else
+    options.vsync = FlagOn("vsync");  // the SDK's (its Vulkan presenter's) switch
+#endif
     options.frame_latency_waitable = pacer;
   }
   options.gpu_timing = REXCVAR_GET(graw_native_gpu_timing);
@@ -370,8 +391,10 @@ bool NativeRenderer::Initialize() {
 #endif
   if (api == "vulkan") {
     backend_ = std::make_unique<VulkanBackend>();
+#if defined(_WIN32)
   } else if (api == "d3d12") {
     backend_ = std::make_unique<D3D12Backend>();
+#endif
   } else {
     REXLOG_ERROR("GRAW native: unknown --graw_native_api={} (d3d12 or vulkan)", api);
     return false;
@@ -409,6 +432,7 @@ bool NativeRenderer::Initialize() {
       REXLOG_ERROR("GRAW native: cannot open {}", path);
     }
   }
+#if defined(_WIN32)
   if (pacer) {
     std::unique_ptr<AsyncFile> log;
     if (!path.empty()) {
@@ -428,6 +452,7 @@ bool NativeRenderer::Initialize() {
                   pacer_->frame_latency());
     backend_->SetPacer(pacer_.get(), &paces_frames_);
   }
+#endif
   frame_start_ns_ = NowNs();
   if (REXCVAR_GET(graw_native_render_thread)) {
     queue_ = std::make_unique<Queue>();
@@ -443,7 +468,7 @@ void NativeRenderer::BeginFrameModules() {
 }
 
 void NativeRenderer::RenderThreadMain() {
-  SetThreadDescription(GetCurrentThread(), L"GRAW native render");
+  SetThreadName("GRAW native render");
   Queue& q = *queue_;
   for (;;) {
     std::unique_ptr<Queue::Batch> b;
@@ -560,7 +585,7 @@ void NativeRenderer::QueueClear(const uint8_t* base, const HookArgs& args) {
   Queue& q = *queue_;
   Queue::Batch& b = *q.current;
   ClearCall& c = b.clears.emplace_back();
-  if (RenderTargets::DecodeClear(base, args, &c))
+  if (DecodeClear(base, args, &c))
     q.Push(Queue::kClear, uint32_t(b.clears.size() - 1));
   else
     b.clears.pop_back();
@@ -663,7 +688,7 @@ void NativeRenderer::OnClear(const uint8_t* base, const HookArgs& args) {
   if (queue_) return QueueClear(base, args);
   if (g_failed) [[unlikely]]
     return;
-  if (ClearCall c; RenderTargets::DecodeClear(base, args, &c)) ExecuteClear(c);
+  if (ClearCall c; DecodeClear(base, args, &c)) ExecuteClear(c);
 }
 
 void NativeRenderer::OnResolve(const uint8_t* base, const HookArgs& args) {

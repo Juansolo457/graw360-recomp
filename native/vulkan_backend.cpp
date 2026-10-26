@@ -6,7 +6,7 @@
 #include "guest_memory.h"  // GpuAddress
 #include "pipeline_store.h"
 #include "present.h"       // SwapCall
-#include "resolve.h"       // ResolveParams
+#include "resolve_params.h"  // ResolveParams
 #include "vulkan_bindings.h"
 #include "vulkan_memory.h"
 #include "vulkan_pipelines.h"
@@ -831,10 +831,10 @@ void VulkanBackend::Resolve(const ResolveParams& p) {
     std::memcpy(c.p.color, p.clear_color, sizeof(c.p.color));
     c.p.depth = p.clear_depth;
     c.p.stencil = p.clear_stencil;
-    c.p.rects.push_back({LONG(x0), LONG(y0), LONG(x1), LONG(y1)});
+    c.p.rects.push_back({int32_t(x0), int32_t(y0), int32_t(x1), int32_t(y1)});
     if (p.edram_x || p.edram_y)
       c.p.edram_rects.push_back(
-          {LONG(x0 - p.edram_x), LONG(y0 - p.edram_y), LONG(x1 - p.edram_x), LONG(y1 - p.edram_y)});
+          {int32_t(x0 - p.edram_x), int32_t(y0 - p.edram_y), int32_t(x1 - p.edram_x), int32_t(y1 - p.edram_y)});
     c.regs = p.regs;
     c.bound_colors = 0xF;
     c.depth_bound = true;
@@ -1577,9 +1577,10 @@ Backend::SwapResult VulkanBackend::Swap(const SwapCall& swap, std::optional<bool
                 gpu_->resolved.size(),
                 front_buffer_found_ ? "shown" : "not found");
     const VulkanTextureStats& t = gpu_->textures->stats();
-    REXLOG_INFO("GRAW native Vulkan textures: {} textures, {} created, {} uploads ({} KB), {} "
-                "resolved binds ({} mismatched), {} unsupported, {} failed; {} samplers",
-                gpu_->textures->count(), t.created, t.uploads, t.upload_bytes >> 10,
+    REXLOG_INFO("GRAW native Vulkan textures: {} textures, {} created ({} with mips), {} "
+                "uploads ({} KB), {} resolved binds ({} mismatched), {} unsupported, {} failed; "
+                "{} samplers",
+                gpu_->textures->count(), t.created, t.with_mips, t.uploads, t.upload_bytes >> 10,
                 t.resolved_binds, t.resolved_mismatches, t.unsupported, t.failed, gpu_->bindings.sampler_count());
   }
   front_buffer_found_ = SetPresentImage(swap) && !REXCVAR_GET(graw_native_vulkan_show_target);

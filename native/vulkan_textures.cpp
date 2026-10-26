@@ -192,6 +192,7 @@ VulkanTextureCache::Texture* VulkanTextureCache::Create(const TextureKey& key,
     if (mips_bytes) watches_.push_back({key.mip_page << 12, (key.mip_page << 12) + mips_bytes, raw});
   }
   ++stats_.created;
+  if (key.mip_levels() > 1) ++stats_.with_mips;
   textures_.emplace(key, std::move(t));
   return raw;
 }

@@ -29,6 +29,7 @@
 #include <thread>
 #include <vector>
 
+REXCVAR_DECLARE(bool, graw_native_luma_probe);
 REXCVAR_DEFINE_STRING(
     graw_native_capture_dir, "", "GRAW native",
     "Folder for front buffer captures (native + Xenos PNGs, PSNR), marks and draw "
@@ -46,10 +47,6 @@ REXCVAR_DEFINE_BOOL(graw_native_capture_xenos, true, "GRAW native",
                     "Captures also write the Xenos plugin's copy of the frame and the PSNR "
                     "between them, holding the guest thread (--graw_native_capture_hold_ms); "
                     "false: the native image alone, written off the guest thread");
-REXCVAR_DEFINE_BOOL(graw_native_luma_probe, false, "GRAW native",
-                    "Read back three rows of every front buffer (at 10, 40 and 80 % of its "
-                    "height) and log their mean brightness in the frame CSV, to find frames "
-                    "drawn partly black");
 REXCVAR_DEFINE_INT32(graw_native_hdr_paper_white, 400, "GRAW native",
                      "HDR output: the luminance of SDR white (the HUD, the game's 1.0) in nits. "
                      "400 is what gamescope shows SDR content at (--hdr-sdr-content-nits), so the "
@@ -612,15 +609,6 @@ Presenter::~Presenter() = default;
 bool Presenter::Initialize() { return impl_->Initialize(); }
 
 bool Presenter::CaptureRequested(uint64_t frame) { return impl_->CaptureRequested(frame); }
-
-void Presenter::ReadSwap(const uint8_t* base, const HookArgs& args, SwapCall* out) {
-  // The front buffer texture's fetch constant (D3DBaseTexture + 16 in GRAW's XDK; Swap
-  // sub_824CC9C8 reads +20..+28).
-  out->texture = args.r[1];
-  if (out->texture)
-    for (int i = 0; i < 6; ++i)
-      out->fetch[i] = Load32(base, out->texture + kTextureFetchOffset + 4 * i);
-}
 
 void Presenter::OnSwap(const SwapCall& swap, bool shown) { impl_->OnSwap(swap, shown); }
 

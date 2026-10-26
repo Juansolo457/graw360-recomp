@@ -534,6 +534,39 @@ shared with D3D12, to look at.
 **Next:** the gamma ramp and exponent bias at present (M5), background pipeline compiles and a
 pipeline cache (first-run hitches), the Linux build of `native/` (WIN32-only in CMake today).
 
+## M4d status (2026-10-26): background pipeline compiles, the pipeline cache
+**Done: first runs no longer stall on pipeline compiles, and later runs start with them done**,
+as the D3D12 renderer does it (same cvars: `--graw_native_async_pipelines`,
+`--graw_native_pipeline_threads`, `--graw_native_pipeline_wait`, `--graw_native_pipeline_cache`).
+- **Workers** (a quarter of the hardware threads, 1 to 4, and more while a frame waits) compile
+  new pipelines; a draw whose pipeline is still compiling is skipped, and its frame is held: not
+  presented (the previous one stays on screen) and waiting after its submission for those
+  pipelines, up to 0.5 s.
+- **Pipeline store** (`pipeline_store.h`, now API-free; the D3D12 library moved to
+  `pipeline_library.h`): every new pipeline's shaders and key go to
+  `<cache_root>/graw-native-vulkan/pipelines.bin`; the next run translates and queues them at
+  start-up, 2 ms per frame (prewarm), behind the draws' compiles. Keys from disk are checked
+  for values Vulkan would reject.
+- **`VkPipelineCache`** in `pipelines.vkcache` next to it, given to the driver only when its
+  header is this GPU's and driver's; saved once compiles stopped for 3 s and at shutdown.
+  Creation feedback counts the pipelines the cache served.
+
+**Test** (120 s each; NVIDIA's own shader disk cache off with `__GL_SHADER_DISK_CACHE=0` for a
+real first run):
+
+| Run | Pipelines | Compile time | Held frames | Waited |
+|---|---|---|---|---|
+| First run, no caches at all | 627 | 6.2 s total, 219 ms max | 137 | 2.6 s in all, 206 ms max |
+| Second run, only our caches | 627 from the cache | 129 ms total, 1.1 ms max | 42, all on content the first run never reached | |
+| Driver cache on, store warm | 308 of 309 from the cache, prewarm in 68 frames | 68 ms | none on the stored route | |
+
+Compiling at each draw would have stalled the recording thread for the whole 6.2 s; p99 frame
+time on the first run was 18.2 ms. With validation 0 errors; D3D12's store, library and prewarm
+unchanged by the split.
+**Left:** the cvars live in draw.cpp (the D3D12 renderer), which the Linux build won't compile:
+they move with the Linux build of `native/`. A held frame's pipelines are often ready within
+microseconds (driver cache hits) yet the frame is still not shown, as on D3D12.
+
 ## Risks
 - **The SPIR-V translator's output for GRAW is unproven.** M0 exists to find gaps before
   anything else is built.

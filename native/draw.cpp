@@ -14,6 +14,7 @@
 #include "guest_draw_state.h"
 #include "guest_memory_mirror.h"
 #include "log.h"
+#include "pipeline_library.h"
 #include "pipeline_store.h"
 #include "profile.h"
 #include "render_targets.h"

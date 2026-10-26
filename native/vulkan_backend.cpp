@@ -4,6 +4,7 @@
 #include "vulkan_device.h"  // first: the Vulkan platform defines
 #include "game_window.h"
 #include "guest_memory.h"  // GpuAddress
+#include "pipeline_store.h"
 #include "present.h"       // SwapCall
 #include "resolve.h"       // ResolveParams
 #include "vulkan_bindings.h"
@@ -16,6 +17,7 @@
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
+#include <rex/runtime.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xmemory.h>
 
@@ -25,6 +27,7 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <thread>
 #include <utility>
 
 REXCVAR_DEFINE_BOOL(graw_native_vulkan_validation, false, "GRAW native",
@@ -60,6 +63,12 @@ REXCVAR_DEFINE_INT32(graw_native_vulkan_resolve_dump_frames, 1, "GRAW native",
 REXCVAR_DEFINE_INT32(graw_native_vulkan_resolve_dump_frame, -1, "GRAW native",
                      "The native frame --graw_native_vulkan_resolve_dump dumps (-1: none)");
 REXCVAR_DECLARE(bool, graw_native_render_thread);
+// The D3D12 renderer's (draw.cpp), for both backends.
+REXCVAR_DECLARE(bool, graw_native_async_pipelines);
+REXCVAR_DECLARE(int32_t, graw_native_pipeline_threads);
+REXCVAR_DECLARE(bool, graw_native_pipeline_wait);
+REXCVAR_DECLARE(bool, graw_native_pipeline_cache);
+REXCVAR_DECLARE(bool, graw_native_implicit_gradients);
 REXCVAR_DECLARE(std::string, graw_native_watch_trace);
 REXCVAR_DECLARE(bool, graw_native_coherency_check);
 
@@ -181,6 +190,36 @@ bool VulkanBackend::Initialize(const Options& o) {
     }
     return out;
   });
+  // Pipelines: compiled on workers, kept across runs (M4d).
+  std::filesystem::path cache_file;
+  if (REXCVAR_GET(graw_native_pipeline_cache)) {
+    rex::Runtime* runtime =
+        rex::system::kernel_state() ? rex::system::kernel_state()->emulator() : nullptr;
+    std::filesystem::path dir = runtime ? runtime->cache_root() : std::filesystem::path();
+    if (dir.empty()) {
+      REXLOG_WARN("GRAW native Vulkan pipelines: no cache root, no pipeline cache");
+    } else {
+      // Shaders translated the other way can't share the stored pipelines.
+      dir /= REXCVAR_GET(graw_native_implicit_gradients) ? "graw-native-vulkan"
+                                                         : "graw-native-vulkan-gradients";
+      store_ = std::make_unique<PipelineStore>();
+      store_->Open(dir, sizeof(VulkanPipelineKey), kVulkanPipelineKeyVersion);
+      cache_file = dir / "pipelines.vkcache";
+    }
+  }
+  int threads = 0, extra_threads = 0;
+  if (REXCVAR_GET(graw_native_async_pipelines)) {
+    const int hardware = int(std::thread::hardware_concurrency());
+    threads = REXCVAR_GET(graw_native_pipeline_threads);
+    if (threads <= 0) threads = hardware / 4;
+    threads = std::clamp(threads, 1, 4);
+    // While a frame waits for its pipelines, the game threads wait as well.
+    extra_threads = std::max(threads, std::min(hardware - 2, 8)) - threads;
+    pipeline_wait_ = REXCVAR_GET(graw_native_pipeline_wait);
+  }
+  gpu_->pipelines.Initialize(threads, extra_threads, cache_file);
+  Prewarm();  // the first slice before the first frame, which needs some of them
+
   threaded_ = REXCVAR_GET(graw_native_render_thread);
   if (!mirror_.Initialize(memory, this, REXCVAR_GET(graw_native_watch_trace),
                           REXCVAR_GET(graw_native_coherency_check)))
@@ -188,9 +227,7 @@ bool VulkanBackend::Initialize(const Options& o) {
   mirror_.SetCounters(threaded_ ? &prep_upload_bytes_ : &stats_.upload_bytes,
                       threaded_ ? &prep_uploads_ : &stats_.uploads,
                       threaded_ ? &prep_diag_ : &diag_);
-  REXLOG_INFO(
-      "GRAW native Vulkan: up (M3c-3: draws recorded into host render targets; the frame isn't "
-      "shown yet, cleared frames)");
+  REXLOG_INFO("GRAW native Vulkan: up (docs/VULKAN_RENDERER.md, M4d)");
   return true;
 }
 
@@ -586,9 +623,22 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
       rt.op_a = uint8_t(kVkBlendOp[op_a]);
     }
   }
-  const VkPipeline pipeline = gpu_->pipelines.Get(key);
+  bool pending, is_new;
+  const VkPipeline pipeline = gpu_->pipelines.Get(key, &pending, &is_new);
+  if (is_new) {
+    ++stats_.pso_created;
+    if (store_ && store_->is_open())
+      RecordPipeline(key, *vs, mods.vertex, ps, mods.pixel,
+                     geometry != PipelineGeometryShader::kNone
+                         ? GetVulkanGeometryShaderKey(geometry, mods.vertex, mods.pixel).key
+                         : 0);
+  }
   if (!pipeline) {
-    ++stats_.failed;
+    // Still compiling: the draw is skipped and the frame held (Swap).
+    if (pending)
+      ++stats_.pso_pending;
+    else
+      ++stats_.failed;
     return;
   }
 
@@ -1305,9 +1355,84 @@ void VulkanBackend::GetShaderTextures(const SpirvShader& shader, const DrawState
         GetSamplerKey(regs, sb, rex::graphics::xenos::AnisoFilter::kDisabled)));
 }
 
+void VulkanBackend::RecordPipeline(const VulkanPipelineKey& key, const SpirvShader& vs,
+                                   uint64_t vs_mod, const SpirvShader* ps, uint64_t ps_mod,
+                                   uint32_t gs_key) {
+  // The key without its handles; the geometry shader's key where its module was.
+  VulkanPipelineKey stored = key;
+  stored.vs = stored.ps = stored.gs = VK_NULL_HANDLE;
+  stored.layout = VK_NULL_HANDLE;
+  const uint64_t gs = gs_key;
+  std::memcpy(&stored.gs, &gs, sizeof(gs));
+  store_->RecordShader(uint32_t(vs.type()), vs.ucode_data_hash(), vs.ucode_dwords(),
+                       vs.ucode_dword_count());
+  if (ps)
+    store_->RecordShader(uint32_t(ps->type()), ps->ucode_data_hash(), ps->ucode_dwords(),
+                         ps->ucode_dword_count());
+  store_->RecordPipeline(vs.ucode_data_hash(), vs_mod, ps ? ps->ucode_data_hash() : 0,
+                         ps ? ps_mod : 0, &stored);
+}
+
+void VulkanBackend::Prewarm() {
+  if (!store_) return;
+  const std::vector<PipelineStore::Pipeline>& list = store_->loaded_pipelines();
+  if (prewarm_next_ >= list.size()) return;
+  namespace xenos = rex::graphics::xenos;
+  const auto t0 = std::chrono::steady_clock::now();
+  auto load = [&](uint64_t hash, xenos::ShaderType type) -> SpirvShader* {
+    const PipelineStore::Shader* s = store_->loaded_shader(hash);
+    if (!s || s->type != uint32_t(type) || s->ucode.empty()) return nullptr;
+    return shaders_->Load(type, s->ucode.data(), uint32_t(s->ucode.size()));
+  };
+  do {
+    const PipelineStore::Pipeline& sp = list[prewarm_next_++];
+    VulkanPipelineKey key;
+    if (sp.key.size() != sizeof(key)) {
+      ++prewarm_failed_;
+      continue;
+    }
+    std::memcpy(&key, sp.key.data(), sizeof(key));
+    uint64_t gs_key = 0;
+    std::memcpy(&gs_key, &key.gs, sizeof(gs_key));
+    SpirvShader* vs = load(sp.vs_hash, xenos::ShaderType::kVertex);
+    SpirvShader* ps = sp.ps_hash ? load(sp.ps_hash, xenos::ShaderType::kPixel) : nullptr;
+    // A stored key comes from disk: values Vulkan would reject (a corrupt or foreign file)
+    // drop it.
+    if (!vs || (sp.ps_hash && !ps) || !IsValidStoredPipelineKey(key) || gs_key > UINT32_MAX) {
+      ++prewarm_failed_;
+      continue;
+    }
+    key.vs = shaders_->Module(*vs, sp.vs_mod);
+    key.ps = ps ? shaders_->Module(*ps, sp.ps_mod) : VK_NULL_HANDLE;
+    key.gs = VK_NULL_HANDLE;
+    if (gs_key) {
+      VulkanGeometryShaderKey g;
+      g.key = uint32_t(gs_key);
+      key.gs = shaders_->Geometry(g);
+    }
+    const VulkanBindings::Layout* layout = gpu_->bindings.GetLayout(*vs, ps);
+    if (!key.vs || (ps && !key.ps) || (gs_key && !key.gs) || !layout) {
+      ++prewarm_failed_;
+      continue;
+    }
+    key.layout = layout->layout;
+    gpu_->pipelines.Prewarm(key);
+  } while (prewarm_next_ < list.size() &&
+           std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(2));
+  prewarm_ms_ +=
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  ++prewarm_frames_;
+  if (prewarm_next_ == list.size())
+    REXLOG_INFO(
+        "GRAW native Vulkan pipelines: prewarm queued {} pipelines ({} failed) in {:.1f} ms over "
+        "{} frames",
+        list.size() - prewarm_failed_, prewarm_failed_, prewarm_ms_, prewarm_frames_);
+}
+
 void VulkanBackend::BeginFrame(uint64_t frame_index) {
   frame_index_ = frame_index;
   frame_draw_ = 0;
+  Prewarm();
   const std::string dump_targets = REXCVAR_GET(graw_native_vulkan_dump_target_draws);
   if (!dump_targets.empty() &&
       std::sscanf(dump_targets.c_str(), "%u-%u", &dump_target_first_, &dump_target_last_) != 2)
@@ -1351,6 +1476,12 @@ void VulkanBackend::AfterSwap(uint64_t frame_index, uint64_t completed) {
   stats_.hash_copies = mirror_.hash_copies.exchange(0, std::memory_order_relaxed);
   gpu_->bindings.EndFrame(completed);
   gpu_->textures->EndFrame(completed);
+  // After the frame's submission (the GPU runs it meanwhile): a held frame waits for the
+  // pipelines its draws skipped.
+  stats_.pso_wait_us +=
+      gpu_->pipelines.WaitForFrame(pipeline_wait_ ? std::chrono::milliseconds(500)
+                                                  : std::chrono::milliseconds(0));
+  if (store_) store_->Flush();
   if (!gpu_->dump.empty()) DumpWrite(completed);
   for (size_t i = 0; i < gpu_->retired.size();) {
     if (gpu_->retired[i].fence <= completed) {
@@ -1411,10 +1542,11 @@ Backend::SwapResult VulkanBackend::Swap(const SwapCall& swap, std::optional<bool
     REXLOG_INFO("GRAW native Vulkan bindings: {} descriptor sets, {} constant uploads ({} KB), "
                 "{} draws kept the constants set",
                 b.sets, b.constant_uploads, b.constant_bytes >> 10, b.constant_set_reuses);
-    const VulkanPipelineStats& p = gpu_->pipelines.stats();
-    REXLOG_INFO("GRAW native Vulkan pipelines: {} created ({:.0f} us total, max {:.0f} us), {} "
-                "failed; {} render targets",
-                p.created, p.create_us, p.max_create_us, p.failed, gpu_->targets.count());
+    const VulkanPipelineStats p = gpu_->pipelines.stats();
+    REXLOG_INFO("GRAW native Vulkan pipelines: {} created ({} from the cache, {} prewarmed; "
+                "{:.0f} us total, max {:.0f} us), {} failed, {} queued; {} render targets",
+                p.created, p.cache_hits, p.prewarmed, p.create_us, p.max_create_us, p.failed,
+                gpu_->pipelines.queued(), gpu_->targets.count());
     REXLOG_INFO("GRAW native Vulkan resolves: {} copied ({} depth, {} color by the shader), {} "
                 "skipped, {} with clears; {} destination images; front buffer {}",
                 resolves_, depth_resolves_, shader_resolves_, resolves_skipped_, resolve_clears_,
@@ -1471,9 +1603,12 @@ Backend::SwapResult VulkanBackend::Swap(const SwapCall& swap, std::optional<bool
     }
   }
   target_use_.clear();
+  // A frame without the draws whose pipelines were compiling: the previous frame stays on
+  // screen while this one waits for them (AfterSwap).
+  r.incomplete = pipeline_wait_ && gpu_->pipelines.frame_pending();
   r.fence = device_->frame_fence();
   gpu_->targets.EndRendering(device_->command_buffer());
-  if (!device_->EndFrame(window_taken_, color, shown)) return r;
+  if (!device_->EndFrame(window_taken_ && !r.incomplete, color, shown)) return r;
   const VulkanDevice::EndFrameTimes& et = device_->end_frame_times();
   r.presented = et.presented;
   r.presents = et.presents;

@@ -40,6 +40,8 @@ class SpirvShader;
 namespace graw::native {
 
 class VulkanDevice;
+class PipelineStore;
+struct VulkanPipelineKey;
 struct VulkanRenderTarget;
 class VulkanShaderCache;
 struct ShaderRef;
@@ -112,6 +114,18 @@ class VulkanBackend final : public Backend, public GuestMemoryMirror::Sink {
   bool window_taken_ = false;  // OwnGameWindow disconnected ReXGlue's presenter from the window
   std::atomic<bool>* paces_frames_ = nullptr;
   uint64_t frame_index_ = 0;
+  // M4d: pipelines that survive runs (pipeline_store.h, in <cache_root>/graw-native-vulkan):
+  // recorded as first created, compiled at start-up in later runs (Prewarm, a slice per
+  // frame). A frame whose draws waited for pipelines is held (pipeline_wait_).
+  void RecordPipeline(const VulkanPipelineKey& key, const rex::graphics::SpirvShader& vs,
+                      uint64_t vs_mod, const rex::graphics::SpirvShader* ps, uint64_t ps_mod,
+                      uint32_t gs_key);
+  void Prewarm();
+  std::unique_ptr<PipelineStore> store_;
+  size_t prewarm_next_ = 0;
+  uint32_t prewarm_failed_ = 0, prewarm_frames_ = 0;
+  double prewarm_ms_ = 0;
+  bool pipeline_wait_ = false;
   // --graw_native_vulkan_skip_draws: this frame's draw count, and the range skipped.
   uint32_t frame_draw_ = 0;
   uint32_t skip_first_ = UINT32_MAX, skip_last_ = 0;

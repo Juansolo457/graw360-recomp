@@ -106,7 +106,10 @@ namespace graw::native {
   X(vkCmdCopyImage)                 \
   X(vkCreateComputePipelines)       \
   X(vkCmdDispatch)                  \
-  X(vkCmdPushConstants)
+  X(vkCmdPushConstants)             \
+  X(vkCreatePipelineCache)          \
+  X(vkDestroyPipelineCache)         \
+  X(vkGetPipelineCacheData)
 
 class VulkanDevice {
  public:

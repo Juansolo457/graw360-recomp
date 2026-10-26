@@ -17,32 +17,37 @@ from [Lost Odyssey Recomp](https://github.com/freefrank/LostOdysseyRecomp).
 
 ## Status
 
-**Boots, with work left in each mode.** The disc holds three programs, each recompiled
+**The campaign plays; a work in progress.** The disc holds three programs, each recompiled
 separately, and the front end hands over between them as the console did:
 
 - the front end (start screen, menus) works;
-- Instant Action and co-op load and play, but the 3D view is still black (HUD, menus and the
-  drone camera draw);
-- the campaign program boots to its Campaign menu; starting a mission is next.
+- the campaign plays, with a native Direct3D 12 renderer: up to 4K internal resolution, true
+  120 fps with character animation at the right speed, the Cross-Com feed and the tactical map.
+  It hasn't been played through end to end yet; [#36](https://github.com/Juansolo457/graw360-recomp/issues/36)
+  tracks the road to 1.0, and Linux is next ([#38](https://github.com/Juansolo457/graw360-recomp/issues/38));
+- Instant Action and co-op load and play, but the 3D view is still dark (#9); multiplayer is
+  being scoped (#34, #35).
 
-- [docs/PLAN.md](docs/PLAN.md): the plan to the title screen, phases, exit criteria, risks
-- [docs/FINDINGS.md](docs/FINDINGS.md): what the disc and the executable are
-- [docs/HANDOFF.md](docs/HANDOFF.md): current state, how to build and run, where things live
+- [docs/SETUP.md](docs/SETUP.md): build and play from your own disc
+- [docs/HANDOFF.md](docs/HANDOFF.md): current state, how things work, where things live
+- [docs/NATIVE_RENDERER.md](docs/NATIVE_RENDERER.md): the campaign's native renderer
+- [docs/FINDINGS.md](docs/FINDINGS.md): what the disc and the executables are
 
 ## Build and run (Windows)
 
+[docs/SETUP.md](docs/SETUP.md) has the details (requirements, what each step does). In short:
+
 ```powershell
+pwsh -NoProfile -File tools/setup.ps1                                        # toolchain, patched SDK tools
 pwsh -NoProfile -File tools/extract.ps1 -Iso 'D:\path\to\your\graw.iso'   # ~4.8 GB into port/assets
-pwsh -NoProfile -File tools/build.ps1                                        # front end: codegen + build
-pwsh -NoProfile -File tools/build.ps1 -Project port-mp                       # Instant Action / multiplayer
+pwsh -NoProfile -File tools/build.ps1                                        # front end
 pwsh -NoProfile -File tools/build.ps1 -Project port-yeti                     # campaign
-pwsh -NoProfile -File tools/smoke.ps1 -Seconds 60 -Captures 3               # headless boot check
-pwsh -NoProfile -File tools/launch.ps1 -Windowed -Scale 1                    # run it
+pwsh -NoProfile -File tools/build.ps1 -Project port-mp                       # Instant Action / multiplayer
+pwsh -NoProfile -File tools/launch.ps1 -Native -Scale 3 -Fps 120             # play: 4K, 120 fps
 ```
 
-Supported executable: `default.xex` title `555307D5`, SHA-256 `295ac4de…c023a` (USA/Europe
-multilingual disc). The toolchain (ReXGlue SDK, LLVM 20, CMake, Ninja) is reached through the
-`.tools/` junction; see [docs/HANDOFF.md](docs/HANDOFF.md).
+Supported disc: USA/Europe multilingual, title `555307D5` (the build checks each executable's
+SHA-256).
 
 ## Layout
 
@@ -50,8 +55,10 @@ multilingual disc). The toolchain (ReXGlue SDK, LLVM 20, CMake, Ninja) is reache
 port/        the front end (default.xex): manifest, src/ (host code shared by all three), assets/ (your disc, ignored)
 port-mp/     Instant Action, co-op and multiplayer (GR3Xenon_Release.exe)
 port-yeti/   the campaign (Yeti_Final_Xenon.exe)
-tools/       extract, build, launch, smoke, window capture, XDVDFS reader, XEX inspector/decryptor, import survey
-docs/        plan, findings, handoff
+native/      the campaign's native Direct3D 12 renderer
+tools/       setup, extract, build, launch, smoke, SDK patches (patches/), analysis tools
+docs/        setup, handoff, findings, investigations
+third_party/ the patched ReXGlue source tools/setup.ps1 makes (ignored)
 private/     your captures, logs and decrypted images (ignored)
 ```
 

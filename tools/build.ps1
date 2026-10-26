@@ -93,5 +93,18 @@ try {
     }
     & $cmake --build --preset $preset --parallel $Jobs
     if ($LASTEXITCODE) { throw 'Build failed.' }
+    if ($Project -eq 'port-yeti') {
+        # The build copies the SDK's stock renderer plugin next to the campaign; the campaign uses
+        # the one tools/setup.ps1 built from the patched source (resolves into freed memory,
+        # vblank pacing, and gpu_skip_draws, without which -Native draws everything twice).
+        $suffix = @{ 'Debug' = 'd'; 'Release' = ''; 'RelWithDebInfo' = 'rd' }[$Configuration]
+        $plugin = Join-Path $root "third_party/rexglue-sdk-bd833a2/out/win-amd64/$Configuration/rexgpu-xenos$suffix.dll"
+        if (Test-Path $plugin) {
+            Copy-Item $plugin (Join-Path $port "out/build/$preset/") -Force
+            Write-Host "Installed the patched renderer plugin ($plugin)"
+        } else {
+            Write-Warning "The patched renderer plugin isn't built ($plugin): the campaign keeps the SDK's stock one. Run tools/setup.ps1 (docs/SETUP.md)."
+        }
+    }
     Write-Host "Built $Project/out/build/$preset/$name.exe"
 } finally { Pop-Location }

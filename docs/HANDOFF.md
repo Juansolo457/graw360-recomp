@@ -84,8 +84,12 @@ pwsh -NoProfile -File tools/smoke.ps1 -Project port-yeti -Seconds 60 -CaptureEve
 pwsh -NoProfile -File tools/launch.ps1 -Windowed -Scale 1 [-Trace] # a window on the user's screen: say so first; log port/logs/run-*.log
 pwsh -NoProfile -File tools/capture_window.ps1 -ProcessName graw  # screenshot even when covered
 ```
-- Toolchain: `.tools/` is a junction to `../n3-360-recomp/reference/N3-Recomp/.tools` (ReXGlue
-  SDK nightly `0.10.0.24-dev.gbd833a2`, LLVM 20.1.8, CMake 3.31.8, Ninja). `build.ps1` enters a
+- Toolchain: `tools/setup.ps1` (docs/SETUP.md) downloads it into `.tools/` (ReXGlue SDK nightly
+  `0.10.0.24-dev.gbd833a2`, LLVM 20.1.8, CMake 3.31.8, Ninja 1.13.1), and builds the patched
+  code generator and the campaign's renderer plugin from `third_party/rexglue-sdk-bd833a2` (four
+  patches in `tools/patches`; `build.ps1 -Project port-yeti` installs the plugin). On the
+  maintainer's PC `.tools/` is a junction to `../n3-360-recomp/reference/N3-Recomp/.tools`
+  with the same files. `build.ps1` enters a
   VS 2022 DevShell (vcvars64 breaks on a quoted PATH entry), checks the XEX hash, runs
   `graw_codegen`, reconfigures once on the first run (the recomp target only exists after the
   sources do), then builds `port/out/build/win-amd64-relwithdebinfo/graw.exe` with
@@ -241,6 +245,8 @@ each).
 - **Installed campaign renderer:** stock bd833a2 + `rexglue-bd833a2-freed-page-resolve.patch` +
   `rexglue-bd833a2-vblank-pacing.patch` (`port-yeti/out/build/.../rexgpu-xenosrd.dll.fixed2`).
   Every campaign build copies the SDK's stock DLL back: reinstall `.fixed2` after building.
+  (Since 2026-10-26 `build.ps1` installs the plugin `tools/setup.ps1` built instead: these
+  patches plus `gpu-skip-draws`.)
   The SDK work tree keeps the diagnostics (`rexglue-bd833a2-graw-rtt-trace.patch`), the codegen
   fix (`rexglue-bd833a2-vpkd3d128-alias.patch`, generated code needs the patched CLI, see
   TACMAP.md) and the vblank change.

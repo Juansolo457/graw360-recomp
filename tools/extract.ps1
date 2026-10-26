@@ -10,5 +10,10 @@ $assets = Join-Path $root 'port\assets'
 New-Item -ItemType Directory -Force $assets | Out-Null
 python -I (Join-Path $PSScriptRoot 'xdvdfs.py') $Iso extract $assets
 if ($LASTEXITCODE) { throw 'Extraction failed.' }
+# The campaign and Instant Action read the same disc: their assets folders are junctions to it.
+foreach ($project in 'port-mp', 'port-yeti') {
+    $link = Join-Path $root "$project\assets"
+    if (!(Test-Path $link)) { New-Item -ItemType Junction -Path $link -Target $assets | Out-Null }
+}
 python -I (Join-Path $PSScriptRoot 'xexinfo.py') (Join-Path $assets 'default.xex')
 "default.xex SHA-256 " + (Get-FileHash (Join-Path $assets 'default.xex') -Algorithm SHA256).Hash.ToLowerInvariant()

@@ -226,6 +226,31 @@ pre-refactor clean-folder run (another part of the level, so a sanity check only
 - `FramePacer` attaches to a DXGI waitable and a D3D12 fence.
 - `renderer.cpp` uses Win32 for its thread names and `Sleep`.
 
+## M2 status (2026-10-26)
+**Done.** `--graw_native_api=vulkan` (default d3d12 on Windows, vulkan elsewhere) selects
+`VulkanBackend`.
+- `native/vulkan_device.h/.cpp`:
+  - opens the loader at run time (`vulkan-1.dll` / `libvulkan.so.1`, VK_NO_PROTOTYPES): the
+    prebuilt SDK the game links has no Vulkan, and only the SDK tree's headers are used;
+  - picks a Vulkan 1.2 GPU with `scalarBlockLayout` and enables it;
+  - keeps two frames in flight, and a swapchain on the game window that is recreated when out
+    of date;
+  - `--graw_native_vulkan_validation` routes the Khronos layer's messages to the log.
+- `native/vulkan_backend.h/.cpp`:
+  - counts the game's draws, clears and resolves without drawing them;
+  - presents a cleared, slowly color-cycling frame per guest Swap;
+  - owns and releases the game window like the D3D12 path;
+  - primary mode only, no display pacing yet.
+
+**Test** (GRAW save, 70 s, validation on, RTX 4090):
+- Vulkan 1.4.351, swapchain 2560x1440, 3 images, mailbox;
+- 4,057 frames, all presented, 16.67 ms;
+- **0 validation errors or warnings**;
+- the slow frames are the first one (swapchain creation) and the save's loading at ~28 s.
+
+The D3D12 default, run after it, is unchanged: gameplay with HUD and Cross-Com, 1,888
+draws/frame at 0.76 µs/draw, no errors.
+
 ## Risks
 - **The SPIR-V translator's output for GRAW is unproven.** M0 exists to find gaps before
   anything else is built.

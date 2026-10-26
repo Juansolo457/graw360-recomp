@@ -5,6 +5,7 @@
 #include "backend.h"
 #include "clock.h"
 #include "d3d12_backend.h"
+#include "vulkan_backend.h"
 #include "d3d_state.h"
 #include "frame_pacer.h"
 #include "game_window.h"
@@ -99,6 +100,11 @@ REXCVAR_DEFINE_INT32(
     "and audits them: each shader against the guest's ucode, the render thread's "
     "registers against the game thread's, and the shared memory each draw reads "
     "against guest memory as it was when the draw was queued (0: off)");
+REXCVAR_DEFINE_STRING(graw_native_api, "", "GRAW native",
+                      "GPU API of the native renderer: d3d12 or vulkan (docs/VULKAN_RENDERER.md; "
+                      "empty: d3d12 on Windows, vulkan elsewhere). Vulkan draws no game frames "
+                      "yet (M2: cleared frames)")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DECLARE(int32_t, graw_d3d_stats_frames);
 REXCVAR_DECLARE(bool, graw_native_luma_probe);
 
@@ -356,7 +362,21 @@ bool NativeRenderer::Initialize() {
   options.gpu_timing = REXCVAR_GET(graw_native_gpu_timing);
   options.gpu_timing_shaders = REXCVAR_GET(graw_native_gpu_timing_shaders);
   options.texture_capture_order = REXCVAR_GET(graw_native_texture_capture_order);
-  backend_ = std::make_unique<D3D12Backend>();
+  std::string api = REXCVAR_GET(graw_native_api);
+#if defined(_WIN32)
+  if (api.empty()) api = "d3d12";
+#else
+  if (api.empty()) api = "vulkan";
+#endif
+  if (api == "vulkan") {
+    backend_ = std::make_unique<VulkanBackend>();
+  } else if (api == "d3d12") {
+    backend_ = std::make_unique<D3D12Backend>();
+  } else {
+    REXLOG_ERROR("GRAW native: unknown --graw_native_api={} (d3d12 or vulkan)", api);
+    return false;
+  }
+  REXLOG_INFO("GRAW native: {} backend", api);
   if (!backend_->Initialize(options)) return false;
   // Only once native is up: from here the Xenos plugin does no draw, copy or swap work, and its
   // command processor only runs fences, write-backs and interrupts.

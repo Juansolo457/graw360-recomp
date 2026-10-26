@@ -11,6 +11,8 @@
 #include "draw.h"
 
 #include "geometry_shader.h"
+#include "guest_draw_state.h"
+#include "guest_memory_mirror.h"
 #include "log.h"
 #include "pipeline_store.h"
 #include "profile.h"
@@ -163,218 +165,6 @@ constexpr D3D12_RESOURCE_STATES kSharedReadState = D3D12_RESOURCE_STATE_NON_PIXE
 
 using enum rex::graphics::Register;  // XE_GPU_REG_* (clang-cl, C++20)
 
-// reg::RB_COLOR_INFO / RB_BLENDCONTROL::rt_register_indices live in the plugin DLL (not exported).
-constexpr rex::graphics::Register kColorInfoRegs[4] = {
-    XE_GPU_REG_RB_COLOR_INFO, XE_GPU_REG_RB_COLOR1_INFO, XE_GPU_REG_RB_COLOR2_INFO,
-    XE_GPU_REG_RB_COLOR3_INFO};
-constexpr rex::graphics::Register kBlendControlRegs[4] = {
-    XE_GPU_REG_RB_BLENDCONTROL0, XE_GPU_REG_RB_BLENDCONTROL1, XE_GPU_REG_RB_BLENDCONTROL2,
-    XE_GPU_REG_RB_BLENDCONTROL3};
-
-// ---- draw_util ports (host render targets, no resolution scale) ----
-
-bool IsRasterizationPotentiallyDone(const RegisterFile& regs, bool primitive_polygonal) {
-  xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
-  if (edram_mode != xenos::EdramMode::kColorDepth && edram_mode != xenos::EdramMode::kDepthOnly) {
-    return false;
-  }
-  if (regs.Get<reg::SQ_PROGRAM_CNTL>().vs_export_mode ==
-          xenos::VertexShaderExportMode::kMultipass ||
-      !regs.Get<reg::RB_SURFACE_INFO>().surface_pitch) {
-    return false;
-  }
-  if (primitive_polygonal) {
-    auto sc = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
-    if (sc.cull_front && sc.cull_back) return false;
-  }
-  return true;
-}
-
-reg::RB_DEPTHCONTROL GetNormalizedDepthControl(const RegisterFile& regs) {
-  xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
-  if (edram_mode != xenos::EdramMode::kColorDepth && edram_mode != xenos::EdramMode::kDepthOnly) {
-    reg::RB_DEPTHCONTROL disabled;
-    disabled.value = 0;
-    return disabled;
-  }
-  reg::RB_DEPTHCONTROL depthcontrol = regs.Get<reg::RB_DEPTHCONTROL>();
-  if (depthcontrol.z_enable && !depthcontrol.z_write_enable &&
-      depthcontrol.zfunc == xenos::CompareFunction::kAlways) {
-    depthcontrol.z_enable = 0;
-  }
-  return depthcontrol;
-}
-
-void GetPreferredFacePolygonOffset(const RegisterFile& regs, bool primitive_polygonal,
-                                   float& scale_out, float& offset_out) {
-  float scale = 0.0f, offset = 0.0f;
-  auto sc = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
-  if (primitive_polygonal) {
-    if (sc.poly_offset_front_enable && !sc.cull_front) {
-      scale = regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_SCALE);
-      offset = regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_OFFSET);
-    }
-    if (sc.poly_offset_back_enable && !sc.cull_back && !scale && !offset) {
-      scale = regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_BACK_SCALE);
-      offset = regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_BACK_OFFSET);
-    }
-  } else if (sc.poly_offset_para_enable) {
-    scale = regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_SCALE);
-    offset = regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_OFFSET);
-  }
-  scale_out = scale;
-  offset_out = offset;
-}
-
-uint32_t GetNormalizedColorMask(const RegisterFile& regs, uint32_t ps_writes_color_targets) {
-  if (regs.Get<reg::RB_MODECONTROL>().edram_mode != xenos::EdramMode::kColorDepth) return 0;
-  uint32_t normalized = 0;
-  uint32_t rb_color_mask = regs[XE_GPU_REG_RB_COLOR_MASK];
-  for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
-    if (!(ps_writes_color_targets & (1u << i))) continue;
-    uint32_t format_mask = (1u << xenos::GetColorRenderTargetFormatComponentCount(
-                                regs.Get<reg::RB_COLOR_INFO>(kColorInfoRegs[i]).color_format)) -
-                           1;
-    uint32_t rt_mask = (rb_color_mask >> (4 * i)) & format_mask;
-    if (!rt_mask) continue;
-    rt_mask |= 0b1111 & ~format_mask;
-    normalized |= rt_mask << (4 * i);
-  }
-  return normalized;
-}
-
-// GetHostViewportInfo with origin_bottom_left = true, x/y max = D3D12_VIEWPORT_BOUNDS_MAX, no
-// reverse Z, no float24 conversion, resolution scale 1 and half_pixel_offset on (the plugin's
-// settings), and full_float24_in_0_to_1 = false: the host depth buffers here are not shared
-// with EDRAM ownership transfers, so depth stays in 0...1 (the Clear values RenderTargets uses,
-// and the shader-written depth: the system flags never carry kSysFlag_DepthFloat24).
-void HostViewportInfo(const RegisterFile& regs, bool pixel_shader_writes_depth, ViewportInfo& out) {
-  auto clip = regs.Get<reg::PA_CL_CLIP_CNTL>();
-  auto vte = regs.Get<reg::PA_CL_VTE_CNTL>();
-  auto sc = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
-  auto vtx = regs.Get<reg::PA_SU_VTX_CNTL>();
-  float scale_xy[] = {
-      vte.vport_x_scale_ena ? regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XSCALE) : 1.0f,
-      vte.vport_y_scale_ena ? regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YSCALE) : 1.0f,
-  };
-  float scale_z = vte.vport_z_scale_ena ? regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_ZSCALE) : 1.0f;
-  float offset_base_xy[] = {
-      vte.vport_x_offset_ena ? regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XOFFSET) : 0.0f,
-      vte.vport_y_offset_ena ? regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YOFFSET) : 0.0f,
-  };
-  float offset_z = vte.vport_z_offset_ena ? regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_ZOFFSET) : 0.0f;
-  float offset_add_xy[2] = {};
-  if (sc.vtx_window_offset_enable) {
-    auto wo = regs.Get<reg::PA_SC_WINDOW_OFFSET>();
-    offset_add_xy[0] += float(wo.window_x_offset);
-    offset_add_xy[1] += float(wo.window_y_offset);
-  }
-  if (vtx.pix_center == xenos::PixelCenter::kD3DZero) {
-    offset_add_xy[0] += 0.5f;
-    offset_add_xy[1] += 0.5f;
-  }
-  const uint32_t xy_max[] = {D3D12_VIEWPORT_BOUNDS_MAX, D3D12_VIEWPORT_BOUNDS_MAX};
-  float z_min, z_max, ndc_scale[3], ndc_offset[3];
-  if (clip.clip_disable) {
-    for (uint32_t i = 0; i < 2; ++i) {
-      out.xy_offset[i] = 0;
-      uint32_t extent = std::min(xenos::kTexture2DCubeMaxWidthHeight, xy_max[i]);
-      out.xy_extent[i] = extent;
-      float extent_f = float(extent);
-      float px_to_ndc = 2.0f / extent_f;
-      ndc_scale[i] = scale_xy[i] * px_to_ndc;
-      ndc_offset[i] = (offset_base_xy[i] - extent_f * 0.5f + offset_add_xy[i]) * px_to_ndc;
-    }
-    z_min = 0.0f;
-    z_max = 1.0f;
-    ndc_scale[2] = scale_z;
-    ndc_offset[2] = offset_z;
-  } else {
-    for (uint32_t i = 0; i < 2; ++i) {
-      float offset_axis = offset_base_xy[i] + offset_add_xy[i];
-      float scale_axis = scale_xy[i];
-      float scale_abs = std::abs(scale_axis);
-      float max_f = float(xy_max[i]);
-      uint32_t a0 = uint32_t(std::clamp(offset_axis - scale_abs, 0.0f, max_f));
-      uint32_t a1 = uint32_t(std::clamp(offset_axis + scale_abs, 0.0f, max_f));
-      uint32_t extent = a1 - a0;
-      out.xy_offset[i] = a0;
-      out.xy_extent[i] = extent;
-      if (extent) {
-        float extent_f = float(extent);
-        ndc_scale[i] = scale_axis * 2.0f / extent_f;
-        ndc_offset[i] = (offset_axis - (float(a0) + extent_f * 0.5f)) * 2.0f / extent_f;
-      } else {
-        ndc_scale[i] = 1.0f;
-        ndc_offset[i] = 0.0f;
-      }
-    }
-    float host_offset_z, host_scale_z;
-    if (clip.dx_clip_space_def) {
-      host_offset_z = offset_z;
-      host_scale_z = scale_z;
-      ndc_scale[2] = 1.0f;
-      ndc_offset[2] = 0.0f;
-    } else {
-      host_offset_z = offset_z - scale_z;
-      host_scale_z = scale_z * 2.0f;
-      ndc_scale[2] = 0.5f;
-      ndc_offset[2] = 0.5f;
-    }
-    if (pixel_shader_writes_depth) {
-      z_min = 0.0f;
-      z_max = 1.0f;
-    } else {
-      z_min = std::clamp(host_offset_z, 0.0f, 1.0f);
-      z_max = std::clamp(host_offset_z + host_scale_z, 0.0f, 1.0f);
-      if (z_min > z_max) {
-        std::swap(z_min, z_max);
-        ndc_scale[2] = -ndc_scale[2];
-        ndc_offset[2] = 1.0f - ndc_offset[2];
-      }
-    }
-  }
-  out.z_min = z_min;
-  out.z_max = z_max;
-  ndc_scale[1] = -ndc_scale[1];  // origin_bottom_left
-  ndc_offset[1] = -ndc_offset[1];
-  for (uint32_t i = 0; i < 3; ++i) {
-    out.ndc_scale[i] = ndc_scale[i];
-    out.ndc_offset[i] = ndc_offset[i];
-  }
-}
-
-void HostScissor(const RegisterFile& regs, Scissor& out) {
-  auto tl = regs.Get<reg::PA_SC_WINDOW_SCISSOR_TL>();
-  auto br = regs.Get<reg::PA_SC_WINDOW_SCISSOR_BR>();
-  int32_t tl_x = int32_t(tl.tl_x), tl_y = int32_t(tl.tl_y);
-  int32_t br_x = int32_t(br.br_x), br_y = int32_t(br.br_y);
-  if (!tl.window_offset_disable) {
-    auto wo = regs.Get<reg::PA_SC_WINDOW_OFFSET>();
-    tl_x += wo.window_x_offset;
-    tl_y += wo.window_y_offset;
-    br_x += wo.window_x_offset;
-    br_y += wo.window_y_offset;
-  }
-  auto stl = regs.Get<reg::PA_SC_SCREEN_SCISSOR_TL>();
-  auto sbr = regs.Get<reg::PA_SC_SCREEN_SCISSOR_BR>();
-  tl_x = std::max(tl_x, int32_t(stl.tl_x));
-  tl_y = std::max(tl_y, int32_t(stl.tl_y));
-  br_x = std::min(br_x, int32_t(sbr.br_x));
-  br_y = std::min(br_y, int32_t(sbr.br_y));
-  uint32_t pitch = regs.Get<reg::RB_SURFACE_INFO>().surface_pitch;
-  tl_x = std::min(tl_x, int32_t(pitch));
-  br_x = std::min(br_x, int32_t(pitch));
-  tl_x = std::max(tl_x, 0);
-  tl_y = std::max(tl_y, 0);
-  br_x = std::max(br_x, tl_x);
-  br_y = std::max(br_y, tl_y);
-  out.offset[0] = uint32_t(tl_x);
-  out.offset[1] = uint32_t(tl_y);
-  out.extent[0] = uint32_t(br_x - tl_x);
-  out.extent[1] = uint32_t(br_y - tl_y);
-}
-
 // ---- pipeline description ----
 
 struct PipelineKey {
@@ -410,43 +200,6 @@ static_assert(offsetof(PipelineKey, depth_bias) == 28 && offsetof(PipelineKey, d
 // 2: depth bias zero with dynamic depth bias; 3: pixel shaders specialized for unsigned textures
 constexpr uint32_t kPipelineKeyVersion = 3;
 
-enum class BlendFactor : uint8_t {
-  kZero,
-  kOne,
-  kSrcColor,
-  kInvSrcColor,
-  kSrcAlpha,
-  kInvSrcAlpha,
-  kDestColor,
-  kInvDestColor,
-  kDestAlpha,
-  kInvDestAlpha,
-  kBlendFactor,
-  kInvBlendFactor,
-  kSrcAlphaSat,
-};
-constexpr BlendFactor kBlendFactorMap[32] = {
-    BlendFactor::kZero,        BlendFactor::kOne,
-    BlendFactor::kZero,        BlendFactor::kZero,
-    BlendFactor::kSrcColor,    BlendFactor::kInvSrcColor,
-    BlendFactor::kSrcAlpha,    BlendFactor::kInvSrcAlpha,
-    BlendFactor::kDestColor,   BlendFactor::kInvDestColor,
-    BlendFactor::kDestAlpha,   BlendFactor::kInvDestAlpha,
-    BlendFactor::kBlendFactor, BlendFactor::kInvBlendFactor,
-    BlendFactor::kBlendFactor, BlendFactor::kInvBlendFactor,
-    BlendFactor::kSrcAlphaSat,
-};
-constexpr BlendFactor kBlendFactorAlphaMap[32] = {
-    BlendFactor::kZero,        BlendFactor::kOne,
-    BlendFactor::kZero,        BlendFactor::kZero,
-    BlendFactor::kSrcAlpha,    BlendFactor::kInvSrcAlpha,
-    BlendFactor::kSrcAlpha,    BlendFactor::kInvSrcAlpha,
-    BlendFactor::kDestAlpha,   BlendFactor::kInvDestAlpha,
-    BlendFactor::kDestAlpha,   BlendFactor::kInvDestAlpha,
-    BlendFactor::kBlendFactor, BlendFactor::kInvBlendFactor,
-    BlendFactor::kBlendFactor, BlendFactor::kInvBlendFactor,
-    BlendFactor::kSrcAlphaSat,
-};
 constexpr D3D12_BLEND kD3DBlend[] = {
     D3D12_BLEND_ZERO,          D3D12_BLEND_ONE,
     D3D12_BLEND_SRC_COLOR,     D3D12_BLEND_INV_SRC_COLOR,
@@ -461,72 +214,6 @@ constexpr D3D12_BLEND_OP kD3DBlendOp[8] = {
     D3D12_BLEND_OP_REV_SUBTRACT, D3D12_BLEND_OP_ADD,      D3D12_BLEND_OP_ADD, D3D12_BLEND_OP_ADD};
 
 // ---- samplers ----
-
-// Every sampler field the guest's fetch constant and shader binding select, packed losslessly.
-struct SamplerKey {
-  uint32_t clamp_x : 3 = 0, clamp_y : 3 = 0, clamp_z : 3 = 0;  // xenos::ClampMode
-  uint32_t border : 2 = 0;                                     // xenos::BorderColor
-  uint32_t aniso : 3 = 0;                                      // xenos::AnisoFilter
-  uint32_t mag_linear : 1 = 0, min_linear : 1 = 0, mip_linear : 1 = 0, mip_base_map : 1 = 0;
-  uint32_t mip_min_level : 4 = 0;  // below xenos::kTextureMaxMips
-  uint32_t reserved : 10 = 0;
-  uint32_t value() const { return std::bit_cast<uint32_t>(*this); }
-};
-static_assert(sizeof(SamplerKey) == sizeof(uint32_t));
-
-xenos::ClampMode NormalizeClampMode(xenos::ClampMode m) {
-  if (m == xenos::ClampMode::kClampToHalfway) return xenos::ClampMode::kClampToEdge;
-  if (m == xenos::ClampMode::kMirrorClampToHalfway || m == xenos::ClampMode::kMirrorClampToBorder)
-    return xenos::ClampMode::kMirrorClampToEdge;
-  return m;
-}
-
-// `min_aniso`: --graw_native_anisotropy (DrawRenderer::Impl::min_aniso).
-SamplerKey GetSamplerKey(const RegisterFile& regs, const DxbcShader::SamplerBinding& binding,
-                         xenos::AnisoFilter min_aniso) {
-  xenos::xe_gpu_texture_fetch_t fetch = regs.GetTextureFetch(binding.fetch_constant);
-  SamplerKey k{};
-  xenos::ClampMode cx, cy, cz;
-  texture_util::GetClampModesForDimension(fetch, cx, cy, cz);
-  cx = NormalizeClampMode(cx);
-  cy = NormalizeClampMode(cy);
-  cz = NormalizeClampMode(cz);
-  k.clamp_x = uint32_t(cx);
-  k.clamp_y = uint32_t(cy);
-  k.clamp_z = uint32_t(cz);
-  k.border = (xenos::ClampModeUsesBorder(cx) || xenos::ClampModeUsesBorder(cy) ||
-              xenos::ClampModeUsesBorder(cz))
-                 ? uint32_t(fetch.border_color)
-                 : uint32_t(xenos::BorderColor::k_ABGR_Black);
-  uint32_t mip_min_level, mip_max_level;
-  texture_util::GetSubresourcesFromFetchConstant(fetch, nullptr, nullptr, nullptr, nullptr, nullptr,
-                                                 &mip_min_level, &mip_max_level);
-  k.mip_min_level = mip_min_level;
-  auto mag = binding.mag_filter == xenos::TextureFilter::kUseFetchConst ? fetch.mag_filter
-                                                                        : binding.mag_filter;
-  auto min = binding.min_filter == xenos::TextureFilter::kUseFetchConst ? fetch.min_filter
-                                                                        : binding.min_filter;
-  auto mip = binding.mip_filter == xenos::TextureFilter::kUseFetchConst ? fetch.mip_filter
-                                                                        : binding.mip_filter;
-  auto aniso = binding.aniso_filter == xenos::AnisoFilter::kUseFetchConst ? fetch.aniso_filter
-                                                                          : binding.aniso_filter;
-  aniso = std::min(aniso, xenos::AnisoFilter::kMax_16_1);
-  // Linearly filtered textures with mips get at least `min_aniso`; render targets, lookup
-  // tables and other point-sampled or single-level textures keep the game's filtering.
-  if (mag == xenos::TextureFilter::kLinear && min == xenos::TextureFilter::kLinear &&
-      mip != xenos::TextureFilter::kBaseMap && mip_max_level > mip_min_level)
-    aniso = std::max(aniso, min_aniso);
-  k.aniso = uint32_t(aniso);
-  if (aniso != xenos::AnisoFilter::kDisabled) {
-    k.mag_linear = k.min_linear = k.mip_linear = 1;
-  } else {
-    k.mag_linear = mag == xenos::TextureFilter::kLinear;
-    k.min_linear = min == xenos::TextureFilter::kLinear;
-    k.mip_linear = mip == xenos::TextureFilter::kLinear;
-  }
-  k.mip_base_map = mip == xenos::TextureFilter::kBaseMap;
-  return k;
-}
 
 D3D12_SAMPLER_DESC SamplerDesc(const SamplerKey& k) {
   D3D12_SAMPLER_DESC d = {};
@@ -574,31 +261,6 @@ D3D12_SAMPLER_DESC SamplerDesc(const SamplerKey& k) {
     d.MaxLOD = FLT_MAX;
   }
   return d;
-}
-
-// Whether `size` bytes at `a` and `b` are equal: 16 bytes at a time, four per round, no
-// ordering (cheaper than memcmp).
-inline bool Equal(const void* a, const void* b, uint32_t size) {
-  auto* x = static_cast<const uint8_t*>(a);
-  auto* y = static_cast<const uint8_t*>(b);
-  auto load = [](const uint8_t* p) {
-    return simde_mm_loadu_si128(reinterpret_cast<const simde__m128i*>(p));
-  };
-  auto zero = [](simde__m128i v) {
-    return simde_mm_movemask_epi8(simde_mm_cmpeq_epi8(v, simde_mm_setzero_si128())) == 0xFFFF;
-  };
-  uint32_t i = 0;
-  for (; i + 64 <= size; i += 64) {
-    const simde__m128i d = simde_mm_or_si128(
-        simde_mm_or_si128(simde_mm_xor_si128(load(x + i), load(y + i)),
-                          simde_mm_xor_si128(load(x + i + 16), load(y + i + 16))),
-        simde_mm_or_si128(simde_mm_xor_si128(load(x + i + 32), load(y + i + 32)),
-                          simde_mm_xor_si128(load(x + i + 48), load(y + i + 48))));
-    if (!zero(d)) return false;
-  }
-  for (; i + 16 <= size; i += 16)
-    if (!zero(simde_mm_xor_si128(load(x + i), load(y + i)))) return false;
-  return i == size || std::memcmp(x + i, y + i, size - i) == 0;
 }
 
 // A constant buffer that is re-uploaded only when its bytes change within a frame. `last`
@@ -657,7 +319,7 @@ void PackFloats(CachedCbv& cb, const DxbcShader* shader, const uint32_t* regs, u
 
 }  // namespace
 
-struct DrawRenderer::Impl {
+struct DrawRenderer::Impl : GuestMemoryMirror::Sink {
   D3D12Backend& r;
   DrawRenderer::Stats& stats;
   ID3D12Device* device = nullptr;
@@ -669,7 +331,11 @@ struct DrawRenderer::Impl {
   ComPtr<ID3D12RootSignature> root_signature;
   uint64_t root_signature_hash = 0;  // names in the pipeline library depend on it
 
-  // Shared memory: guest physical memory mirror and its page validity (cleared by CPU writes).
+  // Guest physical memory in shared memory: which pages hold a current copy, the write watches
+  // and the range copies (guest_memory_mirror.h). The D3D12 side (the buffer, its chunk
+  // mapping, the vertex upload pool) is this Impl, as the mirror's Sink.
+  GuestMemoryMirror mirror;
+  // Shared memory: guest physical memory mirror (pages are current per `mirror`).
   ComPtr<ID3D12Resource> shared;
   // Its state in the list being recorded. Buffers are created in the common state and decay to
   // it when ExecuteCommandLists completes, so every new list starts from there (SyncListFrame,
@@ -683,80 +349,13 @@ struct DrawRenderer::Impl {
   std::mutex shared_map_mutex;
   std::vector<ComPtr<ID3D12Heap>> shared_heaps;
   uint32_t shared_mapped_chunks = 0;
-  std::unique_ptr<std::atomic<uint64_t>[]> valid;
-  void* invalidation_handle = nullptr;
   // Without the render thread: the copies of the draw being recorded. With it, Prepare
   // (guest thread) writes into the batch's vector instead: this one is the render thread's.
   std::vector<VertexCopy> copies;
-  // Fence (or Prepare's tag) RequestRange tags vertex upload memory with.
-  uint64_t upload_fence = 0;
   // Render thread mode: vertex_upload belongs to the guest thread (Prepare/EndFramePrepare).
   bool threaded = false;
   uint64_t prep_upload_bytes = 0, prep_uploads = 0;
   PrepareDiag prep_diag;  // the guest thread's, until EndFramePrepare hands it over
-  // Copy segments (DrawRenderer::Prepare): what the current segment's draws read. Watched
-  // ranges are copied in whole pages, so their reads are kept one bit per page, valid in the
-  // 64-page words whose epoch is the segment's. Unwatched ranges (inline vertices, packed
-  // back to back in the guest's command buffer and often several to a page) are copied to the
-  // byte, so their reads are kept as byte intervals.
-  struct Read {
-    uint32_t begin, end;
-    bool exact;
-  };
-  // This many exact intervals end the segment: the overlap test scans them all.
-  static constexpr size_t kSegmentExactLimit = 64;
-  uint32_t segment_epoch = 1;
-  std::unique_ptr<uint32_t[]> segment_word_epoch;
-  std::unique_ptr<uint64_t[]> segment_pages;
-  std::vector<std::pair<uint32_t, uint32_t>> segment_exact;
-  // The draw being prepared: its ranges, and whether one of its copies overwrites memory the
-  // segment reads.
-  std::vector<Read> draw_reads;
-  bool preparing = false, segment_conflict = false;
-  static uint64_t PageMask(uint32_t w, uint32_t first, uint32_t last) {
-    uint64_t m = ~0ull;
-    if (w == first >> 6) m &= ~0ull << (first & 63);
-    if (w == last >> 6) m &= ~0ull >> (63 - (last & 63));
-    return m;
-  }
-  void NewSegment() {
-    ++segment_epoch;
-    segment_exact.clear();
-    if (coherency) coherency->segment_reads.clear();
-  }
-  bool SegmentReads(uint32_t begin, uint32_t end) const {
-    for (const auto& [b, e] : segment_exact)
-      if (b < end && begin < e) return true;
-    const uint32_t first = begin >> kPageShift, last = (end - 1) >> kPageShift;
-    for (uint32_t w = first >> 6; w <= last >> 6; ++w)
-      if (segment_word_epoch[w] == segment_epoch && (segment_pages[w] & PageMask(w, first, last)))
-        return true;
-    return false;
-  }
-  void SegmentAdd(const Read& read) {
-    if (read.exact) {
-      // Successive inline blocks are separated by the draw packets and constant writes around
-      // them: the merged interval covers those too, which no draw copies.
-      constexpr uint32_t kMergeGap = 16 << 10;
-      if (!segment_exact.empty() && segment_exact.back().second + kMergeGap >= read.begin &&
-          read.end + kMergeGap >= segment_exact.back().first) {
-        auto& last = segment_exact.back();
-        last = {std::min(last.first, read.begin), std::max(last.second, read.end)};
-      } else {
-        segment_exact.emplace_back(read.begin, read.end);
-      }
-      return;
-    }
-    const uint32_t first = read.begin >> kPageShift, last = (read.end - 1) >> kPageShift;
-    for (uint32_t w = first >> 6; w <= last >> 6; ++w) {
-      if (segment_word_epoch[w] != segment_epoch) {
-        segment_word_epoch[w] = segment_epoch;
-        segment_pages[w] = 0;
-      }
-      segment_pages[w] |= PageMask(w, first, last);
-    }
-  }
-
   UploadPool vertex_upload{16u << 20};
   // Write-back pages, written with streaming stores (CommitCbv).
   UploadPool constant_upload{4u << 20, /*cpu_cached=*/true};
@@ -1003,7 +602,6 @@ struct DrawRenderer::Impl {
     kDebugSnapshots = 256,   // snap_pending (below)
   };
   uint32_t debug_mask = 0, debug_max_draws = 0, frame_draws = 0, debug_poll = 0;
-  std::atomic<bool> upload_every_draw{false};  // kDebugUploadEveryDraw, for RequestRange's thread
   uint32_t debug_skip_from = 0, debug_skip_to = 0;
   std::string debug_path;  // empty without --graw_native_capture_dir: not polled
   std::array<uint64_t, 8> debug_hashes{};
@@ -1042,21 +640,8 @@ struct DrawRenderer::Impl {
       for (std::thread& t : pso_threads) t.join();
       library.Save();
     }
-    if (arm_thread.joinable()) {
-      {
-        std::lock_guard<std::mutex> lock(arm_mutex);
-        arm_stopping = true;
-      }
-      arm_cv.notify_one();
-      arm_thread.join();
-    }
-    if (invalidation_handle && memory)
-      memory->UnregisterPhysicalMemoryInvalidationCallback(invalidation_handle);
+    mirror.Shutdown();
     r.textures().SetEvictCallback(nullptr);
-    if (trace.file) {
-      trace.Flush();
-      std::fclose(trace.file);
-    }
   }
 
   bool Initialize();
@@ -1123,28 +708,18 @@ struct DrawRenderer::Impl {
   // The host indices of the triangle fan `s` (s.count >= 3) in upload memory tagged `tag`.
   FanIndices UploadFanIndices(const DrawState& s, uint64_t tag);
   void ResetListState();
-  // Whether [start, start + length) lies in guest physical memory (logged once if not).
-  bool InSharedMemory(uint32_t start, uint32_t length);
-  bool RequestRange(uint32_t start, uint32_t length, bool watch, std::vector<VertexCopy>& out);
-  // Sets (or clears) the bits of pages [first, end) in a page bitmap (valid, pending). acq_rel
-  // orders what each thread wrote before it ahead of the other's reads after it: RequestRange's
-  // copy_hash stores before a valid bit it clears, the watch thread's valid bits before the
-  // pending bits it clears.
-  static void SetPageBits(std::atomic<uint64_t>* words, uint32_t first, uint32_t end, bool set) {
-    for (uint32_t q = first; q < end;) {
-      const uint32_t word_end = std::min(end, (q | 63) + 1);
-      const uint32_t n = word_end - q;
-      const uint64_t mask = (n == 64 ? ~0ull : ((1ull << n) - 1)) << (q & 63);
-      if (set)
-        words[q >> 6].fetch_or(mask, std::memory_order_acq_rel);
-      else
-        words[q >> 6].fetch_and(~mask, std::memory_order_acq_rel);
-      q = word_end;
-    }
-  }
   // Gives the shared buffer memory under [start, start + length) if it is reserved. Any thread;
   // the tile mappings are queued ahead of the copies the caller records afterwards.
-  bool MapShared(uint32_t start, uint32_t length);
+  bool MapShared(uint32_t start, uint32_t length) override;
+  // GuestMemoryMirror::Sink: vertex upload memory tagged `tag` (upload_fence).
+  bool AllocateUpload(uint32_t size, uint64_t tag, GuestMemoryMirror::Upload* out) override {
+    UploadPool::Alloc a;
+    if (!vertex_upload.Allocate(size, 16, tag, &a)) return false;
+    out->cpu = a.cpu;
+    out->buffer = a.resource;
+    out->offset = a.offset;
+    return true;
+  }
   void FlushCopies(ID3D12GraphicsCommandList* list);
   void TransitionShared(ID3D12GraphicsCommandList* list, D3D12_RESOURCE_STATES to);
   // Uploads cb.size bytes of cb.last unless cb.gpu is current, and binds it at `root_index`.
@@ -1185,172 +760,6 @@ struct DrawRenderer::Impl {
   // Per frame: translates and queues stored pipelines from earlier runs for up to ~2 ms.
   void Prewarm();
 
-  // A watched page may be unwatched once its valid bit is clear: the next request copies it
-  // again and re-arms the watch. Unless the range must be exact, the pages around it that hold
-  // no valid copy are offered for unwatching too (InvalidRunAround). Valid neighbours stay
-  // watched: unwatching them too (one fault per kPluginUnwatchBlock instead of per 4 KB page)
-  // tripled the bytes re-copied per frame.
-  static std::pair<uint32_t, uint32_t> InvalidationThunk(void* context, uint32_t start,
-                                                         uint32_t length, bool exact) {
-    auto* self = static_cast<Impl*>(context);
-    self->watch_faults.fetch_add(1, std::memory_order_relaxed);
-    if (start >= kSharedMemorySize || !length) return {start, length};
-    const uint32_t end = std::min(kSharedMemorySize, start + length);
-    const uint32_t first = start >> kPageShift, last = (end - 1) >> kPageShift;
-    const uint32_t frame = self->watch_frame.load(std::memory_order_relaxed);
-    for (uint32_t p = first; p <= last; ++p) {
-      const uint64_t bit = 1ull << (p & 63);
-      std::atomic<uint64_t>& valid_word = self->valid[p >> 6];
-      const bool was_valid = valid_word.fetch_and(~bit, std::memory_order_relaxed) & bit;
-      if (self->trace.file)
-        self->trace.Add(was_valid ? WatchTrace::kFaultValid : WatchTrace::kFaultOther, p, 1, 0);
-      if (!was_valid) continue;
-      std::atomic<uint8_t>& quick = self->quick_rewrites[p];
-      uint8_t n = quick.load(std::memory_order_relaxed);
-      n = frame - self->armed_frame[p].load(std::memory_order_relaxed) > kHotRewriteFrames
-              ? 0
-              : std::min<uint8_t>(n + 1, 2);
-      quick.store(n, std::memory_order_relaxed);
-      if (n == 2) self->hot[p >> 6].fetch_or(bit, std::memory_order_relaxed);
-      // The page after one written since the previous frame: a buffer being filled in order.
-      // Its valid pages ahead, to the end of the kPluginUnwatchBlock (the valid word), are
-      // invalidated with it, so the fill faults about once per block instead of once per page. In
-      // the race this cut the faults on valid pages 4x, and under 1 % of the pages invalidated
-      // ahead went unwritten.
-      const uint32_t previous = p ? self->write_frame[p - 1].load(std::memory_order_relaxed) : 0;
-      self->write_frame[p].store(frame + 1, std::memory_order_relaxed);
-      const uint32_t shift = (p & 63) + 1;
-      if (!previous || frame + 1 - previous > 1 || shift == 64) continue;
-      const uint32_t ahead =
-          uint32_t(std::countr_one(valid_word.load(std::memory_order_relaxed) >> shift));
-      if (!ahead) continue;
-      valid_word.fetch_and(~(((1ull << ahead) - 1) << shift), std::memory_order_relaxed);
-      // Counted as written, so a fault on the next block's first page continues the sequence.
-      for (uint32_t q = p + 1; q <= p + ahead; ++q)
-        self->write_frame[q].store(frame + 1, std::memory_order_relaxed);
-      if (self->trace.file) self->trace.Add(WatchTrace::kAhead, p + 1, ahead, 0);
-    }
-    return exact ? std::pair{start, length} : self->InvalidRunAround(first, last);
-  }
-  // Pages [first, last] widened to the nearest valid page on each side within the
-  // kUnwatchWindow block, as a byte range. Pages without a valid copy lose nothing by being
-  // unwatched (the next request copies and re-arms them). The memory unwatches only the
-  // intersection of every callback's range, so with exact ranges a texture or buffer being
-  // filled faulted once per 4 KB page although no consumer still watched its other pages (the
-  // race's write faults came in runs of about 10 adjacent pages). A page made valid meanwhile is
-  // re-armed after the unwatch: both hold the global lock.
-  std::pair<uint32_t, uint32_t> InvalidRunAround(uint32_t first, uint32_t last) const {
-    constexpr uint32_t kWindowPages = kUnwatchWindow >> kPageShift;
-    const uint32_t window_first = first & ~(kWindowPages - 1);
-    const uint32_t window_last = last | (kWindowPages - 1);
-    uint32_t w = first >> 6;
-    uint64_t bits = valid[w].load(std::memory_order_relaxed) & ((1ull << (first & 63)) - 1);
-    while (!bits && w > window_first >> 6) bits = valid[--w].load(std::memory_order_relaxed);
-    const uint32_t lo = bits ? (w << 6) + 64 - uint32_t(std::countl_zero(bits)) : window_first;
-    w = last >> 6;
-    bits = valid[w].load(std::memory_order_relaxed) & ~((2ull << (last & 63)) - 1);
-    while (!bits && w < window_last >> 6) bits = valid[++w].load(std::memory_order_relaxed);
-    const uint32_t end = bits ? (w << 6) + uint32_t(std::countr_zero(bits)) : window_last + 1;
-    return {lo << kPageShift, (end - lo) << kPageShift};
-  }
-  // Dynamic vertex data. A valid page written again within kHotRewriteFrames of being armed,
-  // twice in a row (once is more often a buffer being reused), becomes hot: data the game
-  // rewrites every few frames, where each write fault and re-arm (a protection change, and a
-  // TLB shootdown across the process's threads: tens of µs each under Wine) costs far more than
-  // hashing the page. Hot pages are not watched: each request hashes them (about 0.1 µs) and
-  // copies those whose content changed since the last copy. A hot page hashed kHotMaxHashes
-  // times without a change (a large buffer that many draws read whole) is watched again, which
-  // then costs less. Frames are counted by watch_frame on the thread that calls RequestRange.
-  static constexpr uint32_t kHotRewriteFrames = 16;
-  static constexpr uint16_t kHotMaxHashes = 64;
-  std::unique_ptr<std::atomic<uint64_t>[]> hot;            // one bit per page
-  std::unique_ptr<std::atomic<uint32_t>[]> armed_frame;    // watch_frame of the last arm
-  std::unique_ptr<std::atomic<uint8_t>[]> quick_rewrites;  // quick rewrites in a row (to 2)
-  // PageHash of the page taken just before its last whole-page copy, 0: none or not copied.
-  std::unique_ptr<std::atomic<uint64_t>[]> copy_hash;
-  std::unique_ptr<uint16_t[]> hot_hashes;  // hashes since the content last changed
-  uint64_t PageHash(uint32_t page) const {
-    return XXH3_64bits(membase + (size_t(page) << kPageShift), 1u << kPageShift) | 1;
-  }
-  // watch_frame + 1 of the last write, 0: none.
-  std::unique_ptr<std::atomic<uint32_t>[]> write_frame;
-  std::atomic<uint32_t> watch_frame{0};
-
-  // Watches are armed on a thread of their own (WatchThread): a protection change takes about
-  // 20 µs under Wine (mprotect and its TLB shootdown), and geometry streamed in arms hundreds in
-  // a frame (td-175: 100-420 in about 25 frames of the race, 1.6-6.5 ms of the game thread).
-  // A run RequestRange copies is hashed just before the copy and stays pending until then,
-  // hashed by every request like a hot page. The watch thread marks it valid, arms it, and keeps
-  // each page valid that still hashes as copied: a write before the arm shows in the hash, and
-  // one after it faults and clears the valid bit, which the watch thread does not set again.
-  // Runs queued back to back are armed with one protection change.
-  std::unique_ptr<std::atomic<uint64_t>[]> pending;  // one bit per page
-  struct ArmRun {
-    uint32_t first, end;  // pages
-    uint32_t request;     // WatchTrace's request number
-  };
-  std::mutex arm_mutex;
-  std::condition_variable arm_cv;
-  std::vector<ArmRun> arm_queue;
-  bool arm_idle = false, arm_stopping = false;
-  std::thread arm_thread;
-  void QueueArm(uint32_t first, uint32_t end, uint32_t request);
-  void WatchThread();
-
-  // Pages hashed (hot, pending, before a copy) and copied as they changed since EndFrame.
-  std::atomic<uint64_t> hash_pages{0}, hash_copies{0};
-  // Write-watch faults (InvalidationThunk calls) since the last EndFrame; any guest thread.
-  std::atomic<uint64_t> watch_faults{0};
-  // The watch thread's protection changes, their pages, the pages found written since their
-  // copy, and its time, since EndFrame.
-  std::atomic<uint64_t> watch_arms{0}, watch_arm_pages{0}, watch_arm_changed{0}, watch_arm_ns{0};
-
-  // --graw_native_watch_trace. Record: type (2 bits) << 62 | frame (22) << 40 | page (17) << 23
-  // | pages (9, saturated) << 14 | request (14): arms of one RequestRange call share the request
-  // number. Faults come from any guest thread, hence the mutex.
-  struct WatchTrace {
-    enum Type : uint64_t { kArm, kFaultValid, kFaultOther, kAhead };
-    std::mutex mutex;
-    std::vector<uint64_t> records;
-    std::FILE* file = nullptr;
-    uint32_t frame = 0;
-    std::atomic<uint32_t> request{0};
-    void Add(Type type, uint32_t page, uint32_t pages, uint32_t req) {
-      std::lock_guard<std::mutex> lock(mutex);
-      records.push_back(uint64_t(type) << 62 | uint64_t(frame & 0x3FFFFF) << 40 |
-                        uint64_t(page & 0x1FFFF) << 23 | uint64_t(std::min(pages, 511u)) << 14 |
-                        (req & 0x3FFF));
-    }
-    void Flush() {
-      std::lock_guard<std::mutex> lock(mutex);
-      if (file && !records.empty()) std::fwrite(records.data(), 8, records.size(), file);
-      records.clear();
-    }
-  } trace;
-
-  // --graw_native_coherency_check; RequestRange's thread only.
-  struct Coherency {
-    // What shared memory holds once the copies recorded so far are done, in Prepare order.
-    std::unique_ptr<uint8_t[]> shadow =
-        std::make_unique_for_overwrite<uint8_t[]>(kSharedMemorySize);
-    // watch_frame + 1 when a page last matched guest memory, per request and at the Swap.
-    std::unique_ptr<uint32_t[]> checked = std::make_unique<uint32_t[]>(kPageCount);
-    std::unique_ptr<uint32_t[]> swap_checked = std::make_unique<uint32_t[]>(kPageCount);
-    struct Range {
-      uint32_t start, length;
-      uint8_t slot;
-    };
-    std::vector<Range> ranges;  // watched ranges read since the last Swap
-    // Every byte range the current copy segment's draws read (SegmentReads is conservative).
-    std::vector<std::pair<uint32_t, uint32_t>> segment_reads;
-    uint8_t slot = 0xFF;           // vertex fetch constant being requested, 0xFF: indices
-    uint64_t stale = 0, late = 0;  // pages, since the last Swap
-    std::vector<std::pair<uint32_t, uint32_t>> frame_copies;  // (start, size) since the Swap
-  };
-  std::unique_ptr<Coherency> coherency;
-  void CheckRequest(uint32_t start, uint32_t length);
-  void CheckSegmentCopy(uint32_t from, uint32_t size);
-  void CheckLateWrites();
   std::shared_ptr<CoherencyJob> MakeCoherencyJob();
   static constexpr uint32_t kRegisterBlocks[6] = {0,      0x4000, 0x4400,
                                                   0x4800, 0x4900, kGuestRegisterCount};
@@ -1446,27 +855,12 @@ bool DrawRenderer::Impl::Initialize() {
       return false;
   }
   shared_gpu = shared->GetGPUVirtualAddress();
-  // Zeroed: make_unique value-initializes, and std::atomic's default constructor value-initializes
-  // its value (C++20).
-  valid = std::make_unique<std::atomic<uint64_t>[]>(kPageCount / 64);
-  hot = std::make_unique<std::atomic<uint64_t>[]>(kPageCount / 64);
-  armed_frame = std::make_unique<std::atomic<uint32_t>[]>(kPageCount);
-  write_frame = std::make_unique<std::atomic<uint32_t>[]>(kPageCount);
-  quick_rewrites = std::make_unique<std::atomic<uint8_t>[]>(kPageCount);
-  copy_hash = std::make_unique<std::atomic<uint64_t>[]>(kPageCount);
-  hot_hashes = std::make_unique<uint16_t[]>(kPageCount);
-  pending = std::make_unique<std::atomic<uint64_t>[]>(kPageCount / 64);
-  segment_word_epoch = std::make_unique<uint32_t[]>(kPageCount / 64);
-  segment_pages = std::make_unique<uint64_t[]>(kPageCount / 64);
-  if (const std::string& path = REXCVAR_GET(graw_native_watch_trace); !path.empty())
-    trace.file = std::fopen(path.c_str(), "wb");
-  if (REXCVAR_GET(graw_native_coherency_check)) {
-    coherency = std::make_unique<Coherency>();
-    REXLOG_INFO("GRAW native draw: coherency check on");
-  }
-  invalidation_handle = memory->RegisterPhysicalMemoryInvalidationCallback(InvalidationThunk, this);
-  arm_thread = std::thread([this] { WatchThread(); });
-  SetThreadDescription(arm_thread.native_handle(), L"GRAW native watches");
+  // The mirror's page state, write watches and checks (guest_memory_mirror.h).
+  if (!mirror.Initialize(memory, this, REXCVAR_GET(graw_native_watch_trace),
+                         REXCVAR_GET(graw_native_coherency_check)))
+    return false;
+  mirror.SetCounters(threaded ? &prep_upload_bytes : &stats.upload_bytes,
+                     threaded ? &prep_uploads : &stats.uploads, &PrepDiag());
 
   D3D12_DESCRIPTOR_HEAP_DESC hd = {D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kViewHeapSize,
                                    D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
@@ -1636,259 +1030,11 @@ void DrawRenderer::Impl::TransitionShared(ID3D12GraphicsCommandList* list,
   shared_state = to;
 }
 
-bool DrawRenderer::Impl::InSharedMemory(uint32_t start, uint32_t length) {
-  if (start < kSharedMemorySize && kSharedMemorySize - start >= length) return true;
-  GRAW_WARN_ONCE("GRAW native draw: range {:08X}+{:X} outside physical memory", start, length);
-  return false;
-}
-
-bool DrawRenderer::Impl::RequestRange(uint32_t start, uint32_t length, bool watch,
-                                      std::vector<VertexCopy>& out) {
-  if (!length) return true;
-  if (!InSharedMemory(start, length)) return false;
-  const bool exact = !watch || upload_every_draw.load(std::memory_order_relaxed);
-  if (preparing) draw_reads.emplace_back(start, start + length, exact);
-  const uint64_t fence = upload_fence;
-  PrepareDiag& pd = PrepDiag();
-  auto copy = [&](uint32_t from, uint32_t size) {
-    if (preparing && !segment_conflict) segment_conflict = SegmentReads(from, from + size);
-    if (coherency && preparing) CheckSegmentCopy(from, size);
-    if (!MapShared(from, size)) return false;
-    UploadPool::Alloc a;
-    if (!vertex_upload.Allocate(size, 16, fence, &a)) return false;
-    if (coherency) {
-      // The upload is made from the shadow, so the two hold the same bytes.
-      std::memcpy(coherency->shadow.get() + from, membase + from, size);
-      std::memcpy(a.cpu, coherency->shadow.get() + from, size);
-      coherency->frame_copies.emplace_back(from, size);
-    } else {
-      std::memcpy(a.cpu, membase + from, size);
-    }
-    out.emplace_back(a.resource, a.offset, from, size);
-    if (threaded) {
-      prep_upload_bytes += size;
-      ++prep_uploads;
-    } else {
-      stats.upload_bytes += size;
-      ++stats.uploads;
-    }
-    return true;
-  };
-  if (exact) {
-    ++pd.unwatched;
-    return copy(start, length);
-  }
-  ++pd.ranges;
-  const uint32_t first = start >> kPageShift, last = (start + length - 1) >> kPageShift;
-  pd.range_pages += last - first + 1;
-  const uint32_t trace_request =
-      trace.file ? trace.request.fetch_add(1, std::memory_order_relaxed) : 0;
-  const uint32_t frame = watch_frame.load(std::memory_order_relaxed);
-  // Hashed pages whose content changed, copied in runs of adjacent pages.
-  uint32_t changed_first = 0, changed_end = 0;
-  auto copy_changed = [&] {
-    if (changed_first == changed_end ||
-        copy(changed_first << kPageShift, (changed_end - changed_first) << kPageShift))
-      return true;
-    // Hashed as changed but not copied: the next request copies them. The watch thread may
-    // have found a pending one unchanged meanwhile, hence the valid bits.
-    for (uint32_t q = changed_first; q < changed_end; ++q)
-      copy_hash[q].store(0, std::memory_order_relaxed);
-    SetPageBits(valid.get(), changed_first, changed_end, false);
-    return false;
-  };
-  uint64_t hashed = 0, changed = 0;
-  uint32_t p = first;
-  while (p <= last) {
-    // Skip valid pages that are neither hot nor pending a 64-page word at a time (whole vertex
-    // buffers are requested per draw).
-    const uint32_t w = p >> 6;
-    // Pending before valid: a pending bit seen clear makes the valid bit the watch thread left
-    // visible.
-    const uint64_t pending_bits = pending[w].load(std::memory_order_acquire);
-    const uint64_t hot_bits = hot[w].load(std::memory_order_relaxed);
-    uint64_t work =
-        (~valid[w].load(std::memory_order_relaxed) | hot_bits | pending_bits) & (~0ull << (p & 63));
-    if (w == last >> 6) work &= ~0ull >> (63 - (last & 63));
-    if (!work) {
-      p = (w + 1) << 6;
-      continue;
-    }
-    p = (w << 6) + uint32_t(std::countr_zero(work));
-    const uint64_t bit = 1ull << (p & 63);
-    if ((hot_bits | pending_bits) & bit) {
-      ++hashed;
-      const uint64_t hash = PageHash(p);
-      if (hash != copy_hash[p].load(std::memory_order_relaxed)) {
-        copy_hash[p].store(hash, std::memory_order_relaxed);
-        hot_hashes[p] = 0;
-        ++changed;
-        if (changed_end != p) {
-          if (!copy_changed()) return false;
-          changed_first = p;
-        }
-        changed_end = p + 1;
-        ++p;
-        continue;
-      }
-      if ((pending_bits & bit) || ++hot_hashes[p] < kHotMaxHashes) {
-        ++p;
-        continue;
-      }
-      // Hot, but read far more often than written: watched again. Its copy is current.
-      hot[w].fetch_and(~bit, std::memory_order_relaxed);
-      quick_rewrites[p].store(0, std::memory_order_relaxed);
-      armed_frame[p].store(frame, std::memory_order_relaxed);
-      pending[w].fetch_or(bit, std::memory_order_relaxed);
-      QueueArm(p, p + 1, trace_request);
-      ++p;
-      continue;
-    }
-    uint32_t run_end = p + 1;
-    while (run_end <= last) {
-      const uint32_t rw = run_end >> 6;
-      if ((valid[rw].load(std::memory_order_relaxed) | hot[rw].load(std::memory_order_relaxed) |
-           pending[rw].load(std::memory_order_relaxed)) &
-          (1ull << (run_end & 63)))
-        break;
-      ++run_end;
-    }
-    // Hashed before the copy, so a write between the two shows as a change.
-    for (uint32_t q = p; q < run_end; ++q)
-      copy_hash[q].store(PageHash(q), std::memory_order_relaxed);
-    hashed += run_end - p;
-    ++pd.range_runs;
-    // Not copied: neither valid nor pending, so the next request copies them.
-    if (!copy(p << kPageShift, (run_end - p) << kPageShift)) return false;
-    for (uint32_t q = p; q < run_end; ++q) armed_frame[q].store(frame, std::memory_order_relaxed);
-    SetPageBits(pending.get(), p, run_end, true);
-    QueueArm(p, run_end, trace_request);
-    p = run_end;
-  }
-  if (hashed) {
-    hash_pages.fetch_add(hashed, std::memory_order_relaxed);
-    hash_copies.fetch_add(changed, std::memory_order_relaxed);
-  }
-  if (!copy_changed()) return false;
-  if (coherency) CheckRequest(start, length);
-  return true;
-}
-
-void DrawRenderer::Impl::QueueArm(uint32_t first, uint32_t end, uint32_t request) {
-  bool wake;
-  {
-    std::lock_guard<std::mutex> lock(arm_mutex);
-    arm_queue.push_back({first, end, request});
-    wake = std::exchange(arm_idle, false);
-  }
-  if (wake) arm_cv.notify_one();
-}
-
-void DrawRenderer::Impl::WatchThread() {
-  std::vector<ArmRun> runs;
-  for (;;) {
-    {
-      std::unique_lock<std::mutex> lock(arm_mutex);
-      while (arm_queue.empty() && !arm_stopping) {
-        arm_idle = true;
-        arm_cv.wait(lock);
-      }
-      if (arm_queue.empty()) return;
-      runs.swap(arm_queue);
-    }
-    const uint64_t t0 = NowNs();
-    std::sort(runs.begin(), runs.end(),
-              [](const ArmRun& a, const ArmRun& b) { return a.first < b.first; });
-    uint64_t arms = 0, pages = 0, changed = 0;
-    for (size_t i = 0; i < runs.size();) {
-      const uint32_t first = runs[i].first;
-      uint32_t end = runs[i].end;
-      size_t j = i + 1;
-      while (j < runs.size() && runs[j].first == end) end = runs[j++].end;
-      // Valid before the arm: a write after it faults and clears the bit, which stays clear.
-      SetPageBits(valid.get(), first, end, true);
-      memory->EnablePhysicalMemoryAccessCallbacks(first << kPageShift, (end - first) << kPageShift,
-                                                  true, false);
-      for (uint32_t q = first; q < end; ++q) {
-        if (PageHash(q) == copy_hash[q].load(std::memory_order_relaxed)) continue;
-        // Written between its copy and the arm: the next request copies it again.
-        SetPageBits(valid.get(), q, q + 1, false);
-        ++changed;
-      }
-      SetPageBits(pending.get(), first, end, false);
-      if (trace.file) trace.Add(WatchTrace::kArm, first, end - first, runs[i].request);
-      ++arms;
-      pages += end - first;
-      i = j;
-    }
-    runs.clear();
-    watch_arms.fetch_add(arms, std::memory_order_relaxed);
-    watch_arm_pages.fetch_add(pages, std::memory_order_relaxed);
-    watch_arm_changed.fetch_add(changed, std::memory_order_relaxed);
-    watch_arm_ns.fetch_add(NowNs() - t0, std::memory_order_relaxed);
-  }
-}
-
-void DrawRenderer::Impl::CheckRequest(uint32_t start, uint32_t length) {
-  Coherency& c = *coherency;
-  const uint32_t stamp = watch_frame.load(std::memory_order_relaxed) + 1;
-  if (c.ranges.empty() || c.ranges.back().start != start || c.ranges.back().length != length)
-    c.ranges.push_back({start, length, c.slot});
-  const uint32_t end = start + length;
-  for (uint32_t p = start >> kPageShift; p <= (end - 1) >> kPageShift; ++p) {
-    if (c.checked[p] == stamp) continue;
-    const uint32_t lo = std::max(start, p << kPageShift), hi = std::min(end, (p + 1) << kPageShift);
-    if (!std::memcmp(membase + lo, c.shadow.get() + lo, hi - lo)) {
-      if (hi - lo == 1u << kPageShift) c.checked[p] = stamp;
-      continue;
-    }
-    const uint64_t bit = 1ull << (p & 63);
-    const bool is_valid = valid[p >> 6].load(std::memory_order_relaxed) & bit;
-    const bool hashed = (hot[p >> 6].load(std::memory_order_relaxed) |
-                         pending[p >> 6].load(std::memory_order_relaxed)) &
-                        bit;
-    // A write after this request copied or trusted the page: it faulted (valid cleared) or, on a
-    // hot or pending page, changed the hash since. Either way the next request copies it.
-    const bool written_since =
-        hashed ? PageHash(p) != copy_hash[p].load(std::memory_order_relaxed) : !is_valid;
-    if (written_since) continue;
-    ++c.stale;
-    uint32_t differ = 0, first = UINT32_MAX;
-    for (uint32_t i = lo; i < hi; ++i)
-      if (membase[i] != c.shadow[i]) {
-        ++differ;
-        first = std::min(first, i);
-      }
-    GRAW_LOG_FIRST(200, WARN,
-                   "GRAW native coherency: frame {} stale page {:05X} (request {:08X}+{:X}, slot "
-                   "{}): {} of {} bytes differ from {:08X}, {} armed at frame {}, last write fault "
-                   "frame {}",
-                   stamp - 1, p, start, length, c.slot, differ, hi - lo, first,
-                   hashed ? "hashed" : "valid", armed_frame[p].load(std::memory_order_relaxed),
-                   int64_t(write_frame[p].load(std::memory_order_relaxed)) - 1);
-  }
-}
-
-void DrawRenderer::Impl::CheckSegmentCopy(uint32_t from, uint32_t size) {
-  Coherency& c = *coherency;
-  const uint32_t end = from + size;
-  for (const auto& [b, e] : c.segment_reads) {
-    if (!(b < end && from < e)) continue;
-    if (segment_conflict) return;
-    GRAW_LOG_FIRST(
-        200, WARN,
-        "GRAW native coherency: frame {} copy {:08X}+{:X} overwrites {:08X}-{:08X}, read "
-        "earlier in its copy segment, without a new segment",
-        watch_frame.load(std::memory_order_relaxed), from, size, b, e);
-    return;
-  }
-}
-
 std::shared_ptr<CoherencyJob> DrawRenderer::Impl::MakeCoherencyJob() {
-  Coherency& c = *coherency;
+  GuestMemoryMirror::Coherency& c = *mirror.coherency;
   if (c.frame_copies.empty()) return nullptr;
   auto job = std::make_shared<CoherencyJob>();
-  job->frame = watch_frame.load(std::memory_order_relaxed);
+  job->frame = mirror.watch_frame.load(std::memory_order_relaxed);
   std::sort(c.frame_copies.begin(), c.frame_copies.end());
   uint32_t total = 0;
   for (const auto& [start, size] : c.frame_copies) {
@@ -1971,7 +1117,7 @@ void DrawRenderer::Impl::AuditShader(const ShaderRef& ref, const DxbcShader* sha
   GRAW_LOG_FIRST(100, WARN,
                  "GRAW native audit: frame {} {} shader {:08X} ({} dwords{}) hashes {:016X} in "
                  "guest memory, the shader memo gave {:016X}",
-                 watch_frame.load(std::memory_order_relaxed), type, ref.ucode, ref.dwords,
+                 mirror.watch_frame.load(std::memory_order_relaxed), type, ref.ucode, ref.dwords,
                  ref.immediate ? ", immediate" : "", hash, shader->ucode_data_hash());
 }
 
@@ -2042,11 +1188,11 @@ void DrawRenderer::Impl::CheckAuditJobs(uint64_t completed_fence) {
           "hot {}, pending {}, armed at frame {}, written at frame {})",
           job->frame, e.draw, e.range.start, e.range.size,
           now ? "it holds guest memory as it is now" : "and from guest memory now", pages, p,
-          (valid[p >> 6].load(std::memory_order_relaxed) & bit) != 0,
-          (hot[p >> 6].load(std::memory_order_relaxed) & bit) != 0,
-          (pending[p >> 6].load(std::memory_order_relaxed) & bit) != 0,
-          armed_frame[p].load(std::memory_order_relaxed),
-          int64_t(write_frame[p].load(std::memory_order_relaxed)) - 1);
+          (mirror.valid[p >> 6].load(std::memory_order_relaxed) & bit) != 0,
+          (mirror.hot[p >> 6].load(std::memory_order_relaxed) & bit) != 0,
+          (mirror.pending[p >> 6].load(std::memory_order_relaxed) & bit) != 0,
+          mirror.armed_frame[p].load(std::memory_order_relaxed),
+          int64_t(mirror.write_frame[p].load(std::memory_order_relaxed)) - 1);
     }
     const D3D12_RANGE none = {0, 0};
     job->readback->Unmap(0, &none);
@@ -2058,61 +1204,6 @@ void DrawRenderer::Impl::CheckAuditJobs(uint64_t completed_fence) {
         newer);
     audit_readbacks.push_back(std::move(job->readback));
   }
-}
-
-void DrawRenderer::Impl::CheckLateWrites() {
-  Coherency& c = *coherency;
-  const uint32_t stamp = watch_frame.load(std::memory_order_relaxed) + 1;
-  uint64_t late = 0, stale = 0;
-  uint32_t late_ranges = 0, slot_pages[256] = {};
-  const Coherency::Range* first_late = nullptr;
-  for (const Coherency::Range& r : c.ranges) {
-    const uint32_t end = r.start + r.length;
-    bool any = false;
-    for (uint32_t p = r.start >> kPageShift; p <= (end - 1) >> kPageShift; ++p) {
-      if (c.swap_checked[p] == stamp) continue;
-      c.swap_checked[p] = stamp;
-      const uint32_t lo = std::max(r.start, p << kPageShift);
-      const uint32_t hi = std::min(end, (p + 1) << kPageShift);
-      if (!std::memcmp(membase + lo, c.shadow.get() + lo, hi - lo)) continue;
-      const uint64_t bit = 1ull << (p & 63);
-      if ((valid[p >> 6].load(std::memory_order_relaxed) & bit) &&
-          !((hot[p >> 6].load(std::memory_order_relaxed) |
-             pending[p >> 6].load(std::memory_order_relaxed)) &
-            bit)) {
-        // Valid and watched, yet guest memory differs: a write the watch missed.
-        ++stale;
-        GRAW_LOG_FIRST(200, WARN,
-                       "GRAW native coherency: frame {} stale page {:05X} at the Swap (range "
-                       "{:08X}+{:X}, slot {}), armed at frame {}",
-                       stamp - 1, p, r.start, r.length, r.slot,
-                       armed_frame[p].load(std::memory_order_relaxed));
-        continue;
-      }
-      ++late;
-      ++slot_pages[r.slot];
-      any = true;
-    }
-    if (any) {
-      ++late_ranges;
-      if (!first_late) first_late = &r;
-    }
-  }
-  c.late += late;
-  c.stale += stale;
-  if (late) {
-    auto slots = [&] {
-      std::string list;
-      for (uint32_t s = 0; s < 256; ++s)
-        if (slot_pages[s]) list += fmt::format(" {}:{}", s == 0xFF ? -1 : int(s), slot_pages[s]);
-      return list;
-    };
-    GRAW_LOG_FIRST(400, INFO,
-                   "GRAW native coherency: frame {} {} pages of {} ranges rewritten after a draw "
-                   "read them (first {:08X}+{:X}); pages per slot{}",
-                   stamp - 1, late, late_ranges, first_late->start, first_late->length, slots());
-  }
-  c.ranges.clear();
 }
 
 bool DrawRenderer::Impl::MapShared(uint32_t start, uint32_t length) {
@@ -2155,7 +1246,7 @@ bool DrawRenderer::Impl::MapShared(uint32_t start, uint32_t length) {
     // At most 128 lines (4 MB chunks of 512 MB); the frame places a mapping next to a glitch.
     REXLOG_INFO("GRAW native draw: shared memory {:08X}+{} MB mapped at frame {}, {} MB in all",
                 c << kSharedChunkShift, chunks << (kSharedChunkShift - 20),
-                watch_frame.load(std::memory_order_relaxed),
+                mirror.watch_frame.load(std::memory_order_relaxed),
                 shared_mapped_chunks << (kSharedChunkShift - 20));
     c = end - 1;
   }
@@ -2601,16 +1692,16 @@ bool DrawRenderer::Impl::RequestVertices(const DrawState& s, const DxbcShader& v
       }
       const uint32_t start = f.address << 2, size = f.size << 2;
       const bool inline_data = s.inline_vertices && start == s.inline_vertices;
-      if (coherency) coherency->slot = uint8_t(index);
-      if (!RequestRange(start, size, !inline_data, out)) return false;
+      if (mirror.coherency) mirror.coherency->slot = uint8_t(index);
+      if (!mirror.RequestRange(start, size, !inline_data, out)) return false;
     }
   }
-  if (coherency) coherency->slot = 0xFF;
+  if (mirror.coherency) mirror.coherency->slot = 0xFF;
   if (!s.indexed) return true;
   const uint32_t index_bytes = s.count * (s.index_32bit ? 4u : 2u);
   if (xenos::PrimitiveType(s.primitive) == xenos::PrimitiveType::kTriangleFan)
-    return InSharedMemory(s.index_address, index_bytes);
-  return RequestRange(s.index_address, index_bytes, true, out);
+    return mirror.InSharedMemory(s.index_address, index_bytes);
+  return mirror.RequestRange(s.index_address, index_bytes, true, out);
 }
 
 void DrawRenderer::Impl::Prepare(const DrawState& s, uint64_t tag, DrawPrep* prep,
@@ -2626,23 +1717,24 @@ void DrawRenderer::Impl::Prepare(const DrawState& s, uint64_t tag, DrawPrep* pre
     AuditShader(s.ps, static_cast<DxbcShader*>(prep->ps), "pixel");
   }
   if (!prep->vs) return;
-  if (coherency || audit_left) HashRegisterBlocks(s.regs, prep->regs_hash);
-  upload_fence = tag;
+  if (mirror.coherency || audit_left) HashRegisterBlocks(s.regs, prep->regs_hash);
+  mirror.upload_fence = tag;
   const bool indexed_ok = !s.indexed || s.index_address;
   // Straight into the batch: copies made before a failed range still go out (their pages
   // are marked valid already).
-  preparing = true;
-  segment_conflict = false;
-  draw_reads.clear();
+  mirror.preparing = true;
+  mirror.segment_conflict = false;
+  mirror.draw_reads.clear();
   prep->upload_ok = indexed_ok && RequestVertices(s, *static_cast<DxbcShader*>(prep->vs), *out);
-  preparing = false;
-  if (segment_conflict || segment_exact.size() >= kSegmentExactLimit) {
-    NewSegment();
+  mirror.preparing = false;
+  if (mirror.segment_conflict ||
+      mirror.segment_exact.size() >= GuestMemoryMirror::kSegmentExactLimit) {
+    mirror.NewSegment();
     prep->copy_segment = true;
   }
-  for (const Read& read : draw_reads) SegmentAdd(read);
+  for (const GuestMemoryMirror::Read& read : mirror.draw_reads) mirror.SegmentAdd(read);
   if (audit_left) {
-    for (const Read& read : draw_reads) {
+    for (const GuestMemoryMirror::Read& read : mirror.draw_reads) {
       const AuditRange a = {read.begin, read.end - read.begin,
                             XXH3_64bits(membase + read.begin, read.end - read.begin)};
       if (!audit_seen.insert(AuditKey(a)).second) continue;
@@ -2655,8 +1747,9 @@ void DrawRenderer::Impl::Prepare(const DrawState& s, uint64_t tag, DrawPrep* pre
       audit_bytes += a.size;
     }
   }
-  if (coherency)
-    for (const Read& read : draw_reads) coherency->segment_reads.push_back({read.begin, read.end});
+  if (mirror.coherency)
+    for (const GuestMemoryMirror::Read& read : mirror.draw_reads)
+      mirror.coherency->segment_reads.push_back({read.begin, read.end});
   // Triangle fans: host indices from the guest's now (Draw reads them from here).
   if (prep->upload_ok && xenos::PrimitiveType(s.primitive) == xenos::PrimitiveType::kTriangleFan &&
       s.count >= 3) {
@@ -3590,7 +2683,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   const uint32_t index_bytes = count * (s.index_32bit ? 4u : 2u);
   const bool fan = prim == xenos::PrimitiveType::kTriangleFan;
   if (!prep) {
-    upload_fence = r.frame_fence();
+    mirror.upload_fence = r.frame_fence();
     if (!RequestVertices(s, *vs, copies)) {
       // The copies made before the failed range go out: their pages are marked valid already.
       FlushCopies(list);
@@ -3829,15 +2922,15 @@ void DrawRenderer::LogFrames(uint32_t frames) {
   impl_->draw_log_left = std::max(impl_->draw_log_left, frames);
 }
 
-void DrawRenderer::BeginCopySegment() { impl_->NewSegment(); }
+void DrawRenderer::BeginCopySegment() { impl_->mirror.NewSegment(); }
 
 DrawRenderer::PrepareCounters DrawRenderer::EndFramePrepare(uint64_t done) {
   Impl& m = *impl_;
   PrepareCounters c;
-  if (m.coherency) {
-    m.CheckLateWrites();
-    c.stale_pages = std::exchange(m.coherency->stale, 0);
-    c.late_pages = std::exchange(m.coherency->late, 0);
+  if (m.mirror.coherency) {
+    m.mirror.CheckLateWrites();
+    c.stale_pages = std::exchange(m.mirror.coherency->stale, 0);
+    c.late_pages = std::exchange(m.mirror.coherency->late, 0);
     c.job = m.MakeCoherencyJob();
   }
   if (m.audit_left) {
@@ -3845,14 +2938,14 @@ DrawRenderer::PrepareCounters DrawRenderer::EndFramePrepare(uint64_t done) {
     REXLOG_INFO(
         "GRAW native audit: frame {} queued: {} draws, {} ranges ({:.1f} MB) to read back{}, {} "
         "shaders differ from the guest's ucode",
-        m.watch_frame.load(std::memory_order_relaxed), m.audit_draws, m.audit_ranges,
+        m.mirror.watch_frame.load(std::memory_order_relaxed), m.audit_draws, m.audit_ranges,
         double(m.audit_bytes) / (1 << 20),
         m.audit_over ? fmt::format(", {} not (read back full)", m.audit_over) : std::string(),
         m.audit_shaders);
     m.audit_seen.clear();
     m.audit_draws = m.audit_ranges = m.audit_bytes = m.audit_over = m.audit_shaders = 0;
   }
-  m.watch_frame.fetch_add(1, std::memory_order_relaxed);
+  m.mirror.watch_frame.fetch_add(1, std::memory_order_relaxed);
   m.vertex_upload.EndFrame(done);
   c.upload_bytes = std::exchange(m.prep_upload_bytes, 0);
   c.uploads = std::exchange(m.prep_uploads, 0);
@@ -3962,20 +3055,20 @@ void DrawRenderer::EndFrame(uint64_t completed_fence) {
   impl_->WaitForPipelines();  // after the frame's submission: the GPU runs it meanwhile
   stats_.views =
       impl_->views_allocated - (kViewTableStart + kFirstTexture) - impl_->free_views.size();
-  stats_.watch_faults = impl_->watch_faults.exchange(0, std::memory_order_relaxed);
-  stats_.watch_arms = impl_->watch_arms.exchange(0, std::memory_order_relaxed);
-  stats_.watch_arm_pages = impl_->watch_arm_pages.exchange(0, std::memory_order_relaxed);
-  stats_.watch_arm_changed = impl_->watch_arm_changed.exchange(0, std::memory_order_relaxed);
-  stats_.watch_arm_ns = impl_->watch_arm_ns.exchange(0, std::memory_order_relaxed);
-  stats_.hash_pages = impl_->hash_pages.exchange(0, std::memory_order_relaxed);
-  stats_.hash_copies = impl_->hash_copies.exchange(0, std::memory_order_relaxed);
-  if (!impl_->threaded) impl_->watch_frame.fetch_add(1, std::memory_order_relaxed);
-  if (impl_->trace.file) {
+  stats_.watch_faults = impl_->mirror.watch_faults.exchange(0, std::memory_order_relaxed);
+  stats_.watch_arms = impl_->mirror.watch_arms.exchange(0, std::memory_order_relaxed);
+  stats_.watch_arm_pages = impl_->mirror.watch_arm_pages.exchange(0, std::memory_order_relaxed);
+  stats_.watch_arm_changed = impl_->mirror.watch_arm_changed.exchange(0, std::memory_order_relaxed);
+  stats_.watch_arm_ns = impl_->mirror.watch_arm_ns.exchange(0, std::memory_order_relaxed);
+  stats_.hash_pages = impl_->mirror.hash_pages.exchange(0, std::memory_order_relaxed);
+  stats_.hash_copies = impl_->mirror.hash_copies.exchange(0, std::memory_order_relaxed);
+  if (!impl_->threaded) impl_->mirror.watch_frame.fetch_add(1, std::memory_order_relaxed);
+  if (impl_->mirror.trace.file) {
     {
-      std::lock_guard<std::mutex> lock(impl_->trace.mutex);
-      ++impl_->trace.frame;
+      std::lock_guard<std::mutex> lock(impl_->mirror.trace.mutex);
+      ++impl_->mirror.trace.frame;
     }
-    if ((impl_->trace.frame & 255) == 0) impl_->trace.Flush();
+    if ((impl_->mirror.trace.frame & 255) == 0) impl_->mirror.trace.Flush();
   }
   if (!impl_->threaded) impl_->vertex_upload.EndFrame(completed_fence);
   impl_->constant_upload.EndFrame(completed_fence);
@@ -4038,7 +3131,7 @@ void DrawRenderer::EndFrame(uint64_t completed_fence) {
     if (set(Impl::kDebugSnapshots))
       impl_->snap_pending = hash_count ? (1u << hash_count) - 1 : 1u << 31;
     impl_->debug_mask = mask;
-    impl_->upload_every_draw.store(mask & Impl::kDebugUploadEveryDraw, std::memory_order_relaxed);
+    impl_->mirror.upload_every_draw.store(mask & Impl::kDebugUploadEveryDraw, std::memory_order_relaxed);
     impl_->debug_max_draws = max_draws;
     impl_->debug_skip_from = skip_from;
     impl_->debug_skip_to = skip_to;

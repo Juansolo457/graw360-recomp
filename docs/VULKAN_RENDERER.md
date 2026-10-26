@@ -285,6 +285,31 @@ M3 (pipelines and draws, menus drawing) is split so each step ends in something 
 
 The D3D12 default, run after it, is unchanged.
 
+## M3b status (2026-10-26)
+**Done.** `draw.cpp` went from ~3,900 to ~3,160 lines; the moves change no logic.
+- **`guest_draw_state.h/.cpp`:** the register-derived state helpers (rasterization, depth
+  control, polygon offset, color mask, `HostViewportInfo`, `HostScissor`), the blend-factor
+  tables, sampler keys and the SIMD byte compare.
+  - `GetSamplerKey` takes either translator's sampler binding.
+  - `HostViewportInfo` takes the host's viewport bound (default: D3D12's 32,767).
+- **`guest_memory_mirror.h/.cpp`:** `GuestMemoryMirror`. Moved verbatim: the page state, the
+  write-fault handler, the watch thread, hot-page hashing, copy segments, the watch trace, the
+  CPU side of the coherency checks, `RequestRange` and its checks.
+  - Its two D3D12 calls go through `GuestMemoryMirror::Sink`: `MapShared` commits pages of a
+    reserved shared buffer, `AllocateUpload` hands out upload memory.
+  - `DrawRenderer::Impl` implements the Sink with its existing code; the Vulkan backend
+    implements the same two methods.
+
+**Test** (D3D12, GRAW save, 120 s, `--graw_native_coherency_check`):
+
+| | stale pages | late pages | errors | upload/draw | draw CPU/draw |
+|---|---|---|---|---|---|
+| before | 2 | 2 | 0 | 0.31 KB | 2.66 µs |
+| M3b | 0 | 0 | 0 | 0.34 KB | 2.59 µs |
+
+The route reached a busier stretch in the M3b run (2,114 vs 1,662 draws/frame), hence the
+per-draw comparison.
+
 ## Risks
 - **The SPIR-V translator's output for GRAW is unproven.** M0 exists to find gaps before
   anything else is built.

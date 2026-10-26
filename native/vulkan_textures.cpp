@@ -339,7 +339,12 @@ bool VulkanTextureCache::Get(const uint32_t fetch[6], VkCommandBuffer cmd, uint6
   // A resolve destination: bind the image the resolve made (guest memory doesn't have it).
   if (resolved_ && key.dimension == xenos::DataDimension::k2DOrStacked && key.array_size() == 1 &&
       key.mip_levels() == 1) {
-    const VulkanResolvedImage r = resolved_(key.base_page << 12);
+    VulkanResolvedImage r = resolved_(key.base_page << 12);
+    if (r.depth_image && VulkanFormatOf(host->unorm) == VK_FORMAT_R32_SFLOAT) {
+      r.image = r.depth_image;
+      r.format = VK_FORMAT_R32_SFLOAT;
+      r.format_signed = VK_FORMAT_UNDEFINED;
+    }
     if (r.image && r.width == key.width && r.height == key.height &&
         r.format == VulkanFormatOf(host->unorm)) {
       out->view_unsigned = ResolvedView(r.image, r.format, swizzle);

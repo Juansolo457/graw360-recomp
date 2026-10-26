@@ -21,8 +21,10 @@ VulkanResolveShaders::~VulkanResolveShaders() {
   const VulkanDevice::Functions& fn = device_.fn();
   for (VkPipeline p : {depth_1x_, depth_msaa_, color_1x_, color_msaa_})
     if (p) fn.vkDestroyPipeline(d, p, nullptr);
-  if (layout_) fn.vkDestroyPipelineLayout(d, layout_, nullptr);
-  if (set_layout_) fn.vkDestroyDescriptorSetLayout(d, set_layout_, nullptr);
+  for (VkPipelineLayout l : {layout_, depth_layout_})
+    if (l) fn.vkDestroyPipelineLayout(d, l, nullptr);
+  for (VkDescriptorSetLayout l : {set_layout_, depth_set_layout_})
+    if (l) fn.vkDestroyDescriptorSetLayout(d, l, nullptr);
   if (sampler_) fn.vkDestroySampler(d, sampler_, nullptr);
 }
 
@@ -37,35 +39,40 @@ bool VulkanResolveShaders::Initialize() {
     REXLOG_ERROR("GRAW native Vulkan: resolve sampler failed");
     return false;
   }
-  VkDescriptorSetLayoutBinding b[2] = {};
-  b[0].binding = 0;
-  b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  b[0].descriptorCount = 1;
-  b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-  b[0].pImmutableSamplers = &sampler_;
-  b[1].binding = 1;
-  b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-  b[1].descriptorCount = 1;
-  b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-  VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-  li.bindingCount = 2;
-  li.pBindings = b;
-  if (fn.vkCreateDescriptorSetLayout(d, &li, nullptr, &set_layout_) != VK_SUCCESS) {
-    REXLOG_ERROR("GRAW native Vulkan: resolve set layout failed");
+  // Sources (combined, the immutable sampler) and storage images, by binding.
+  auto make_layouts = [&](std::initializer_list<VkDescriptorType> types,
+                          VkDescriptorSetLayout* set_layout, VkPipelineLayout* layout) {
+    VkDescriptorSetLayoutBinding b[4] = {};
+    uint32_t n = 0;
+    for (VkDescriptorType type : types) {
+      b[n].binding = n;
+      b[n].descriptorType = type;
+      b[n].descriptorCount = 1;
+      b[n].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+      if (type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) b[n].pImmutableSamplers = &sampler_;
+      ++n;
+    }
+    VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    li.bindingCount = n;
+    li.pBindings = b;
+    if (fn.vkCreateDescriptorSetLayout(d, &li, nullptr, set_layout) != VK_SUCCESS) return false;
+    VkPushConstantRange pc{VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           uint32_t(std::max(sizeof(DepthParams), sizeof(ColorParams)))};
+    VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = set_layout;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &pc;
+    return fn.vkCreatePipelineLayout(d, &pli, nullptr, layout) == VK_SUCCESS;
+  };
+  constexpr VkDescriptorType kSource = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  constexpr VkDescriptorType kStorage = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+  if (!make_layouts({kSource, kStorage}, &set_layout_, &layout_) ||
+      !make_layouts({kSource, kStorage, kStorage, kSource}, &depth_set_layout_, &depth_layout_)) {
+    REXLOG_ERROR("GRAW native Vulkan: resolve set or pipeline layouts failed");
     return false;
   }
-  VkPushConstantRange pc{VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                         uint32_t(std::max(sizeof(DepthParams), sizeof(ColorParams)))};
-  VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-  pli.setLayoutCount = 1;
-  pli.pSetLayouts = &set_layout_;
-  pli.pushConstantRangeCount = 1;
-  pli.pPushConstantRanges = &pc;
-  if (fn.vkCreatePipelineLayout(d, &pli, nullptr, &layout_) != VK_SUCCESS) {
-    REXLOG_ERROR("GRAW native Vulkan: resolve pipeline layout failed");
-    return false;
-  }
-  auto create = [&](const uint32_t* code, size_t size, VkPipeline* out) {
+  auto create = [&](const uint32_t* code, size_t size, VkPipelineLayout layout, VkPipeline* out) {
     VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     mi.codeSize = size;
     mi.pCode = code;
@@ -76,21 +83,21 @@ bool VulkanResolveShaders::Initialize() {
     ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     ci.stage.module = module;
     ci.stage.pName = "main";
-    ci.layout = layout_;
+    ci.layout = layout;
     const VkResult r = fn.vkCreateComputePipelines(d, VK_NULL_HANDLE, 1, &ci, nullptr, out);
     fn.vkDestroyShaderModule(d, module, nullptr);
     return r == VK_SUCCESS;
   };
-  if (!create(kDepthResolve1x, sizeof(kDepthResolve1x), &depth_1x_) ||
-      !create(kDepthResolveMsaa, sizeof(kDepthResolveMsaa), &depth_msaa_)) {
+  if (!create(kDepthResolve1x, sizeof(kDepthResolve1x), depth_layout_, &depth_1x_) ||
+      !create(kDepthResolveMsaa, sizeof(kDepthResolveMsaa), depth_layout_, &depth_msaa_)) {
     REXLOG_ERROR("GRAW native Vulkan: depth resolve pipelines failed");
     return false;
   }
   // The color shader writes without a format qualifier; without the feature color resolves
   // stay copies and blits.
   if (device_.shader_caps().storage_image_write_without_format &&
-      (!create(kColorResolve1x, sizeof(kColorResolve1x), &color_1x_) ||
-       !create(kColorResolveMsaa, sizeof(kColorResolveMsaa), &color_msaa_))) {
+      (!create(kColorResolve1x, sizeof(kColorResolve1x), layout_, &color_1x_) ||
+       !create(kColorResolveMsaa, sizeof(kColorResolveMsaa), layout_, &color_msaa_))) {
     REXLOG_ERROR("GRAW native Vulkan: color resolve pipelines failed");
     return false;
   }
@@ -101,8 +108,9 @@ void VulkanResolveShaders::RecordDepth(VkCommandBuffer cmd, bool msaa, VkDescrip
                                        const DepthParams& p) {
   const VulkanDevice::Functions& fn = device_.fn();
   fn.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, msaa ? depth_msaa_ : depth_1x_);
-  fn.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout_, 0, 1, &set, 0, nullptr);
-  fn.vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(p), &p);
+  fn.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, depth_layout_, 0, 1, &set, 0,
+                             nullptr);
+  fn.vkCmdPushConstants(cmd, depth_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(p), &p);
   fn.vkCmdDispatch(cmd, (p.width + 7) / 8, (p.height + 7) / 8, 1);
 }
 

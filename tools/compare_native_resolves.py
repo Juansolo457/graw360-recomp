@@ -23,7 +23,9 @@ def decode(d, frame, m):
     w, h = m['native_width'], m['native_height']
     f = m['dest_format']
     if m['source'] == 4:
-        if m['bpp'] == 4 and 'endian' in m:  # D3D12: d24 << 8 | stencil
+        # D3D12, and Vulkan's dumps with depth_bits: d24 << 8 | stencil; older Vulkan dumps:
+        # R32 floats.
+        if m['bpp'] == 4 and ('endian' in m or m.get('depth_bits')):
             v = raw.view('<u4')
             return np.stack([f20e4(v >> 8)] * 4, -1)
         v = raw.view('<f4')

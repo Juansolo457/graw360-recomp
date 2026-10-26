@@ -72,6 +72,7 @@ VulkanRenderTargets::~VulkanRenderTargets() {
   for (Retired& r : retired_) {
     if (r.view) device_.fn().vkDestroyImageView(d, r.view, nullptr);
     if (r.depth_view) device_.fn().vkDestroyImageView(d, r.depth_view, nullptr);
+    if (r.stencil_view) device_.fn().vkDestroyImageView(d, r.stencil_view, nullptr);
     memory_->Destroy(r.image);
   }
 }
@@ -90,10 +91,12 @@ bool VulkanRenderTargets::Initialize(VulkanMemory& memory) {
 }
 
 void VulkanRenderTargets::Retire(VulkanRenderTarget& rt) {
-  if (rt.image.image) retired_.push_back({rt.image, rt.view, rt.depth_view, frame_fence_});
+  if (rt.image.image)
+    retired_.push_back({rt.image, rt.view, rt.depth_view, rt.stencil_view, frame_fence_});
   rt.image = {};
   rt.view = VK_NULL_HANDLE;
   rt.depth_view = VK_NULL_HANDLE;
+  rt.stencil_view = VK_NULL_HANDLE;
 }
 
 bool VulkanRenderTargets::Create(VulkanRenderTarget* rt, uint32_t height) {
@@ -407,19 +410,28 @@ void VulkanRenderTargets::PrepareRead(VkCommandBuffer cmd, VulkanRenderTarget* r
 }
 
 VkImageView VulkanRenderTargets::DepthView(VulkanRenderTarget* rt) {
+  return AspectView(rt, VK_IMAGE_ASPECT_DEPTH_BIT, &rt->depth_view);
+}
+
+VkImageView VulkanRenderTargets::StencilView(VulkanRenderTarget* rt) {
+  return AspectView(rt, VK_IMAGE_ASPECT_STENCIL_BIT, &rt->stencil_view);
+}
+
+VkImageView VulkanRenderTargets::AspectView(VulkanRenderTarget* rt, VkImageAspectFlags aspect,
+                                            VkImageView* view) {
   if (!rt->depth) return VK_NULL_HANDLE;
-  if (rt->depth_view) return rt->depth_view;
+  if (*view) return *view;
   VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
   vi.image = rt->image.image;
   vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
   vi.format = rt->format;
-  vi.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
-  if (device_.fn().vkCreateImageView(device_.device(), &vi, nullptr, &rt->depth_view) !=
-      VK_SUCCESS) {
-    REXLOG_ERROR("GRAW native Vulkan: depth sampling view failed");
-    rt->depth_view = VK_NULL_HANDLE;
+  vi.subresourceRange = {aspect, 0, 1, 0, 1};
+  if (device_.fn().vkCreateImageView(device_.device(), &vi, nullptr, view) != VK_SUCCESS) {
+    REXLOG_ERROR("GRAW native Vulkan: {} sampling view failed",
+                 aspect == VK_IMAGE_ASPECT_DEPTH_BIT ? "depth" : "stencil");
+    *view = VK_NULL_HANDLE;
   }
-  return rt->depth_view;
+  return *view;
 }
 
 void VulkanRenderTargets::Clear(VkCommandBuffer cmd, const ClearCall& c) {
@@ -476,6 +488,8 @@ void VulkanRenderTargets::BeginFrame(uint64_t frame, uint64_t frame_fence,
       if (retired_[i].view) device_.fn().vkDestroyImageView(device_.device(), retired_[i].view, nullptr);
       if (retired_[i].depth_view)
         device_.fn().vkDestroyImageView(device_.device(), retired_[i].depth_view, nullptr);
+      if (retired_[i].stencil_view)
+        device_.fn().vkDestroyImageView(device_.device(), retired_[i].stencil_view, nullptr);
       memory_->Destroy(retired_[i].image);
       retired_[i] = retired_.back();
       retired_.pop_back();

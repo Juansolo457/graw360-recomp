@@ -46,7 +46,7 @@ REXCVAR_DEFINE_STRING(graw_native_vulkan_resolve_dump, "", "GRAW native",
                       "With --graw_native_api=vulkan, debug: directory for dumps of the resolves "
                       "of frame --graw_native_vulkan_resolve_dump_frame, as the D3D12 "
                       "--graw_native_resolve_dump's native texels (f<F>-r<i>-native.bin, tight "
-                      "rows; depth as R32 floats) and f<F>-resolves.jsonl");
+                      "rows; depth as D3D12's, (d24 << 8) | stencil) and f<F>-resolves.jsonl");
 REXCVAR_DEFINE_INT32(graw_native_vulkan_debug_blank_fetch, 0, "GRAW native",
                      "With --graw_native_api=vulkan, debug: bit i set binds the placeholder (zero) "
                      "for texture fetch constant i");
@@ -81,6 +81,10 @@ struct VulkanBackend::ResolvedImage {
   VkFormat format_signed = VK_FORMAT_UNDEFINED;  // MUTABLE images: their signed views' format
   VkFormat storage_format = VK_FORMAT_UNDEFINED;  // resolve shaders: storage_view's format
   VkImageView storage_view = VK_NULL_HANDLE;
+  // Depth resolves: `image` holds the texel bits; this, the depth as R32_SFLOAT (D3D12's
+  // depth_r32f, what k_24_8 textures read), with its storage view.
+  VulkanMemory::Image depth;
+  VkImageView depth_storage_view = VK_NULL_HANDLE;
   uint32_t width = 0, height = 0;
   bool written = false;
   // Of the color resolves into it: the texels written from (0, 0) (the image the present pass
@@ -148,9 +152,12 @@ struct VulkanBackend::Gpu {
     memory.Destroy(shared);
   }
   void Destroy(Resolved& r) {
-    if (r.storage_view) device.fn().vkDestroyImageView(device.device(), r.storage_view, nullptr);
-    r.storage_view = VK_NULL_HANDLE;
+    for (VkImageView* v : {&r.storage_view, &r.depth_storage_view}) {
+      if (*v) device.fn().vkDestroyImageView(device.device(), *v, nullptr);
+      *v = VK_NULL_HANDLE;
+    }
     memory.Destroy(r.image);
+    memory.Destroy(r.depth);
   }
 };
 
@@ -196,6 +203,7 @@ bool VulkanBackend::Initialize(const Options& o) {
       out.format_signed = it->second.format_signed;
       out.width = it->second.width;
       out.height = it->second.height;
+      out.depth_image = it->second.depth.image;
     }
     return out;
   });
@@ -847,10 +855,24 @@ void VulkanBackend::Resolve(const ResolveParams& p) {
 bool VulkanBackend::CopyDepth(VulkanRenderTarget* rt, int32_t x0, int32_t y0, int32_t w,
                               int32_t h, int32_t dx, int32_t dy, const ResolveParams& p) {
   const VkImageView src = gpu_->targets.DepthView(rt);
-  if (!src) return false;
-  ResolvedImage* r = EnsureImage(gpu_->resolved[p.dest_base], VK_FORMAT_R32_SFLOAT,
-                                 VK_FORMAT_UNDEFINED, p.dest_width, p.dest_height,
-                                 "depth resolve image", VK_FORMAT_R32_SFLOAT);
+  const VkImageView stencil = gpu_->targets.StencilView(rt);
+  if (!src || !stencil) return false;
+  // The texel bits, as D3D12's resolver writes them: a 32-bit destination (the guest copies
+  // k_24_8 depth as k_8_8_8_8).
+  VkFormat unorm, snorm;
+  ResolveFormats(p.dest_format, &unorm, &snorm);
+  if (DestBppLog2(p.dest_format) != 2 || unorm == VK_FORMAT_UNDEFINED) {
+    if (!depth_format_logged_) {
+      depth_format_logged_ = true;
+      REXLOG_WARN("GRAW native Vulkan: depth resolves into format {} not supported",
+                  p.dest_format);
+    }
+    return false;
+  }
+  if (snorm == unorm) snorm = VK_FORMAT_UNDEFINED;
+  ResolvedImage* r =
+      EnsureImage(gpu_->resolved[p.dest_base], unorm, snorm, p.dest_width, p.dest_height,
+                  "depth resolve image", VK_FORMAT_R32_UINT, true);
   if (!r) {
     gpu_->resolved.erase(p.dest_base);
     return false;
@@ -864,7 +886,7 @@ bool VulkanBackend::CopyDepth(VulkanRenderTarget* rt, int32_t x0, int32_t y0, in
   params.dest_y = dy;
   params.depth_format = rt->guest_format;
   params.host_sample = VulkanResolveShaders::HostSample(rt->samples, p.sample_select);
-  return RunResolveShader(rt, src, r, [&](VkDescriptorSet set) {
+  return RunResolveShader(rt, src, stencil, r, [&](VkDescriptorSet set) {
     gpu_->resolve_shaders.RecordDepth(device_->command_buffer(), rt->samples > 1, set, params);
   });
 }
@@ -895,7 +917,7 @@ bool VulkanBackend::CopyColor(VulkanRenderTarget* rt, int32_t x0, int32_t y0, in
   params.flags = (p.dest_swap ? 2u : 0u) | (p.sample_select << 4) | (rt->samples << 8) |
                  (p.dest_number << 12);
   params.exp_bias = p.exp_bias;
-  return RunResolveShader(rt, rt->view, r, [&](VkDescriptorSet set) {
+  return RunResolveShader(rt, rt->view, VK_NULL_HANDLE, r, [&](VkDescriptorSet set) {
     gpu_->resolve_shaders.RecordColor(device_->command_buffer(), rt->samples > 1, set, params);
   });
 }
@@ -992,13 +1014,13 @@ void VulkanBackend::DumpWrite(uint64_t completed) {
                      "\"dest_point\":[%d,%d],\"dest_base\":%u,\"dest_format\":%u,"
                      "\"dest_width\":%u,\"dest_height\":%u,\"number\":%u,\"swap\":%d,"
                      "\"exp_bias\":%d,\"bpp\":%u,\"native_width\":%u,\"native_height\":%u,"
-                     "\"clear_flags\":%u,\"after_draw\":%u}\n",
+                     "\"clear_flags\":%u,\"after_draw\":%u,\"depth_bits\":%d}\n",
                      i, p.source, p.regs.surface_info,
                      p.source == 4 ? p.regs.depth_info : p.regs.color_info[p.source & 3],
                      p.sample_select, p.copy_command, p.x0, p.y0, p.x1, p.y1, p.dest_x, p.dest_y,
                      p.dest_base, p.dest_format, p.dest_width, p.dest_height, p.dest_number,
                      p.dest_swap ? 1 : 0, p.exp_bias, e.bpp, e.width, e.height, p.clear_flags,
-                     e.after_draw);
+                     e.after_draw, p.source == 4 ? 1 : 0);
         std::fclose(m);
       }
     }
@@ -1013,33 +1035,37 @@ void VulkanBackend::DumpWrite(uint64_t completed) {
 }
 
 bool VulkanBackend::RunResolveShader(VulkanRenderTarget* rt, VkImageView src_view,
-                                     ResolvedImage* r,
+                                     VkImageView stencil_view, ResolvedImage* r,
                                      const std::function<void(VkDescriptorSet)>& record) {
   VkCommandBuffer cmd = device_->command_buffer();
   gpu_->targets.EndRendering(cmd);
   VulkanResolveShaders& rs = gpu_->resolve_shaders;
-  VkDescriptorSet set = gpu_->bindings.AllocateFrameSet(rs.set_layout(), device_->frame_fence());
+  const bool depth = stencil_view != VK_NULL_HANDLE;
+  VkDescriptorSet set = gpu_->bindings.AllocateFrameSet(
+      depth ? rs.depth_set_layout() : rs.set_layout(), device_->frame_fence());
   if (!set) return false;
   const VulkanDevice::Functions& fn = device_->fn();
   const VkImageLayout src_layout = rt->depth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
                                              : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  VkDescriptorImageInfo images[2] = {};
-  images[0].sampler = rs.sampler();
-  images[0].imageView = src_view;
-  images[0].imageLayout = src_layout;
-  images[1].imageView = r->storage_view;
-  images[1].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-  VkWriteDescriptorSet wr[2] = {};
-  for (uint32_t i = 0; i < 2; ++i) {
+  // vulkan_resolve.h's bindings: color {source, destination}, depth {depth, R32_SFLOAT image,
+  // bits, stencil}.
+  const VkDescriptorImageInfo images[4] = {
+      {rs.sampler(), src_view, src_layout},
+      {VK_NULL_HANDLE, depth ? r->depth_storage_view : r->storage_view, VK_IMAGE_LAYOUT_GENERAL},
+      {VK_NULL_HANDLE, r->storage_view, VK_IMAGE_LAYOUT_GENERAL},
+      {rs.sampler(), stencil_view, src_layout}};
+  const uint32_t bindings = depth ? 4 : 2;
+  VkWriteDescriptorSet wr[4] = {};
+  for (uint32_t i = 0; i < bindings; ++i) {
     wr[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     wr[i].dstSet = set;
     wr[i].dstBinding = i;
     wr[i].descriptorCount = 1;
-    wr[i].descriptorType =
-        i ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    wr[i].descriptorType = i == 0 || i == 3 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+                                            : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     wr[i].pImageInfo = &images[i];
   }
-  fn.vkUpdateDescriptorSets(device_->device(), 2, wr, 0, nullptr);
+  fn.vkUpdateDescriptorSets(device_->device(), bindings, wr, 0, nullptr);
 
   // The source from its attachment layout, the destination from shader reads, to the compute
   // shader; and back.
@@ -1056,7 +1082,7 @@ bool VulkanBackend::RunResolveShader(VulkanRenderTarget* rt, VkImageView src_vie
   constexpr VkPipelineStageFlags kReaders = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
                                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
                                             VK_PIPELINE_STAGE_TRANSFER_BIT;
-  VkImageMemoryBarrier b[2] = {};
+  VkImageMemoryBarrier b[3] = {};
   for (VkImageMemoryBarrier& x : b) {
     x.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     x.srcQueueFamilyIndex = x.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1077,8 +1103,12 @@ bool VulkanBackend::RunResolveShader(VulkanRenderTarget* rt, VkImageView src_vie
   b[1].newLayout = VK_IMAGE_LAYOUT_GENERAL;
   b[1].srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
   b[1].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  // The depth image: as the bits' image (written at the same resolves).
+  b[2] = b[1];
+  b[2].image = r->depth.image;
+  const uint32_t barriers = depth ? 3 : 2;
   fn.vkCmdPipelineBarrier(cmd, rt_stages | kReaders, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
-                          nullptr, 0, nullptr, 2, b);
+                          nullptr, 0, nullptr, barriers, b);
   record(set);
   b[0].oldLayout = src_layout;
   b[0].newLayout = rt_layout;
@@ -1088,8 +1118,12 @@ bool VulkanBackend::RunResolveShader(VulkanRenderTarget* rt, VkImageView src_vie
   b[1].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   b[1].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
   b[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+  b[2].oldLayout = b[1].oldLayout;
+  b[2].newLayout = b[1].newLayout;
+  b[2].srcAccessMask = b[1].srcAccessMask;
+  b[2].dstAccessMask = b[1].dstAccessMask;
   fn.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, rt_stages | kReaders, 0, 0,
-                          nullptr, 0, nullptr, 2, b);
+                          nullptr, 0, nullptr, barriers, b);
   r->written = true;
   return true;
 }
@@ -1208,15 +1242,17 @@ bool VulkanBackend::CopyTarget(VulkanRenderTarget* rt, int32_t x0, int32_t y0, i
 VulkanBackend::ResolvedImage* VulkanBackend::EnsureImage(ResolvedImage& r, VkFormat format,
                                                         VkFormat format_signed, uint32_t width,
                                                         uint32_t height, const char* what,
-                                                        VkFormat storage_format) {
+                                                        VkFormat storage_format, bool depth) {
   if (r.image.image && r.format == format && r.format_signed == format_signed &&
       r.width == width && r.height == height &&
-      (storage_format == VK_FORMAT_UNDEFINED || storage_format == r.storage_format))
+      (storage_format == VK_FORMAT_UNDEFINED || storage_format == r.storage_format) &&
+      (r.depth.image != VK_NULL_HANDLE) == depth)
     return &r;
   if (r.image.image) {
     // A destination reused for another size or format: the frame being recorded may still use
     // the old image.
     gpu_->textures->ForgetResolvedImage(r.image.image, device_->frame_fence());
+    if (r.depth.image) gpu_->textures->ForgetResolvedImage(r.depth.image, device_->frame_fence());
     gpu_->retired.push_back({r, device_->frame_fence()});
   }
   VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -1251,6 +1287,27 @@ VulkanBackend::ResolvedImage* VulkanBackend::EnsureImage(ResolvedImage& r, VkFor
     if (device_->fn().vkCreateImageView(device_->device(), &vi, nullptr, &r.storage_view) !=
         VK_SUCCESS) {
       r.storage_view = VK_NULL_HANDLE;
+      gpu_->Destroy(r);
+      return nullptr;
+    }
+  }
+  if (depth) {
+    ii.flags = 0;
+    ii.format = VK_FORMAT_R32_SFLOAT;
+    ii.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+               VK_IMAGE_USAGE_STORAGE_BIT;
+    if (!gpu_->memory.CreateImage(ii, &r.depth, "depth resolve image (R32_SFLOAT)")) {
+      gpu_->Destroy(r);
+      return nullptr;
+    }
+    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vi.image = r.depth.image;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = VK_FORMAT_R32_SFLOAT;
+    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (device_->fn().vkCreateImageView(device_->device(), &vi, nullptr, &r.depth_storage_view) !=
+        VK_SUCCESS) {
+      r.depth_storage_view = VK_NULL_HANDLE;
       gpu_->Destroy(r);
       return nullptr;
     }

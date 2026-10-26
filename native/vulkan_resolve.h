@@ -4,12 +4,15 @@
 // - color: a rectangle of a color render target into a resolve destination image as the Xenos
 //   texel bits of the destination format, through a uint view of the image's texel size
 //   (sample selection and averaging, the 7e3 EDRAM quantization, exponent bias, red/blue swap);
-// - depth: a rectangle of a depth render target into an R32_SFLOAT image as the Resolver's
-//   depth_r32f, the 20e4 float the EDRAM holds for kD24FS8 (unorm24 for kD24S8), from one
-//   sample (ReXGlue's SanitizeCopySampleSelect never averages depth). Textures of k_24_8 /
-//   k_24_8_FLOAT at the destination bind that image.
-// Both take one descriptor set: binding 0 the source (its own sampler), binding 1 the
-// destination's storage view (GENERAL).
+// - depth: a rectangle of a depth render target, from one sample (ReXGlue's
+//   SanitizeCopySampleSelect never averages depth), into the destination's texel bits,
+//   (d24 << 8) | stencil (what the guest's copy holds; some effects read it as k_8_8_8_8), and
+//   an R32_SFLOAT image as the Resolver's depth_r32f, the 20e4 float the EDRAM holds for
+//   kD24FS8 (unorm24 for kD24S8), which textures of k_24_8 / k_24_8_FLOAT at the destination
+//   bind.
+// Each takes one descriptor set (GENERAL storage views, sources with their own sampler). Color:
+// binding 0 the source, 1 the destination. Depth: 0 the depth aspect, 1 the R32_SFLOAT image,
+// 2 the bits (R32_UINT), 3 the stencil aspect.
 //
 // Threading: the recording thread.
 #pragma once
@@ -28,7 +31,8 @@ class VulkanResolveShaders {
 
   bool Initialize();
 
-  VkDescriptorSetLayout set_layout() const { return set_layout_; }
+  VkDescriptorSetLayout set_layout() const { return set_layout_; }  // color
+  VkDescriptorSetLayout depth_set_layout() const { return depth_set_layout_; }
   VkSampler sampler() const { return sampler_; }
 
   struct DepthParams {
@@ -63,8 +67,8 @@ class VulkanResolveShaders {
  private:
   VulkanDevice& device_;
   VkSampler sampler_ = VK_NULL_HANDLE;
-  VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;
-  VkPipelineLayout layout_ = VK_NULL_HANDLE;
+  VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE, depth_set_layout_ = VK_NULL_HANDLE;
+  VkPipelineLayout layout_ = VK_NULL_HANDLE, depth_layout_ = VK_NULL_HANDLE;
   VkPipeline depth_1x_ = VK_NULL_HANDLE, depth_msaa_ = VK_NULL_HANDLE;
   VkPipeline color_1x_ = VK_NULL_HANDLE, color_msaa_ = VK_NULL_HANDLE;
   std::unordered_map<VkFormat, bool> storage_support_;

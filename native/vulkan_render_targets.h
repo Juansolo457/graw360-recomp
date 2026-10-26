@@ -37,7 +37,8 @@ struct VulkanRenderTarget {
   VkFormat format = VK_FORMAT_UNDEFINED;
   VulkanMemory::Image image;
   VkImageView view = VK_NULL_HANDLE;
-  VkImageView depth_view = VK_NULL_HANDLE;  // depth: the depth aspect alone, for sampling
+  VkImageView depth_view = VK_NULL_HANDLE;    // depth: the depth aspect alone, for sampling
+  VkImageView stencil_view = VK_NULL_HANDLE;  // depth: the stencil aspect alone, for sampling
   bool initialized = false;  // in its attachment layout (false: just created, UNDEFINED)
   uint64_t last_frame = 0;
   uint64_t fill_seq = 0;  // EDRAM fills up to this sequence are applied (SyncEdram)
@@ -72,8 +73,9 @@ class VulkanRenderTargets {
   // Before reading rt outside a draw (resolve sources): zeroed if new, and the EDRAM fills
   // over its tiles since its last use applied. Ends the open rendering instance.
   void PrepareRead(VkCommandBuffer cmd, VulkanRenderTarget* rt);
-  // A depth target's depth aspect view (created on first use), for sampling.
+  // A depth target's depth or stencil aspect view (created on first use), for sampling.
   VkImageView DepthView(VulkanRenderTarget* rt);
+  VkImageView StencilView(VulkanRenderTarget* rt);
   // Forgets every recorded EDRAM fill.
   void DropAllFills() { fills_.Clear(); }
   // The host target of guest color RT `index` (0..3), created if missing (resolve sources);
@@ -102,6 +104,7 @@ class VulkanRenderTargets {
                           uint32_t height);
   bool Create(VulkanRenderTarget* rt, uint32_t height);
   void Retire(VulkanRenderTarget& rt);
+  VkImageView AspectView(VulkanRenderTarget* rt, VkImageAspectFlags aspect, VkImageView* view);
   // Zeroes a new target and moves it to its attachment layout (outside rendering instances).
   void Initialize(VkCommandBuffer cmd, VulkanRenderTarget* rt);
   // vkCmdClearAttachments of `att` over `rects` (none: all of rt) in a rendering instance on rt.
@@ -122,7 +125,7 @@ class VulkanRenderTargets {
   std::unordered_map<uint64_t, std::unique_ptr<VulkanRenderTarget>> targets_;
   struct Retired {
     VulkanMemory::Image image;
-    VkImageView view, depth_view;
+    VkImageView view, depth_view, stencil_view;
     uint64_t fence;
   };
   std::vector<Retired> retired_;

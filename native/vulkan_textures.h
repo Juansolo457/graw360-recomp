@@ -33,11 +33,13 @@ namespace graw::native {
 
 // A resolve destination image at a guest physical address (VK_NULL_HANDLE: none), single
 // level and layer, in SHADER_READ_ONLY_OPTIMAL between uses. format_signed: the format of its
-// signed views (a MUTABLE image's), or UNDEFINED.
+// signed views (a MUTABLE image's), or UNDEFINED. depth_image: a depth resolve's R32_SFLOAT
+// depth, what k_24_8 textures read (`image` holds its texel bits, read as k_8_8_8_8).
 struct VulkanResolvedImage {
   VkImage image = VK_NULL_HANDLE;
   VkFormat format = VK_FORMAT_UNDEFINED, format_signed = VK_FORMAT_UNDEFINED;
   uint32_t width = 0, height = 0;
+  VkImage depth_image = VK_NULL_HANDLE;
 };
 using VulkanResolvedLookup = std::function<VulkanResolvedImage(uint32_t guest_physical)>;
 

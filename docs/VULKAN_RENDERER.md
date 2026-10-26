@@ -657,12 +657,33 @@ Instant Action still run the emulated renderer.
   362 of 501 textures have them, and with mips forced off
   (`--graw_native_vulkan_debug=1`) gameplay frames had ~20% more fine detail. Mips are in use.
 
-**Found, not fixed:** a depth resolve at 1E5D8000 (1280x720) is sampled as `k_8_8_8_8` texels,
-the depth bits read as color (6,108 binds in a 130 s run). D3D12's resolver writes those bits
-(`(d24 << 8) | stencil`) beside the float depth image; the Vulkan backend writes only the float
-image, so the read falls back to guest memory, which the native renderer never writes.
-**Next:** the Steam Deck test (shimmer, 30 fps pacing, performance); the depth-bits fix above;
-Vulkan frame pacing on the display.
+**Found, then fixed (M5b below):** a depth resolve at 1E5D8000 (1280x720) is sampled as
+`k_8_8_8_8` texels, the depth bits read as color (6,108 binds in a 130 s run), which the Vulkan
+backend didn't have.
+
+## M5b status (2026-10-26): depth resolves as D3D12 writes them
+**Done: a depth resolve writes the destination's texel bits as well as the float depth**, as the
+D3D12 Resolver does: `(d24 << 8) | stencil` into an RGBA8 image through an R32_UINT view (what the
+guest's copy holds, which an effect reads as `k_8_8_8_8`), and the R32_SFLOAT image beside it
+(D3D12's `depth_r32f`, what `k_24_8` textures read). `shaders/depth_resolve.comp` reads the
+stencil aspect too (`VulkanRenderTargets::StencilView`), with a 4-binding set of its own; the
+texture cache picks the image by the format it reads. Resolve dumps hold the bits now, as
+D3D12's (`depth_bits` in the JSON; `tools/compare_native_resolves.py` decodes both).
+
+**Test** (130 s runs on the GRAW save): mismatched resolve binds 6,108 -> 0. With validation:
+0 errors (the same 10 warnings). The dumps of frame 6000 on both backends:
+- 1E5D8000 (the one read as color): depth identical, stencil 99.8% identical;
+- two shadow maps: every word identical.
+
+**Seen, to look at (D3D12 parity, older than this change):** two other depth resolves match
+D3D12 in their statistics (mean, minimum, maximum to four decimals) but not per pixel:
+- the 4x MSAA scene depth at 1CA34000 (three tiles): Vulkan is slightly shallower (median
+  -1e-4 relative), and about 2% of pixels differ a lot, at edges;
+- a shadow map at 1191A000: Vulkan is slightly deeper in 86% of pixels (+3.6e-5 relative).
+
+A depth bias difference would look like this, and on the Deck could show as shimmering shadows.
+**Next:** the Steam Deck test (shimmer, 30 fps pacing, performance); that depth parity; Vulkan
+frame pacing on the display.
 
 ## Risks
 - **The SPIR-V translator's output for GRAW is unproven.** M0 exists to find gaps before

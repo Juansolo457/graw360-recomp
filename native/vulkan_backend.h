@@ -160,16 +160,17 @@ class VulkanBackend final : public Backend, public GuestMemoryMirror::Sink {
   // the dumped frame.
   void DumpTarget(VulkanRenderTarget* rt, uint32_t index);
   uint32_t dump_target_first_ = UINT32_MAX, dump_target_last_ = 0;
-  // Records a resolve shader reading rt (through `src_view`) and writing r's storage view:
-  // `record` dispatches with the descriptor set.
-  bool RunResolveShader(VulkanRenderTarget* rt, VkImageView src_view, ResolvedImage* r,
-                        const std::function<void(VkDescriptorSet)>& record);
+  // Records a resolve shader reading rt (through `src_view`, and for depth `stencil_view`) and
+  // writing r's storage views (vulkan_resolve.h's bindings): `record` dispatches with the
+  // descriptor set.
+  bool RunResolveShader(VulkanRenderTarget* rt, VkImageView src_view, VkImageView stencil_view,
+                        ResolvedImage* r, const std::function<void(VkDescriptorSet)>& record);
   // r, (re)created for the formats and size (the old image retired), with a storage view of
-  // `storage_format` (UNDEFINED: none needed; a MUTABLE image when it is another format);
-  // null: failed.
+  // `storage_format` (UNDEFINED: none needed; a MUTABLE image when it is another format) and
+  // for a depth resolve the R32_SFLOAT image beside it; null: failed.
   ResolvedImage* EnsureImage(ResolvedImage& r, VkFormat format, VkFormat format_signed,
                              uint32_t width, uint32_t height, const char* what,
-                             VkFormat storage_format = VK_FORMAT_UNDEFINED);
+                             VkFormat storage_format = VK_FORMAT_UNDEFINED, bool depth = false);
   void DestroyImage(ResolvedImage& r);
   // M5: the image Swap shows (the front buffer, or --graw_native_vulkan_show_target's), given
   // to the present pass; false: a black frame.
@@ -178,6 +179,7 @@ class VulkanBackend final : public Backend, public GuestMemoryMirror::Sink {
   uint32_t front_logged_ = 0;         // changes of the front buffer's format, swizzle, size...
   uint64_t front_seen_ = 0;           // ...last logged
   bool bias_dropped_logged_ = false;  // a resolve blit without its exponent bias
+  bool depth_format_logged_ = false;  // a depth resolve into a format it can't write
   bool CanBlit(VkFormat src, VkFormat dst);
   std::unordered_map<uint64_t, bool> blit_support_;
   // --graw_native_vulkan_show_target: this frame's draws and lowest drawn row per color target.

@@ -17,6 +17,7 @@
 #include <rex/string/buffer.h>
 
 #include "spirv_translate.h"
+#include "vulkan_geometry_shader.h"
 
 namespace graw::native {
 
@@ -44,6 +45,10 @@ class VulkanShaderCache {
   // stats().failures, logged once per shader).
   VkShaderModule Module(SpirvShader& shader, uint64_t modification);
 
+  // The geometry shader module for `key` (vulkan_geometry_shader.h), created on first use;
+  // VK_NULL_HANDLE if creation failed (logged once).
+  VkShaderModule Geometry(VulkanGeometryShaderKey key);
+
   const VulkanShaderStats& stats() const { return stats_; }
 
  private:
@@ -61,6 +66,7 @@ class VulkanShaderCache {
     size_t operator()(const ModuleKey& k) const { return size_t(k.hash ^ (k.modification * 31)); }
   };
   std::unordered_map<ModuleKey, VkShaderModule, ModuleKeyHash> modules_;
+  std::unordered_map<uint32_t, VkShaderModule> geometry_modules_;  // by key
   VulkanShaderStats stats_;
 };
 

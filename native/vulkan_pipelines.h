@@ -5,8 +5,8 @@
 // scissor, depth bias, blend constants, stencil masks and reference) as in the SDK's Vulkan
 // pipeline cache, so pipelines don't multiply with values that change per draw. Pipelines are
 // for dynamic rendering (the attachment formats are in the key). Created on first use, on the
-// recording thread; not yet (later in M3): background compiles, a VkPipelineCache, and the
-// geometry shaders that expand point, rectangle and quad lists.
+// recording thread; not yet: background compiles and a VkPipelineCache. Point, rectangle and
+// quad lists add a geometry shader (vulkan_geometry_shader.h, M4c).
 #pragma once
 
 #include "vulkan_device.h"  // first: the Vulkan platform defines
@@ -19,6 +19,7 @@ namespace graw::native {
 struct VulkanPipelineKey {
   VkShaderModule vs;
   VkShaderModule ps;  // VK_NULL_HANDLE: no fragment shader
+  VkShaderModule gs;  // VK_NULL_HANDLE: no geometry shader
   VkPipelineLayout layout;
   uint8_t topology;           // VkPrimitiveTopology
   uint8_t primitive_restart;  // all ones index restarts the strip
@@ -41,7 +42,7 @@ struct VulkanPipelineKey {
   uint8_t pad_end[4];
 };
 // No implicit padding: keys are hashed and compared as bytes.
-static_assert(sizeof(VulkanPipelineKey) == 104);
+static_assert(sizeof(VulkanPipelineKey) == 112);
 
 struct VulkanPipelineStats {
   uint64_t created = 0, failed = 0;

@@ -155,6 +155,11 @@ class VulkanBackend final : public Backend, public GuestMemoryMirror::Sink {
                              uint32_t width, uint32_t height, const char* what,
                              VkFormat storage_format = VK_FORMAT_UNDEFINED);
   void DestroyImage(ResolvedImage& r);
+  // The front buffer `front` (texture fetch constant `fetch`) in the channel order its fetch
+  // constant's swizzle reads it, as D3D12's present samples it: front itself, or for a red/blue
+  // swap a raw copy into the same format with blue first. Other swizzles: front (logged once).
+  ResolvedImage* SwizzleFrontBuffer(ResolvedImage* front, const uint32_t fetch[6]);
+  bool front_swizzle_logged_ = false;
   bool CanBlit(VkFormat src, VkFormat dst);
   std::unordered_map<uint64_t, bool> blit_support_;
   // --graw_native_vulkan_show_target: this frame's draws and lowest drawn row per color target.

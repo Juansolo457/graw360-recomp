@@ -99,6 +99,7 @@ struct VulkanBackend::Gpu {
   using Resolved = ResolvedImage;
   std::unordered_map<uint32_t, Resolved> resolved;
   Resolved msaa_temp;  // MSAA targets resolved before a converting blit
+  Resolved front_swapped;  // the front buffer with red and blue swapped (SwizzleFrontBuffer)
   // Replaced images, destroyed once the GPU completed the frame that last used them.
   struct Retired {
     Resolved image;
@@ -126,6 +127,7 @@ struct VulkanBackend::Gpu {
     for (Retired& r : retired) Destroy(r.image);
     for (DumpEntry& e : dump) memory.Destroy(e.readback);
     Destroy(msaa_temp);
+    Destroy(front_swapped);
     memory.Destroy(shared);
   }
   void Destroy(Resolved& r) {
@@ -359,9 +361,10 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
   const bool polygonal = rex::graphics::draw_util::IsPrimitivePolygonal(false, prim);
   const bool rasterization = IsRasterizationPotentiallyDone(regs, polygonal);
 
-  // Host primitive. Points, rectangles and quads need the geometry shaders of
-  // geometry_shader.cpp (next in M3); fans are native on Vulkan.
+  // Host primitive. Points, rectangles and quads are expanded by geometry shaders
+  // (vulkan_geometry_shader.h); fans are native on Vulkan.
   VkPrimitiveTopology topology;
+  PipelineGeometryShader geometry = PipelineGeometryShader::kNone;
   switch (prim) {
     case xenos::PrimitiveType::kLineList:
       topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
@@ -379,14 +382,23 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
       topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
       break;
     case xenos::PrimitiveType::kPointList:
-      return unsupported("point list (geometry shader)");
+      topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+      geometry = PipelineGeometryShader::kPointList;
+      break;
     case xenos::PrimitiveType::kRectangleList:
-      return unsupported("rectangle list (geometry shader)");
+      topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+      geometry = PipelineGeometryShader::kRectangleList;
+      break;
     case xenos::PrimitiveType::kQuadList:
-      return unsupported("quad list (geometry shader)");
+      // 4 vertices per primitive, as a line list with adjacency.
+      topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY;
+      geometry = PipelineGeometryShader::kQuadList;
+      break;
     default:
       return unsupported("primitive type");
   }
+  if (geometry != PipelineGeometryShader::kNone && !device_->shader_caps().geometry_shader)
+    return unsupported("point, rectangle or quad list without geometry shaders");
   if (!state.count) {
     ++stats_.skipped;
     return;
@@ -484,6 +496,13 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
   std::memset(&key, 0, sizeof(key));
   key.vs = shaders_->Module(*vs, mods.vertex);
   key.ps = ps ? shaders_->Module(*ps, mods.pixel) : VK_NULL_HANDLE;
+  if (geometry != PipelineGeometryShader::kNone) {
+    key.gs = shaders_->Geometry(GetVulkanGeometryShaderKey(geometry, mods.vertex, mods.pixel));
+    if (!key.gs) {
+      ++stats_.failed;
+      return;
+    }
+  }
   key.layout = layout->layout;
   key.topology = uint8_t(topology);
   key.primitive_restart = restart;
@@ -1166,6 +1185,75 @@ VulkanBackend::ResolvedImage* VulkanBackend::EnsureImage(ResolvedImage& r, VkFor
   return &r;
 }
 
+VulkanBackend::ResolvedImage* VulkanBackend::SwizzleFrontBuffer(ResolvedImage* front,
+                                                                const uint32_t fetch[6]) {
+  namespace xenos = rex::graphics::xenos;
+  const HostFormat* host = GetHostFormat(
+      rex::graphics::GetBaseFormat(xenos::TextureFormat(fetch[1] & 0x3F)));
+  if (!host) return front;
+  // 3 bits per component: the host channel each of R, G, B reads.
+  const uint32_t mapping = GuestToHostComponentMapping((fetch[3] >> 1) & 0xFFF, host->host_swizzle);
+  const uint32_t rgb = mapping & 0x1FF;
+  if (rgb == (0u | 1u << 3 | 2u << 6)) return front;
+  const VkFormat swapped = front->format == VK_FORMAT_R8G8B8A8_UNORM ? VK_FORMAT_B8G8R8A8_UNORM
+                           : front->format == VK_FORMAT_A2B10G10R10_UNORM_PACK32
+                               ? VK_FORMAT_A2R10G10B10_UNORM_PACK32
+                               : VK_FORMAT_UNDEFINED;
+  if (rgb != (2u | 1u << 3 | 0u << 6) || swapped == VK_FORMAT_UNDEFINED) {
+    if (!front_swizzle_logged_) {
+      front_swizzle_logged_ = true;
+      REXLOG_WARN("GRAW native Vulkan: front buffer swizzle {:03o} of format {} not handled",
+                  rgb, int(front->format));
+    }
+    return front;
+  }
+  ResolvedImage* r = EnsureImage(gpu_->front_swapped, swapped, VK_FORMAT_UNDEFINED, front->width,
+                                 front->height, "front buffer (red and blue swapped)");
+  if (!r) return front;
+  VkCommandBuffer cmd = device_->command_buffer();
+  gpu_->targets.EndRendering(cmd);
+  const VulkanDevice::Functions& fn = device_->fn();
+  constexpr VkPipelineStageFlags kReaders = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                            VK_PIPELINE_STAGE_TRANSFER_BIT;
+  VkImageMemoryBarrier b[2] = {};
+  for (VkImageMemoryBarrier& x : b) {
+    x.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    x.srcQueueFamilyIndex = x.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    x.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  }
+  b[0].image = front->image.image;
+  b[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  b[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  b[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+  b[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  b[1].image = r->image.image;
+  b[1].oldLayout =
+      r->written ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+  b[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  b[1].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  b[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  fn.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | kReaders,
+                          VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, b);
+  // The texels as they are, read as blue first: same size per texel, so a plain copy.
+  const VkImageSubresourceLayers layers{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  const VkImageCopy region{layers, {0, 0, 0}, layers, {0, 0, 0}, {front->width, front->height, 1}};
+  fn.vkCmdCopyImage(cmd, front->image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, r->image.image,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+  b[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  b[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  b[0].srcAccessMask = 0;
+  b[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+  b[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  b[1].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  b[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  b[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+  fn.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, kReaders, 0, 0, nullptr, 0,
+                          nullptr, 2, b);
+  r->written = true;
+  return r;
+}
+
 bool VulkanBackend::CanBlit(VkFormat src, VkFormat dst) {
   const uint64_t key = uint64_t(src) << 32 | uint32_t(dst);
   auto it = blit_support_.find(key);
@@ -1367,12 +1455,13 @@ Backend::SwapResult VulkanBackend::Swap(const SwapCall& swap, std::optional<bool
     const uint32_t address = GpuAddress(swap.fetch[1] & 0xFFFFF000u);
     auto it = gpu_->resolved.find(address);
     if (it != gpu_->resolved.end() && it->second.written) {
-      source.image = it->second.image.image;
+      const ResolvedImage* front = SwizzleFrontBuffer(&it->second, swap.fetch);
+      source.image = front->image.image;
       source.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       source.stages = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
       source.access = VK_ACCESS_SHADER_READ_BIT;
-      source.x1 = int32_t(it->second.width);
-      source.y1 = int32_t(it->second.height);
+      source.x1 = int32_t(front->width);
+      source.y1 = int32_t(front->height);
       shown = &source;
       front_buffer_found_ = true;
     } else if (!front_buffer_logged_) {

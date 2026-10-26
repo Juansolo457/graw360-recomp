@@ -74,6 +74,24 @@ VulkanShaderCache::VulkanShaderCache(VulkanDevice& device)
 VulkanShaderCache::~VulkanShaderCache() {
   for (const auto& [key, module] : modules_)
     if (module) device_.fn().vkDestroyShaderModule(device_.device(), module, nullptr);
+  for (const auto& [key, module] : geometry_modules_)
+    if (module) device_.fn().vkDestroyShaderModule(device_.device(), module, nullptr);
+}
+
+VkShaderModule VulkanShaderCache::Geometry(VulkanGeometryShaderKey key) {
+  auto it = geometry_modules_.find(key.key);
+  if (it != geometry_modules_.end()) return it->second;
+  const std::vector<uint32_t> code = BuildVulkanGeometryShader(key, device_.shader_caps());
+  VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+  ci.codeSize = code.size() * sizeof(uint32_t);
+  ci.pCode = code.data();
+  VkShaderModule module = VK_NULL_HANDLE;
+  if (device_.fn().vkCreateShaderModule(device_.device(), &ci, nullptr, &module) != VK_SUCCESS) {
+    module = VK_NULL_HANDLE;
+    REXLOG_ERROR("GRAW native Vulkan: geometry shader {:08X} has no module", key.key);
+  }
+  geometry_modules_.emplace(key.key, module);
+  return module;
 }
 
 SpirvShader* VulkanShaderCache::Load(rex::graphics::xenos::ShaderType type,

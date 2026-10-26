@@ -510,6 +510,30 @@ compiles and a pipeline cache are needed before the Deck.
 final image has; the menus (also quad lists); exponent bias in the front buffer and the gamma
 ramp (M5).
 
+## M4c status (2026-10-26): geometry shaders, the front buffer's swizzle
+**Done: the game looks like the D3D12 renderer**, HUD and menus included (the Cross-Com frame,
+the video window, the ammo counter, objective text, the teammates menu).
+- **Geometry shaders** (`vulkan_geometry_shader.h`): ReXGlue's Vulkan generator, ported as a
+  function returning SPIR-V. Quad lists come in as line lists with adjacency, rectangle lists as
+  triangle lists, point lists as points; each goes out as a strip of 2 triangles. Modules are
+  cached by key in the shader cache; the pipeline key has the geometry stage (112 bytes).
+  No unsupported primitive is left in the mission or the menus.
+- **The front buffer's swizzle:** the game's last resolve swaps red and blue, and its front
+  buffer fetch constant swaps them back, which D3D12's present applies through a swizzled view.
+  The Vulkan present blits, so a red/blue swap is a raw copy into the same format with blue first
+  (R8G8B8A8 to B8G8R8A8, A2B10G10R10 to A2R10G10B10), then the blit. Other swizzles are logged
+  (a present pass with gamma is M5). This was the "warm overlay" missing in M4b: the blue cast
+  was red and blue swapped, not a missing HUD layer.
+
+**Test** (120 s, the autopilot now reaches the training mission on both backends): with
+validation 0 errors (the same 10 warnings); without, 16.7-17.8 ms frames and 2.7 ms to record
+~1,100 draws. Side by side with D3D12 at the same moment the frames match (palette, HUD,
+lighting). One run's coherency check flagged a single stale vertex page (12 bytes of
+`1F0EDEA0`, written without a watch fault) in the training mission: the guest memory mirror,
+shared with D3D12, to look at.
+**Next:** the gamma ramp and exponent bias at present (M5), background pipeline compiles and a
+pipeline cache (first-run hitches), the Linux build of `native/` (WIN32-only in CMake today).
+
 ## Risks
 - **The SPIR-V translator's output for GRAW is unproven.** M0 exists to find gaps before
   anything else is built.

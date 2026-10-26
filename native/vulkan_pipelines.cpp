@@ -39,12 +39,18 @@ VkPipeline VulkanPipelines::Get(const VulkanPipelineKey& key) {
 }
 
 VkPipeline VulkanPipelines::Create(const VulkanPipelineKey& k) {
-  VkPipelineShaderStageCreateInfo stages[2] = {};
+  VkPipelineShaderStageCreateInfo stages[3] = {};
   uint32_t stage_count = 0;
   stages[stage_count] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
   stages[stage_count].stage = VK_SHADER_STAGE_VERTEX_BIT;
   stages[stage_count].module = k.vs;
   stages[stage_count++].pName = "main";
+  if (k.gs) {
+    stages[stage_count] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    stages[stage_count].stage = VK_SHADER_STAGE_GEOMETRY_BIT;
+    stages[stage_count].module = k.gs;
+    stages[stage_count++].pName = "main";
+  }
   if (k.ps) {
     stages[stage_count] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
     stages[stage_count].stage = VK_SHADER_STAGE_FRAGMENT_BIT;

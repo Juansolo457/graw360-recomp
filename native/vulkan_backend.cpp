@@ -10,6 +10,7 @@
 #include "vulkan_bindings.h"
 #include "vulkan_memory.h"
 #include "vulkan_pipelines.h"
+#include "vulkan_present.h"
 #include "vulkan_render_targets.h"
 #include "vulkan_resolve.h"
 #include "vulkan_shaders.h"
@@ -82,6 +83,12 @@ struct VulkanBackend::ResolvedImage {
   VkImageView storage_view = VK_NULL_HANDLE;
   uint32_t width = 0, height = 0;
   bool written = false;
+  // Of the color resolves into it: the texels written from (0, 0) (the image the present pass
+  // shows, as D3D12's ResolvedImage), the destination format (xenos::TextureFormat) and the
+  // exponent bias of the last one (the front buffer's log).
+  uint32_t written_width = 0, written_height = 0;
+  uint32_t guest_format = 0;
+  int32_t exp_bias = 0;
 };
 
 // The GPU memory the backend owns. Destroyed after the device went idle (~VulkanBackend).
@@ -100,6 +107,8 @@ struct VulkanBackend::Gpu {
   // Host render targets for the guest's surfaces (destroyed before `memory`).
   VulkanRenderTargets targets;
   VulkanResolveShaders resolve_shaders;
+  // M5: the back buffer's pass (the front buffer through the gamma ramp).
+  VulkanPresenter presenter;
   // M4: guest textures (created once guest memory is known; destroyed before `memory`).
   std::unique_ptr<VulkanTextureCache> textures;
   // M3d: the images color resolves copied their source rectangles into, by destination address
@@ -108,7 +117,6 @@ struct VulkanBackend::Gpu {
   using Resolved = ResolvedImage;
   std::unordered_map<uint32_t, Resolved> resolved;
   Resolved msaa_temp;  // MSAA targets resolved before a converting blit
-  Resolved front_swapped;  // the front buffer with red and blue swapped (SwizzleFrontBuffer)
   // Replaced images, destroyed once the GPU completed the frame that last used them.
   struct Retired {
     Resolved image;
@@ -129,14 +137,14 @@ struct VulkanBackend::Gpu {
   std::unordered_map<uint64_t, size_t> dump_resolves;  // per frame: resolves written
   VulkanDevice& device;
   explicit Gpu(VulkanDevice& d)
-      : bindings(d), pipelines(d), targets(d), resolve_shaders(d), device(d) {}
+      : bindings(d), pipelines(d), targets(d), resolve_shaders(d), presenter(d, memory),
+        device(d) {}
   ~Gpu() {
     textures.reset();
     for (auto& [address, r] : resolved) Destroy(r);
     for (Retired& r : retired) Destroy(r.image);
     for (DumpEntry& e : dump) memory.Destroy(e.readback);
     Destroy(msaa_temp);
-    Destroy(front_swapped);
     memory.Destroy(shared);
   }
   void Destroy(Resolved& r) {
@@ -177,6 +185,7 @@ bool VulkanBackend::Initialize(const Options& o) {
   if (!gpu_->bindings.Initialize(gpu_->memory, gpu_->shared.buffer)) return false;
   if (!gpu_->targets.Initialize(gpu_->memory)) return false;
   if (!gpu_->resolve_shaders.Initialize()) return false;
+  if (!gpu_->presenter.Initialize()) return false;
   gpu_->textures = std::make_unique<VulkanTextureCache>(*device_, gpu_->memory, memory);
   gpu_->textures->SetResolvedLookup([gpu = gpu_.get()](uint32_t address) {
     VulkanResolvedImage out;
@@ -227,7 +236,7 @@ bool VulkanBackend::Initialize(const Options& o) {
   mirror_.SetCounters(threaded_ ? &prep_upload_bytes_ : &stats_.upload_bytes,
                       threaded_ ? &prep_uploads_ : &stats_.uploads,
                       threaded_ ? &prep_diag_ : &diag_);
-  REXLOG_INFO("GRAW native Vulkan: up (docs/VULKAN_RENDERER.md, M4d)");
+  REXLOG_INFO("GRAW native Vulkan: up (docs/VULKAN_RENDERER.md, M5)");
   return true;
 }
 
@@ -791,6 +800,19 @@ void VulkanBackend::Resolve(const ResolveParams& p) {
         ResolveFormats(p.dest_format, &unorm, &snorm);
         copied = CopyTarget(rt, x0, y0, w, h, dx, dy, p.dest_width, p.dest_height, p.dest_base,
                             unorm, snorm);
+        if (copied && p.exp_bias && !bias_dropped_logged_) {
+          bias_dropped_logged_ = true;
+          REXLOG_WARN("GRAW native Vulkan: a resolve into format {} with exponent bias {} is a "
+                      "blit, without the bias",
+                      p.dest_format, p.exp_bias);
+        }
+      }
+      if (copied) {
+        ResolvedImage& r = gpu_->resolved[p.dest_base];
+        r.written_width = std::max(r.written_width, uint32_t(dx + w));
+        r.written_height = std::max(r.written_height, uint32_t(dy + h));
+        r.guest_format = p.dest_format;
+        r.exp_bias = p.exp_bias;
       }
     }
   }
@@ -1080,7 +1102,8 @@ bool VulkanBackend::CopyTarget(VulkanRenderTarget* rt, int32_t x0, int32_t y0, i
   gpu_->targets.EndRendering(cmd);
   if (dest_format == VK_FORMAT_UNDEFINED) dest_format = rt->format;
   // Another format (an HDR target resolved into k_2_10_10_10, say): a blit converts, from a
-  // single-sample copy of the target when it has MSAA. Without the exponent bias yet (M5).
+  // single-sample copy of the target when it has MSAA. Without the exponent bias (Resolve logs a
+  // resolve that had one): the resolve shader does them where the GPU can.
   const bool convert = dest_format != rt->format;
   if (convert && !CanBlit(rt->format, dest_format)) return false;
   Gpu::Resolved* temp = nullptr;
@@ -1233,75 +1256,6 @@ VulkanBackend::ResolvedImage* VulkanBackend::EnsureImage(ResolvedImage& r, VkFor
     }
   }
   return &r;
-}
-
-VulkanBackend::ResolvedImage* VulkanBackend::SwizzleFrontBuffer(ResolvedImage* front,
-                                                                const uint32_t fetch[6]) {
-  namespace xenos = rex::graphics::xenos;
-  const HostFormat* host = GetHostFormat(
-      rex::graphics::GetBaseFormat(xenos::TextureFormat(fetch[1] & 0x3F)));
-  if (!host) return front;
-  // 3 bits per component: the host channel each of R, G, B reads.
-  const uint32_t mapping = GuestToHostComponentMapping((fetch[3] >> 1) & 0xFFF, host->host_swizzle);
-  const uint32_t rgb = mapping & 0x1FF;
-  if (rgb == (0u | 1u << 3 | 2u << 6)) return front;
-  const VkFormat swapped = front->format == VK_FORMAT_R8G8B8A8_UNORM ? VK_FORMAT_B8G8R8A8_UNORM
-                           : front->format == VK_FORMAT_A2B10G10R10_UNORM_PACK32
-                               ? VK_FORMAT_A2R10G10B10_UNORM_PACK32
-                               : VK_FORMAT_UNDEFINED;
-  if (rgb != (2u | 1u << 3 | 0u << 6) || swapped == VK_FORMAT_UNDEFINED) {
-    if (!front_swizzle_logged_) {
-      front_swizzle_logged_ = true;
-      REXLOG_WARN("GRAW native Vulkan: front buffer swizzle {:03o} of format {} not handled",
-                  rgb, int(front->format));
-    }
-    return front;
-  }
-  ResolvedImage* r = EnsureImage(gpu_->front_swapped, swapped, VK_FORMAT_UNDEFINED, front->width,
-                                 front->height, "front buffer (red and blue swapped)");
-  if (!r) return front;
-  VkCommandBuffer cmd = device_->command_buffer();
-  gpu_->targets.EndRendering(cmd);
-  const VulkanDevice::Functions& fn = device_->fn();
-  constexpr VkPipelineStageFlags kReaders = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-                                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-                                            VK_PIPELINE_STAGE_TRANSFER_BIT;
-  VkImageMemoryBarrier b[2] = {};
-  for (VkImageMemoryBarrier& x : b) {
-    x.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    x.srcQueueFamilyIndex = x.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    x.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-  }
-  b[0].image = front->image.image;
-  b[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  b[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-  b[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
-  b[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-  b[1].image = r->image.image;
-  b[1].oldLayout =
-      r->written ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
-  b[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-  b[1].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-  b[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-  fn.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | kReaders,
-                          VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, b);
-  // The texels as they are, read as blue first: same size per texel, so a plain copy.
-  const VkImageSubresourceLayers layers{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-  const VkImageCopy region{layers, {0, 0, 0}, layers, {0, 0, 0}, {front->width, front->height, 1}};
-  fn.vkCmdCopyImage(cmd, front->image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, r->image.image,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-  b[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-  b[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  b[0].srcAccessMask = 0;
-  b[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
-  b[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-  b[1].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  b[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-  b[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
-  fn.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, kReaders, 0, 0, nullptr, 0,
-                          nullptr, 2, b);
-  r->written = true;
-  return r;
 }
 
 bool VulkanBackend::CanBlit(VkFormat src, VkFormat dst) {
@@ -1524,13 +1478,83 @@ bool VulkanBackend::OwnGameWindow(bool own) {
   return device_->AttachSwapchain();
 }
 
+bool VulkanBackend::SetPresentImage(const SwapCall& swap) {
+  namespace xenos = rex::graphics::xenos;
+  VulkanPresenter& presenter = gpu_->presenter;
+  presenter.SetImage(VK_NULL_HANDLE, 0, 0, kRampNone, frame_index_);
+  constexpr uint32_t kIdentity = 0 | 1 << 3 | 2 << 6 | 3 << 9;
+  if (REXCVAR_GET(graw_native_vulkan_show_target)) {
+    // The color target most of the frame's draws went to, as it is (no ramp).
+    VulkanRenderTarget* best = nullptr;
+    TargetUse best_use;
+    for (const auto& [rt, use] : target_use_)
+      if (use.draws > best_use.draws) {
+        best = rt;
+        best_use = use;
+      }
+    constexpr uint32_t kShowKey = 0xFFFFFFFFu;  // no guest address
+    if (!best || !best->initialized || !best_use.rows ||
+        !CopyTarget(best, 0, 0, int32_t(best->width), int32_t(best_use.rows), 0, 0, best->width,
+                    best_use.rows, kShowKey))
+      return false;
+    const Gpu::Resolved& r = gpu_->resolved[kShowKey];
+    presenter.SetImage(gpu_->textures->ResolvedView(r.image.image, r.format, kIdentity), r.width,
+                       r.height, kRampNone, frame_index_);
+    return true;
+  }
+  if (!swap.texture) return false;
+  // The front buffer: the image the frame's resolve into its address made.
+  const uint32_t address = GpuAddress(swap.fetch[1] & 0xFFFFF000u);
+  auto it = gpu_->resolved.find(address);
+  if (it == gpu_->resolved.end() || !it->second.written) {
+    if (!front_buffer_logged_) {
+      front_buffer_logged_ = true;
+      REXLOG_WARN("GRAW native Vulkan: no resolved image for the front buffer {:08X} yet",
+                  address);
+    }
+    return false;
+  }
+  const ResolvedImage& front = it->second;
+  // As D3D12's present: the copy's destination format picks the ramp (PWL for 2_10_10_10, the
+  // table for 8_8_8_8) and its host format the swizzle; other formats aren't shown.
+  const xenos::TextureFormat format = xenos::TextureFormat(front.guest_format);
+  const HostFormat* host = GetHostFormat(format);
+  if (!host || (format != xenos::TextureFormat::k_8_8_8_8 &&
+                format != xenos::TextureFormat::k_2_10_10_10)) {
+    if (!front_format_logged_) {
+      front_format_logged_ = true;
+      REXLOG_WARN("GRAW native Vulkan: front buffer format {} not handled", uint32_t(format));
+    }
+    return false;
+  }
+  const uint32_t swizzle =
+      GuestToHostComponentMapping((swap.fetch[3] >> 1) & 0xFFF, host->host_swizzle) & 0xFFF;
+  const uint32_t width = std::min(front.written_width, front.width);
+  const uint32_t height = std::min(front.written_height, front.height);
+  const RampMode ramp = format == xenos::TextureFormat::k_2_10_10_10 ? kRampPwl : kRampTable;
+  // The fetch constant's exp_adjust (dword 3, bits 13-18) isn't applied: the display controller
+  // scans the front buffer out without the texture unit. The exponent bias the front buffer
+  // has is its resolve's (the color resolve shader applies it).
+  const int32_t exp_adjust = int32_t(swap.fetch[3] << 13) >> 26;
+  const uint64_t seen = uint64_t(format) | uint64_t(swizzle) << 6 |
+                        uint64_t(front.exp_bias & 63) << 18 | uint64_t(exp_adjust & 63) << 24 |
+                        uint64_t(width) << 32 | uint64_t(height) << 48;
+  if (seen != front_seen_ && front_logged_ < 8) {
+    front_seen_ = seen;
+    ++front_logged_;
+    REXLOG_INFO("GRAW native Vulkan: front buffer {:08X} {}x{} format {}, swizzle {:04o}, "
+                "{} ramp; resolve exponent bias {}, fetch exp_adjust {}",
+                address, width, height, uint32_t(format), swizzle,
+                ramp == kRampPwl ? "PWL" : "table", front.exp_bias, exp_adjust);
+  }
+  presenter.SetImage(gpu_->textures->ResolvedView(front.image.image, front.format, swizzle), width,
+                     height, ramp, frame_index_);
+  return true;
+}
+
 Backend::SwapResult VulkanBackend::Swap(const SwapCall& swap, std::optional<bool> own_window) {
   SwapResult r;
   if (own_window && !OwnGameWindow(*own_window)) return r;
-  // A slow hue cycle (about 8 s per turn at 60 fps), dark enough not to dazzle.
-  const float t = float(frame_index_) * (6.2831853f / 480.0f);
-  const float color[4] = {0.15f + 0.1f * std::sin(t), 0.15f + 0.1f * std::sin(t + 2.094f),
-                          0.15f + 0.1f * std::sin(t + 4.189f), 1.0f};
   if (frame_index_ >= frames_logged_ + 150) {
     frames_logged_ = frame_index_;
     const VulkanShaderStats& s = shaders_->stats();
@@ -1558,57 +1582,14 @@ Backend::SwapResult VulkanBackend::Swap(const SwapCall& swap, std::optional<bool
                 gpu_->textures->count(), t.created, t.uploads, t.upload_bytes >> 10,
                 t.resolved_binds, t.resolved_mismatches, t.unsupported, t.failed, gpu_->bindings.sampler_count());
   }
-  // The front buffer: the image the frame's resolve into its address made.
-  VulkanDevice::FrameSource source;
-  const VulkanDevice::FrameSource* shown = nullptr;
-  front_buffer_found_ = false;
-  if (REXCVAR_GET(graw_native_vulkan_show_target)) {
-    VulkanRenderTarget* best = nullptr;
-    TargetUse best_use;
-    for (const auto& [rt, use] : target_use_)
-      if (use.draws > best_use.draws) {
-        best = rt;
-        best_use = use;
-      }
-    constexpr uint32_t kShowKey = 0xFFFFFFFFu;  // no guest address
-    if (best && best->initialized && best_use.rows &&
-        CopyTarget(best, 0, 0, int32_t(best->width), int32_t(best_use.rows), 0, 0, best->width,
-                   best_use.rows, kShowKey)) {
-      const Gpu::Resolved& r = gpu_->resolved[kShowKey];
-      source.image = r.image.image;
-      source.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-      source.stages = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-      source.access = VK_ACCESS_SHADER_READ_BIT;
-      source.x1 = int32_t(r.width);
-      source.y1 = int32_t(r.height);
-      shown = &source;
-    }
-  } else if (swap.texture) {
-    const uint32_t address = GpuAddress(swap.fetch[1] & 0xFFFFF000u);
-    auto it = gpu_->resolved.find(address);
-    if (it != gpu_->resolved.end() && it->second.written) {
-      const ResolvedImage* front = SwizzleFrontBuffer(&it->second, swap.fetch);
-      source.image = front->image.image;
-      source.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-      source.stages = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-      source.access = VK_ACCESS_SHADER_READ_BIT;
-      source.x1 = int32_t(front->width);
-      source.y1 = int32_t(front->height);
-      shown = &source;
-      front_buffer_found_ = true;
-    } else if (!front_buffer_logged_) {
-      front_buffer_logged_ = true;
-      REXLOG_WARN("GRAW native Vulkan: no resolved image for the front buffer {:08X} yet",
-                  address);
-    }
-  }
+  front_buffer_found_ = SetPresentImage(swap) && !REXCVAR_GET(graw_native_vulkan_show_target);
   target_use_.clear();
   // A frame without the draws whose pipelines were compiling: the previous frame stays on
   // screen while this one waits for them (AfterSwap).
   r.incomplete = pipeline_wait_ && gpu_->pipelines.frame_pending();
   r.fence = device_->frame_fence();
   gpu_->targets.EndRendering(device_->command_buffer());
-  if (!device_->EndFrame(window_taken_ && !r.incomplete, color, shown)) return r;
+  if (!device_->EndFrame(window_taken_ && !r.incomplete, gpu_->presenter)) return r;
   const VulkanDevice::EndFrameTimes& et = device_->end_frame_times();
   r.presented = et.presented;
   r.presents = et.presents;

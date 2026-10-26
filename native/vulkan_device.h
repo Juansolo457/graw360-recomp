@@ -8,7 +8,8 @@
 //
 // Like D3D12Device in primary mode, the swapchain exists only between AttachSwapchain and
 // DetachSwapchain, while the renderer owns the game window; the rest of the time ReXGlue's
-// presenter has its own swapchain there. Debug window mode isn't supported.
+// presenter has its own swapchain there. Debug window mode isn't supported. The back buffer is
+// drawn by a PresentPass (the backend's VulkanPresenter, M5).
 #pragma once
 
 // The SDK's Vulkan configuration (VK_NO_PROTOTYPES, beta extensions, the platform's WSI): every
@@ -185,22 +186,28 @@ class VulkanDevice {
   uint64_t frame_fence() const { return submitted_ + 1; }
   uint64_t completed_fence() const { return completed_; }
 
-  // M2: the back buffer cleared to `color`, then presented when `present` and a swapchain
-  // exists; the frame's command buffer is submitted either way. False on a device failure.
-  bool EndFrame(bool present, const float color[4]);
+  // The frame-in-flight slot of the frame being recorded: what the slot's previous frame used
+  // is free (its fence was waited for before the command buffer opened).
+  uint32_t frame_slot() const { return slot_; }
 
-  // M3d: the frame to show, a single-sample image region. `layout`: the image's layout, which it
-  // is returned to after the copy (TRANSFER_SRC_OPTIMAL: no transitions).
-  struct FrameSource {
+  // M5: the acquired swapchain image, in COLOR_ATTACHMENT_OPTIMAL with undefined contents.
+  struct BackBuffer {
     VkImage image = VK_NULL_HANDLE;
-    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VkPipelineStageFlags stages = 0;  // the image's last writers (and next users)
-    VkAccessFlags access = 0;
-    int32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    VkImageView view = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    VkExtent2D extent{};
   };
-  // As EndFrame, with `source` scaled into the back buffer (aspect kept, black bars) instead of
-  // the clear color; null source: as EndFrame.
-  bool EndFrame(bool present, const float color[4], const FrameSource* source);
+  // What draws the back buffer, every pixel of it (in its own rendering instance).
+  class PresentPass {
+   public:
+    virtual void Record(VkCommandBuffer cmd, const BackBuffer& back, uint32_t slot) = 0;
+
+   protected:
+    ~PresentPass() = default;
+  };
+  // Submits the frame's command buffer; first, when `present` and a swapchain exists, `pass`
+  // draws the back buffer, presented after the submission. False on a device failure.
+  bool EndFrame(bool present, PresentPass& pass);
   const EndFrameTimes& end_frame_times() const { return times_; }
 
   const Functions& fn() const { return fn_; }
@@ -244,7 +251,8 @@ class VulkanDevice {
   VkFormat swapchain_format_ = VK_FORMAT_UNDEFINED;
   VkExtent2D extent_{};
   std::vector<VkImage> images_;
-  std::vector<VkSemaphore> rendered_;  // per swapchain image: its clear and copies finished
+  std::vector<VkImageView> views_;
+  std::vector<VkSemaphore> rendered_;  // per swapchain image: its present pass finished
   EndFrameTimes times_;
 };
 

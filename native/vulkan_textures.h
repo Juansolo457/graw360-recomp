@@ -73,6 +73,11 @@ class VulkanTextureCache {
   // fence of the frame being recorded, which may still use them).
   void ForgetResolvedImage(VkImage image, uint64_t frame);
 
+  // A view of a resolve image (2D array) in `format` with host component swizzle `swizzle` (3
+  // bits per component, 4 zero, 5 one), kept until ForgetResolvedImage; null if it failed. The
+  // texture bindings' and the present pass's.
+  VkImageView ResolvedView(VkImage image, VkFormat format, uint32_t swizzle);
+
   // After the frame's submission: upload memory of completed frames is recycled.
   void EndFrame(uint64_t completed);
 
@@ -96,7 +101,6 @@ class VulkanTextureCache {
   Texture* Create(const TextureKey& key, const HostFormat* host);
   bool Upload(Texture& t, VkCommandBuffer cmd, uint64_t frame);
   VkImageView View(Texture& t, bool is_signed, uint32_t swizzle);
-  VkImageView ResolvedView(VkImage image, VkFormat format, uint32_t swizzle);
 
   VulkanDevice& device_;
   VulkanMemory& memory_;

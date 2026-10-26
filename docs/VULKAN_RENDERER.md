@@ -567,6 +567,54 @@ unchanged by the split.
 they move with the Linux build of `native/`. A held frame's pipelines are often ready within
 microseconds (driver cache hits) yet the frame is still not shown, as on D3D12.
 
+## M5a status (2026-10-26): the present pass, the gamma ramp, exponent bias
+**Done: Vulkan shows the front buffer the way the D3D12 renderer does**, through the display
+controller's gamma ramp.
+- **Present pass** (`vulkan_present.h`, `shaders/present.vert` and `present.frag`): D3D12's
+  blit pixel shader without HDR, in GLSL. The front buffer is read through a texture cache view
+  with its fetch constant's swizzle (this replaces M4c's copy into a blue-first format), each
+  texel goes through the gamma ramp before bilinear filtering, and the image is fitted to the
+  window with the aspect kept. The black bars are cleared with `vkCmdClearAttachments`, and the
+  image is point sampled when shown at its own size. The swapchain images are drawn with
+  dynamic rendering (color attachment only). The device's transfer clear and blit path is gone,
+  along with M2's cycling clear color. `--graw_native_vulkan_show_target` goes through the same
+  pass, without a ramp.
+- **Gamma ramp** (`gamma_ramp.h`): the ramp reader moved out of `present.cpp` and is now shared
+  with the D3D12 present, unchanged. The copy's destination format picks the ramp: PWL for
+  `k_2_10_10_10`, the 256-entry table for `k_8_8_8_8`. GRAW's front buffer is 1280x720
+  `k_8_8_8_8` with swizzle 5012 (red and blue swapped), so it uses the table. The table is
+  nearly linear at boot (64/128/192 to 242/511/772 of 1023). From about frame 1720 the game's
+  own table applies (194/463/742), which makes the midtones about 10% darker. M4c's Vulkan
+  frames were missing this.
+- **Exponent bias:** the color resolve shader applies the resolve's bias (since M4b). The blit
+  fallback, used on GPUs without storage writes without a format, can't apply it, so it logs any
+  resolve that had one. The fetch constant's `exp_adjust` is not applied at present: the
+  display controller scans the front buffer out without the texture unit, the same as in the
+  D3D12 present. In GRAW both are 0; the backend logs them (and the format, swizzle and size)
+  whenever they change.
+
+**Test:**
+- Vulkan with validation (120 s): 0 errors (the same 10 warnings). Both ramps were logged at
+  the same points as on D3D12 (frames 1 and 1726, against D3D12's 0 and 1722).
+- The teammates menu, matched across a D3D12 run and a Vulkan run (captures every 5 s):
+  - Channel means are identical (32.4/69.3/67.8 of 255), and the mean signed difference is
+    0.008.
+  - 61% of pixels are identical and 93% are within 1. The remaining differences come from the
+    game scene behind the semi-transparent menu, which differs between runs; the menu panels
+    and text are identical.
+- A 2400x2000 window: the image fills rows 325-1674 exactly, the bars are black, and validation
+  reports 0 errors.
+- Without validation: 16.7 ms frames, 2.5 ms to record, 0 stale pages.
+- D3D12 after the ramp move: the same ramps. One D3D12 run flagged one stale page, the known
+  guest memory mirror case from M4c.
+
+**Left of M5:**
+- HDR output on Vulkan (D3D12's PQ path; gamescope HDR on the Deck OLED);
+- the capture tools on Vulkan (front buffer PNGs, luma probe, glitch catcher);
+- GPU timing;
+- checking the tactical map and the Cross-Com feed over a full GRAW-save run;
+- the Linux build of `native/`.
+
 ## Risks
 - **The SPIR-V translator's output for GRAW is unproven.** M0 exists to find gaps before
   anything else is built.

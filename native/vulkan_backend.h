@@ -1,7 +1,6 @@
 // GRAW native renderer: the Vulkan backend (backend.h; docs/VULKAN_RENDERER.md).
 //
-// M2: the device, the swapchain on the game window and the frame loop; each guest Swap presents
-// a cleared frame whose color cycles slowly, so a live window is easy to tell from a stuck one.
+// M2: the device, the swapchain on the game window and the frame loop.
 // M3a: each draw's shaders are translated to SPIR-V for the variant its registers select, and
 // get shader modules (vulkan_shaders.h).
 // M3c-1: guest memory mirrored in a shared-memory storage buffer through GuestMemoryMirror (this
@@ -14,9 +13,12 @@
 // and quads (geometry shaders) not yet.
 // M3d: the frame shown at Swap: each color Resolve copies its source rectangle (MSAA resolved to
 // 1x) into an image kept per destination address, as the D3D12 Resolver does (the guest may
-// clear the source right after); the Swap's front buffer address picks the image, which is
-// scaled into the back buffer. Not yet (M5): those images as the game's textures, the resolves'
-// clears, the exponent bias and the gamma ramp.
+// clear the source right after); the Swap's front buffer address picks the image.
+// M4: guest textures and samplers (vulkan_textures.h), resolve images bound as textures, the
+// resolve shaders (vulkan_resolve.h: exponent bias, 7e3, red/blue swap), geometry shaders,
+// background pipeline compiles and the pipeline cache.
+// M5: the front buffer shown through the present pass (vulkan_present.h): its fetch
+// constant's swizzle and the display controller's gamma ramp, scaled to fit as D3D12 does.
 // Primary mode only (--graw_native_primary), selected with --graw_native_api=vulkan.
 #pragma once
 
@@ -169,11 +171,13 @@ class VulkanBackend final : public Backend, public GuestMemoryMirror::Sink {
                              uint32_t width, uint32_t height, const char* what,
                              VkFormat storage_format = VK_FORMAT_UNDEFINED);
   void DestroyImage(ResolvedImage& r);
-  // The front buffer `front` (texture fetch constant `fetch`) in the channel order its fetch
-  // constant's swizzle reads it, as D3D12's present samples it: front itself, or for a red/blue
-  // swap a raw copy into the same format with blue first. Other swizzles: front (logged once).
-  ResolvedImage* SwizzleFrontBuffer(ResolvedImage* front, const uint32_t fetch[6]);
-  bool front_swizzle_logged_ = false;
+  // M5: the image Swap shows (the front buffer, or --graw_native_vulkan_show_target's), given
+  // to the present pass; false: a black frame.
+  bool SetPresentImage(const SwapCall& swap);
+  bool front_format_logged_ = false;  // a front buffer format the present pass doesn't show
+  uint32_t front_logged_ = 0;         // changes of the front buffer's format, swizzle, size...
+  uint64_t front_seen_ = 0;           // ...last logged
+  bool bias_dropped_logged_ = false;  // a resolve blit without its exponent bias
   bool CanBlit(VkFormat src, VkFormat dst);
   std::unordered_map<uint64_t, bool> blit_support_;
   // --graw_native_vulkan_show_target: this frame's draws and lowest drawn row per color target.

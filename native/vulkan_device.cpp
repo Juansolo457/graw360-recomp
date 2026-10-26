@@ -371,6 +371,8 @@ void VulkanDevice::DetachSwapchain() {
 void VulkanDevice::DestroySwapchainObjects() {
   for (VkSemaphore s : rendered_) fn_.vkDestroySemaphore(device_, s, nullptr);
   rendered_.clear();
+  for (VkImageView v : views_) fn_.vkDestroyImageView(device_, v, nullptr);
+  views_.clear();
   images_.clear();
   if (swapchain_) {
     fn_.vkDestroySwapchainKHR(device_, swapchain_, nullptr);
@@ -429,7 +431,7 @@ bool VulkanDevice::CreateSwapchain() {
   ci.imageColorSpace = format.colorSpace;
   ci.imageExtent = extent;
   ci.imageArrayLayers = 1;
-  ci.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+  ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
   ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
   ci.preTransform = caps.currentTransform;
   ci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
@@ -440,6 +442,16 @@ bool VulkanDevice::CreateSwapchain() {
   fn_.vkGetSwapchainImagesKHR(device_, swapchain_, &n, nullptr);
   images_.resize(n);
   fn_.vkGetSwapchainImagesKHR(device_, swapchain_, &n, images_.data());
+  views_.resize(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vi.image = images_[i];
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = format.format;
+    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (!Check(fn_.vkCreateImageView(device_, &vi, nullptr, &views_[i]), "back buffer view"))
+      return false;
+  }
   rendered_.resize(n);
   for (VkSemaphore& s : rendered_) {
     VkSemaphoreCreateInfo sem{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
@@ -467,11 +479,7 @@ bool VulkanDevice::BeginSlot() {
   return Check(fn_.vkBeginCommandBuffer(f.cmd, &bi), "vkBeginCommandBuffer");
 }
 
-bool VulkanDevice::EndFrame(bool present, const float color[4]) {
-  return EndFrame(present, color, nullptr);
-}
-
-bool VulkanDevice::EndFrame(bool present, const float color[4], const FrameSource* source) {
+bool VulkanDevice::EndFrame(bool present, PresentPass& pass) {
   times_.presented = false;
   times_.submit_ns = times_.present_ns = 0;
   Frame& f = frames_[slot_];
@@ -495,75 +503,24 @@ bool VulkanDevice::EndFrame(bool present, const float color[4], const FrameSourc
     b.image = images_[image];
     b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    fn_.vkCmdPipelineBarrier(f.cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             0, 0, nullptr, 0, nullptr, 1, &b);
-    VkClearColorValue clear;
-    if (source) {
-      clear = {};
-      clear.float32[3] = 1.0f;  // black bars
-    } else {
-      std::memcpy(clear.float32, color, sizeof(clear.float32));
-    }
-    fn_.vkCmdClearColorImage(f.cmd, images_[image], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear,
-                             1, &b.subresourceRange);
-    if (source) {
-      VkImageMemoryBarrier sb{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-      sb.srcQueueFamilyIndex = sb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      sb.image = source->image;
-      sb.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-      const bool transition = source->layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-      if (transition) {
-        sb.oldLayout = source->layout;
-        sb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        sb.srcAccessMask = source->access;
-        sb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        fn_.vkCmdPipelineBarrier(f.cmd, source->stages, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
-                                 nullptr, 0, nullptr, 1, &sb);
-      }
-      // The back buffer after its clear.
-      VkImageMemoryBarrier cb = b;
-      cb.oldLayout = cb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-      cb.srcAccessMask = cb.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-      fn_.vkCmdPipelineBarrier(f.cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                               VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &cb);
-      // Fit the region in the back buffer, aspect kept.
-      const int32_t sw = std::max(1, source->x1 - source->x0);
-      const int32_t sh = std::max(1, source->y1 - source->y0);
-      const double scale = std::min(double(extent_.width) / sw, double(extent_.height) / sh);
-      const int32_t dw = std::max(1, int32_t(sw * scale)), dh = std::max(1, int32_t(sh * scale));
-      const int32_t dx = (int32_t(extent_.width) - dw) / 2, dy = (int32_t(extent_.height) - dh) / 2;
-      VkImageBlit blit{};
-      blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-      blit.srcOffsets[0] = {source->x0, source->y0, 0};
-      blit.srcOffsets[1] = {source->x1, source->y1, 1};
-      blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-      blit.dstOffsets[0] = {dx, dy, 0};
-      blit.dstOffsets[1] = {dx + dw, dy + dh, 1};
-      fn_.vkCmdBlitImage(f.cmd, source->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                         images_[image], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
-                         VK_FILTER_LINEAR);
-      if (transition) {
-        sb.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        sb.newLayout = source->layout;
-        sb.srcAccessMask = 0;
-        sb.dstAccessMask = source->access;
-        fn_.vkCmdPipelineBarrier(f.cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, source->stages, 0, 0,
-                                 nullptr, 0, nullptr, 1, &sb);
-      }
-    }
-    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    b.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    // After the acquire semaphore's wait (at this stage).
+    fn_.vkCmdPipelineBarrier(f.cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0,
+                             nullptr, 1, &b);
+    pass.Record(f.cmd, {images_[image], views_[image], swapchain_format_, extent_}, slot_);
+    b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     b.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    b.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     b.dstAccessMask = 0;
-    fn_.vkCmdPipelineBarrier(f.cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+    fn_.vkCmdPipelineBarrier(f.cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                              VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1,
                              &b);
   }
   if (!Check(fn_.vkEndCommandBuffer(f.cmd), "vkEndCommandBuffer")) return false;
   const uint64_t t0 = NowNs();
-  const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+  const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
   VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
   si.commandBufferCount = 1;
   si.pCommandBuffers = &f.cmd;

@@ -132,6 +132,30 @@ and Instant Action draw through the emulated renderer today and move to the nati
 later, as their own milestone after M7. Their D3D is the same XDK; the hooks need each
 program's own addresses.
 
+## M0 in detail
+- **Corpus:** `<cache_root>/graw-native/pipelines.bin`, the native renderer's pipeline store. It
+  holds the guest ucode of every shader the renderer has drawn with, and the (vertex, pixel)
+  modification pairs used (`PipelineStore`). The smoke runs' store (`port-yeti/cache-smoke`,
+  1.3 MB) covers the tutorial, the GRAW save and the fire tests. No game run needed. It's game
+  code: it stays in the ignored cache folders.
+- **Tool:** a small spike program (`tools/vulkan-spike/`, local only) built against the SDK
+  source with `REXGLUE_USE_VULKAN=ON`, in its own build folder so the D3D12 plugin build isn't
+  touched. It:
+  - reads the store, analyzes each shader's ucode;
+  - translates it with `SpirvShaderTranslator` (host render targets, no fragment shader
+    interlock);
+  - validates the SPIR-V with SPIRV-Tools (`spirv-val`);
+  - writes a table: shader, stage, size, valid or not, and any translator errors.
+- **Modifications:** the stored ones are the DXBC translator's (its own `Modification` union).
+  The spike maps the fields both share (dynamic addressable register count, host vertex shader
+  type, interpolator mask) and translates with the SPIR-V translator's defaults otherwise. Exact
+  mapping is M3's job.
+- **Also to read:** the Vulkan pipeline cache's pipeline layout (which bindings each descriptor
+  set has, push constants) and the render target cache's format choices. These answer the
+  binding-model question.
+- **Done when:** the table shows every shader in the corpus translating to valid SPIR-V (or a
+  short list of failures with causes), and the binding model is written down here.
+
 ## Risks
 - **The SPIR-V translator's output for GRAW is unproven.** M0 exists to find gaps before
   anything else is built.

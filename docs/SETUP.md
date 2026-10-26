@@ -130,3 +130,23 @@ Saves stay in `port/user`.
   built. Run `tools/setup.ps1`.
 - **A crash:** the game writes `crash-<time>.txt` to a `logs` folder (`port/logs` or
   `port-yeti/logs`), next to each run's log. Please attach both to an issue on GitHub.
+
+## Linux (in progress, #38)
+
+The campaign builds on Linux x86-64 but isn't playable there yet: it runs on ReXGlue's emulated
+renderer, which isn't meant for the Steam Deck, until the native renderer's Vulkan backend draws
+(docs/VULKAN_RENDERER.md). Only the campaign has been built so far, on Ubuntu 26.04 (WSL2) with
+clang 21.
+
+1. Packages (Ubuntu names): `clang lld cmake ninja-build git python3 autoconf libgtk-3-dev
+   libx11-xcb-dev libxss-dev libwayland-dev wayland-protocols libxkbcommon-dev libdecor-0-dev
+   libasound2-dev libpulse-dev libpipewire-0.3-dev libvulkan-dev`.
+2. Clone this repository on a Linux file system (a Windows checkout's CRLF line endings break the
+   SDK's FFmpeg build) and put your disc's files in `port/assets` (`port-yeti/assets` links to it).
+3. `tools/setup-linux.sh`: the patched SDK from source, built and installed for RelWithDebInfo and
+   Release (the code generator). The first run takes a while.
+4. `tools/build-linux.sh` (the campaign; `--project port` or `port-mp` for the others, not built
+   yet).
+
+A build made on a recent distribution needs that distribution's glibc (2.43 on Ubuntu 26.04),
+which SteamOS doesn't have: Deck builds will need an older build environment.

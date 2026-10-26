@@ -4,9 +4,10 @@
 #   1. third_party/rexglue-sdk-bd833a2: ReXGlue's source at the nightly 0.10.0.24-dev.gbd833a2's
 #      commit with this project's patches (tools/patches), checked against the same patched tree
 #      as on Windows;
-#   2. that SDK built and installed into its out/install/linux-amd64 (RelWithDebInfo): the
-#      libraries the game links, the patched code generator (vpkd3d128, docs/TACMAP.md) and the
-#      patched renderer plugin (resolves into freed memory, vblank pacing, gpu_skip_draws).
+#   2. that SDK built and installed into its out/install/linux-amd64, RelWithDebInfo and Release:
+#      the libraries the game links, the patched renderer plugin (resolves into freed memory,
+#      vblank pacing, gpu_skip_draws) and the patched code generator (vpkd3d128,
+#      docs/TACMAP.md), which the SDK installs from Release only.
 # Needs clang (20 or later), CMake 3.25+, Ninja, git, python3 and the SDK's system libraries
 # (docs/SETUP.md, "Linux"). The SDK build takes a while the first time (FFmpeg among others).
 #   tools/setup-linux.sh             # all of it (skips what is there already)
@@ -78,14 +79,17 @@ git -C "$sdk" submodule update --init --recursive
 
 # 2. Build and install the SDK.
 install="$sdk/out/install/linux-amd64"
-# RelWithDebInfo binaries carry the SDK's "rd" postfix (rexgluerd, librexgpu-xenosrd.so).
-if [[ -x "$install/bin/rexgluerd" && $force -eq 0 ]]; then
+# RelWithDebInfo libraries carry the SDK's "rd" postfix (librexgpu-xenosrd.so); the code generator
+# is Release's bin/rexglue.
+if [[ -x "$install/bin/rexglue" && -f "$install/lib/librexruntimerd.so" && $force -eq 0 ]]; then
   echo "SDK: built ($install)"
 else
-  echo "SDK: building (RelWithDebInfo, $jobs jobs)"
   (cd "$sdk" && cmake --preset linux-amd64 -DREXGLUE_BUILD_TESTS=OFF)
-  cmake --build "$sdk/out/build/linux-amd64" --config RelWithDebInfo --parallel "$jobs"
-  cmake --install "$sdk/out/build/linux-amd64" --config RelWithDebInfo --prefix "$install"
-  [[ -x "$install/bin/rexgluerd" ]] || { echo "SDK build: $install/bin/rexgluerd is missing" >&2; exit 1; }
+  for config in RelWithDebInfo Release; do
+    echo "SDK: building $config ($jobs jobs)"
+    cmake --build "$sdk/out/build/linux-amd64" --config "$config" --parallel "$jobs"
+    cmake --install "$sdk/out/build/linux-amd64" --config "$config" --prefix "$install"
+  done
+  [[ -x "$install/bin/rexglue" ]] || { echo "SDK build: $install/bin/rexglue is missing" >&2; exit 1; }
 fi
 echo 'Setup done. Next: the disc files in port/assets (docs/SETUP.md), then tools/build-linux.sh.'

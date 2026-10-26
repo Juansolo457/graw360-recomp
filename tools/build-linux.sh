@@ -39,7 +39,7 @@ esac
 
 port="$root/$project"
 sdk_install="$root/third_party/rexglue-sdk-bd833a2/out/install/linux-amd64"
-[[ -x "$sdk_install/bin/rexgluerd" ]] || { echo "The SDK isn't built: run tools/setup-linux.sh" >&2; exit 1; }
+[[ -x "$sdk_install/bin/rexglue" ]] || { echo "The SDK isn't built: run tools/setup-linux.sh" >&2; exit 1; }
 [[ -f "$port/assets/$xex" ]] || { echo "$project/assets/$xex is missing (docs/SETUP.md)" >&2; exit 1; }
 if [[ "$(sha256sum "$port/assets/$xex" | cut -d' ' -f1)" != "$sha" ]]; then
   echo "$project/assets/$xex is not the supported GRAW executable (USA/Europe, title 555307D5)" >&2

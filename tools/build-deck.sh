@@ -41,7 +41,9 @@ mounts=(-v "$root:/src")
 for assets in "$root"/port*/assets; do
   [[ -e "$assets" ]] || continue
   real="$(readlink -f "$assets")"
-  case "$real" in "$root"/*) ;; *) mounts+=(-v "$real:$real:ro") ;; esac
+  case "$real" in "$root"/*) continue ;; esac
+  # Once each: the projects' links usually share one folder.
+  [[ " ${mounts[*]} " == *" $real:$real:ro "* ]] || mounts+=(-v "$real:$real:ro")
 done
 podman run --rm --userns=keep-id "${mounts[@]}" -w /src -e HOME=/tmp \
   -e GRAW_SDK_DIR="$sdk" -e GRAW_BUILD_DIR="/src/$build_rel" "$image" \

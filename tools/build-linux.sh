@@ -7,6 +7,8 @@
 #   tools/build-linux.sh                         # the campaign (port-yeti -> grawyeti)
 #   tools/build-linux.sh --project port --jobs 12
 #   tools/build-linux.sh --config Release
+# GRAW_SDK_DIR: the SDK checkout tools/setup-linux.sh used; GRAW_BUILD_DIR: the build folder
+# (default out/build/<preset> in the project). tools/build-deck.sh sets both.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -38,7 +40,7 @@ case "$config" in
 esac
 
 port="$root/$project"
-sdk_install="$root/third_party/rexglue-sdk-bd833a2/out/install/linux-amd64"
+sdk_install="${GRAW_SDK_DIR:-$root/third_party/rexglue-sdk-bd833a2}/out/install/linux-amd64"
 [[ -x "$sdk_install/bin/rexglue" ]] || { echo "The SDK isn't built: run tools/setup-linux.sh" >&2; exit 1; }
 [[ -f "$port/assets/$xex" ]] || { echo "$project/assets/$xex is missing (docs/SETUP.md)" >&2; exit 1; }
 if [[ "$(sha256sum "$port/assets/$xex" | cut -d' ' -f1)" != "$sha" ]]; then
@@ -49,7 +51,8 @@ fi
 preset="linux-amd64-${config,,}"
 # x86-64-v3 as on Windows (tools/build.ps1, #11); the Steam Deck has it. The presets name
 # clang-20; any clang 20 or later works.
-args=(--preset "$preset" -DCMAKE_PREFIX_PATH="$sdk_install"
+build="${GRAW_BUILD_DIR:-$port/out/build/$preset}"
+args=(--preset "$preset" -B "$build" -DCMAKE_PREFIX_PATH="$sdk_install"
       -DCMAKE_C_COMPILER="${CC:-clang}" -DCMAKE_CXX_COMPILER="${CXX:-clang++}"
       -DCMAKE_C_FLAGS=-march=x86-64-v3 -DCMAKE_CXX_FLAGS=-march=x86-64-v3)
 cd "$port"
@@ -58,7 +61,7 @@ first_time=0
 [[ -f "generated/$out/sources.cmake" ]] || first_time=1
 # Codegen first (a no-op when nothing changed), then reconfigure once if the generated sources
 # didn't exist yet (the recomp target only appears once they do), then build.
-cmake --build --preset "$preset" --parallel "$jobs" --target "${name}_codegen"
+cmake --build "$build" --parallel "$jobs" --target "${name}_codegen"
 # The installed code generator is the patched one (vpkd3d128, docs/TACMAP.md); the check keeps a
 # stock generator from bringing the bug back unnoticed.
 python3 -I "$root/tools/check_vector_aliasing.py" "generated/$out" >/dev/null || {
@@ -66,12 +69,11 @@ python3 -I "$root/tools/check_vector_aliasing.py" "generated/$out" >/dev/null ||
   exit 1
 }
 if [[ $first_time -eq 1 ]]; then cmake "${args[@]}"; fi
-cmake --build --preset "$preset" --parallel "$jobs"
+cmake --build "$build" --parallel "$jobs"
 # The program finds its shared libraries beside itself ($ORIGIN): the SDK stages the renderer
 # plugin there, but its runtime and Tracy libraries only on Windows and macOS.
-bin="$port/out/build/$preset"
 postfix=$(case "$config" in Debug) echo d ;; RelWithDebInfo) echo rd ;; *) echo ;; esac)
 for lib in librexruntime libTracyClient; do
-  cp -u "$sdk_install/lib/$lib$postfix.so" "$bin/"
+  cp -u "$sdk_install/lib/$lib$postfix.so" "$build/"
 done
-echo "Built $project/out/build/$preset/$name"
+echo "Built $build/$name"

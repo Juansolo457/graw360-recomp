@@ -13,10 +13,12 @@
 #   tools/setup-linux.sh             # all of it (skips what is there already)
 #   tools/setup-linux.sh --force     # replace an existing SDK source checkout and rebuild
 #   tools/setup-linux.sh --jobs 12
+# GRAW_SDK_DIR puts the SDK checkout elsewhere (tools/build-deck.sh: the SDK writes its binaries
+# into its own tree, so a second build environment needs a second checkout).
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-sdk="$root/third_party/rexglue-sdk-bd833a2"
+sdk="${GRAW_SDK_DIR:-$root/third_party/rexglue-sdk-bd833a2}"
 sdk_commit=bd833a2ab69d305f99ddf57418fc38ffec8af93d
 # As tools/setup.ps1, in order.
 sdk_patches=(rexglue-bd833a2-vpkd3d128-alias rexglue-bd833a2-freed-page-resolve

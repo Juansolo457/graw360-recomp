@@ -86,8 +86,8 @@ pwsh -NoProfile -File tools/capture_window.ps1 -ProcessName graw  # screenshot e
 ```
 - Toolchain: `tools/setup.ps1` (docs/SETUP.md) downloads it into `.tools/` (ReXGlue SDK nightly
   `0.10.0.24-dev.gbd833a2`, LLVM 20.1.8, CMake 3.31.8, Ninja 1.13.1), and builds the patched
-  code generator and the campaign's renderer plugin from `third_party/rexglue-sdk-bd833a2` (six
-  patches in `tools/patches`, two of them pgr4-native's 0021/0022; `build.ps1 -Project port-yeti` installs the plugin). On the
+  code generator and the campaign's renderer plugin from `third_party/rexglue-sdk-bd833a2` (seven
+  patches in `tools/patches`: two of them pgr4-native's 0021/0022, one a switch for 0021; `build.ps1 -Project port-yeti` installs the plugin). On the
   maintainer's PC `.tools/` is a junction to `../n3-360-recomp/reference/N3-Recomp/.tools`
   with the same files. `build.ps1` enters a
   VS 2022 DevShell (vcvars64 breaks on a quoted PATH entry), checks the XEX hash, runs

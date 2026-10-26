@@ -22,9 +22,13 @@ $tools = Join-Path $root '.tools'
 $downloads = Join-Path $tools 'downloads'
 $sdk = Join-Path $root 'third_party\rexglue-sdk-bd833a2'
 $sdkCommit = 'bd833a2ab69d305f99ddf57418fc38ffec8af93d'
+# In order; the last two are pgr4-native's shader translator changes the native renderer
+# compiles against (docs/NATIVE_RENDERER.md).
 $sdkPatches = @('rexglue-bd833a2-vpkd3d128-alias', 'rexglue-bd833a2-freed-page-resolve',
-                'rexglue-bd833a2-vblank-pacing', 'rexglue-bd833a2-gpu-skip-draws')
-$expectedTree = 'a23bc96710d26ca8a8703ea63e7e76e2c3921526'   # after the last patch
+                'rexglue-bd833a2-vblank-pacing', 'rexglue-bd833a2-gpu-skip-draws',
+                'pgr4-native/0021-gpu-sample-computed-LOD-pixel-shader-fetches-with-sa',
+                'pgr4-native/0022-gpu-add-a-pixel-shader-modification-for-textures-kno')
+$expectedTree = 'e24a63ed00f23999c12618526d20442ceb86a3d4'   # after the last patch
 
 function Invoke-Git {
     & git.exe @args
@@ -109,6 +113,22 @@ if (Test-Path $sdk) {
     Invoke-Git -C $sdk switch --quiet -c graw360
     Write-Host 'SDK source: fetching its submodules'
     Invoke-Git -C $sdk submodule update --init --recursive
+}
+
+# Without Windows symlink support git checks out a symbolic link as a small file holding the
+# target's path: libmspack's cabextract/mspack/*.c and *.h are such links, and the compiler
+# then reads "../../libmspack/mspack/lzxd.c" as C. Replace each one whose target is a file with
+# a copy of it (directory links are macOS-only parts the Windows build doesn't use).
+$repos = @('.') + @(& git -C $sdk submodule foreach --quiet --recursive 'echo $displaypath')
+foreach ($repo in $repos) {
+    $dir = Join-Path $sdk $repo
+    foreach ($entry in (& git -C $dir ls-files -s | Where-Object { $_ -like '120000 *' })) {
+        $file = Join-Path $dir ($entry -split "`t", 2)[1]
+        $item = Get-Item -LiteralPath $file -ErrorAction SilentlyContinue
+        if (!$item -or $item.LinkType -or $item.PSIsContainer -or $item.Length -gt 1024) { continue }
+        $target = Join-Path (Split-Path $file) (Get-Content -LiteralPath $file -Raw).Trim()
+        if (Test-Path -LiteralPath $target -PathType Leaf) { Copy-Item -LiteralPath $target $file -Force }
+    }
 }
 
 # 3. Build the patched code generator and the campaign's renderer plugin.

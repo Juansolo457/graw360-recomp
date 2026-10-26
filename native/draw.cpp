@@ -15,6 +15,7 @@
 #include "pipeline_store.h"
 #include "profile.h"
 #include "render_targets.h"
+#include "d3d12_backend.h"
 #include "renderer.h"
 #include "resolve.h"
 #include "shader_cache.h"
@@ -657,7 +658,7 @@ void PackFloats(CachedCbv& cb, const DxbcShader* shader, const uint32_t* regs, u
 }  // namespace
 
 struct DrawRenderer::Impl {
-  NativeRenderer& r;
+  D3D12Backend& r;
   DrawRenderer::Stats& stats;
   ID3D12Device* device = nullptr;
   rex::memory::Memory* memory = nullptr;
@@ -1028,7 +1029,7 @@ struct DrawRenderer::Impl {
   void Snapshot(ID3D12GraphicsCommandList* list, RenderTarget* rt, const std::string& stem);
   void WriteSnapshots(uint64_t completed_fence);
 
-  Impl(NativeRenderer& renderer, DrawRenderer::Stats& s)
+  Impl(D3D12Backend& renderer, DrawRenderer::Stats& s)
       : r(renderer), stats(s), shaders(renderer.device().vendor_id()) {}
   ~Impl() {
     if (!pso_threads.empty()) {
@@ -2170,7 +2171,8 @@ void DrawRenderer::Impl::FlushCopies(ID3D12GraphicsCommandList* list) {
   ++stats.copy_batches;
   TransitionShared(list, D3D12_RESOURCE_STATE_COPY_DEST);
   for (const VertexCopy& c : copies)
-    list->CopyBufferRegion(shared.Get(), c.dst, c.src, c.src_offset, c.size);
+    list->CopyBufferRegion(shared.Get(), c.dst, static_cast<ID3D12Resource*>(c.src), c.src_offset,
+                             c.size);
   copies.clear();
   TransitionShared(list, kSharedReadState);
 }
@@ -2620,8 +2622,8 @@ void DrawRenderer::Impl::Prepare(const DrawState& s, uint64_t tag, DrawPrep* pre
   profile::Mark(profile::kCapShaders);
   if (audit_left) {
     ++audit_draws;
-    AuditShader(s.vs, prep->vs, "vertex");
-    AuditShader(s.ps, prep->ps, "pixel");
+    AuditShader(s.vs, static_cast<DxbcShader*>(prep->vs), "vertex");
+    AuditShader(s.ps, static_cast<DxbcShader*>(prep->ps), "pixel");
   }
   if (!prep->vs) return;
   if (coherency || audit_left) HashRegisterBlocks(s.regs, prep->regs_hash);
@@ -2632,7 +2634,7 @@ void DrawRenderer::Impl::Prepare(const DrawState& s, uint64_t tag, DrawPrep* pre
   preparing = true;
   segment_conflict = false;
   draw_reads.clear();
-  prep->upload_ok = indexed_ok && RequestVertices(s, *prep->vs, *out);
+  prep->upload_ok = indexed_ok && RequestVertices(s, *static_cast<DxbcShader*>(prep->vs), *out);
   preparing = false;
   if (segment_conflict || segment_exact.size() >= kSegmentExactLimit) {
     NewSegment();
@@ -3315,7 +3317,8 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
       TransitionShared(list, D3D12_RESOURCE_STATE_COPY_DEST);
       for (uint32_t i = 0; i < prep->copy_count; ++i) {
         const VertexCopy& c = prep->copies[i];
-        list->CopyBufferRegion(shared.Get(), c.dst, c.src, c.src_offset, c.size);
+        list->CopyBufferRegion(shared.Get(), c.dst, static_cast<ID3D12Resource*>(c.src), c.src_offset,
+                             c.size);
       }
     }
     if (prep->audit_count) AuditDraw(list, *prep);
@@ -3332,8 +3335,8 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
     ++stats.skipped;
     return;
   }
-  DxbcShader* vs = prep ? prep->vs : LoadShader(vs_memo, vs_last, s.vs, xenos::ShaderType::kVertex);
-  DxbcShader* ps = prep ? prep->ps : LoadShader(ps_memo, ps_last, s.ps, xenos::ShaderType::kPixel);
+  DxbcShader* vs = prep ? static_cast<DxbcShader*>(prep->vs) : LoadShader(vs_memo, vs_last, s.vs, xenos::ShaderType::kVertex);
+  DxbcShader* ps = prep ? static_cast<DxbcShader*>(prep->ps) : LoadShader(ps_memo, ps_last, s.ps, xenos::ShaderType::kPixel);
   if (!vs) {
     ++stats.failed;
     return;
@@ -3805,7 +3808,7 @@ void DrawRenderer::Impl::WriteSnapshots(uint64_t completed_fence) {
   snaps.clear();
 }
 
-DrawRenderer::DrawRenderer(NativeRenderer& renderer)
+DrawRenderer::DrawRenderer(D3D12Backend& renderer)
     : renderer_(renderer), impl_(std::make_unique<Impl>(renderer, stats_)) {}
 DrawRenderer::~DrawRenderer() = default;
 

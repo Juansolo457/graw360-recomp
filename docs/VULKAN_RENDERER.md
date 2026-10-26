@@ -200,6 +200,32 @@ fields are dropped.
 **Estimate after M0:** unchanged at 3-5 weeks. The shader side is lower risk than feared. The
 work is the backend port itself (M1-M5).
 
+## M1 status (2026-10-26)
+**Done for the frame path.**
+- `native/backend.h`: the `Backend` interface and the API-free types the host queues between
+  threads. `DrawPrep` holds `rex::graphics::Shader*`, `VertexCopy` an opaque upload buffer, and
+  the draw and texture stats moved there.
+- `native/d3d12_backend.h/.cpp`: the device, module wiring, swap and window ownership, moved
+  out of `renderer.cpp` unchanged. The modules take `D3D12Backend&`.
+- `renderer.cpp` is the API-free host: hooks, render-thread queue, stats and CSV, renderer
+  switch, pacing.
+
+**Test** (GRAW save, native primary, 145 s): no errors, no failed or unsupported draws, 16.67 ms
+frames, gameplay with the HUD and the Cross-Com feed rendering. Gameplay stretch against the
+pre-refactor clean-folder run (another part of the level, so a sanity check only):
+
+| | draws/frame | µs/draw | swap µs | game thread µs |
+|---|---|---|---|---|
+| before | 1,256 | 0.94 | 452 | 284 |
+| M1 | 1,549 | 0.86 | 340 | 257 |
+
+**Left in M1, needed before Linux (M7), not Windows:**
+- The guest-call decoders still live in D3D12 module files: `RenderTargets::DecodeClear`,
+  `DecodeResolve`, `Presenter::ReadSwap` and their structs, including `D3D12_RECT` in
+  `ClearParams`.
+- `FramePacer` attaches to a DXGI waitable and a D3D12 fence.
+- `renderer.cpp` uses Win32 for its thread names and `Sleep`.
+
 ## Risks
 - **The SPIR-V translator's output for GRAW is unproven.** M0 exists to find gaps before
   anything else is built.

@@ -1,4 +1,4 @@
-// GRAW native renderer (ported from pgr4-native 8ea20d5, MIT; see native/README.md): host of the native D3D12 path.
+// GRAW native renderer (ported from pgr4-native 8ea20d5, MIT; see native/README.md): host of the native path.
 //
 // The guest D3D hooks in graw_d3d_trace.cpp forward every call to the guest D3D (without
 // --graw_native_primary the Xenos plugin keeps rendering, as the oracle) and, with
@@ -6,8 +6,9 @@
 // call's arguments. Only the outermost
 // draw/clear/resolve/Swap call is passed on (the D3D's internal clear, copy and Swap quads are
 // not game draws); a top-level BeginVertices reaches OnDraw at the entry of the next hooked
-// call, once the game has written its vertices. The renderer owns its own D3D12 queue, window
-// and swapchain, separate from ReXGlue's presenter (d3d12_device.h).
+// call, once the game has written its vertices. The GPU API side is a Backend (backend.h; D3D12
+// today, d3d12_backend.h), with its own queue, window and swapchain, separate from ReXGlue's
+// presenter.
 //
 // Threading: the guest D3D device is used by one guest thread at a time; all On* entry points
 // are called on that thread, after the original guest function returned, and are serialized
@@ -21,7 +22,8 @@
 // the render thread
 // ("GRAW native render"), which replays it into the modules with its own copy of the register
 // file. From then on the command list, the D3D12 objects and every module's state belong to
-// that thread (DrawRenderer's vertex upload pool and shader lookup stay on the guest thread).
+// that thread (the backend's Prepare group, vertex upload pool and shader lookup, stays on the
+// guest thread).
 // The guest thread blocks at Swap while the render thread is more than one frame behind, and
 // waits for the render thread to finish the Swaps around a capture (present.h).
 #pragma once
@@ -36,23 +38,12 @@
 #include <string>
 #include <vector>
 
-struct ID3D12Device;
-struct ID3D12CommandList;
-struct ID3D12CommandQueue;
-struct ID3D12GraphicsCommandList;
-
 REXCVAR_DECLARE(bool, graw_native_render_thread);  // record on a render thread (see above)
 
 namespace graw::native {
 
-class D3D12Device;
-class DrawRenderer;
+class Backend;
 class FramePacer;
-class GpuTimer;
-class Presenter;
-class RenderTargets;
-class Resolver;
-class TextureCache;
 struct ClearCall;
 struct DrawPrep;
 struct DrawState;
@@ -72,15 +63,16 @@ struct FrameStats {
   uint64_t hook_ns = 0, hook_wait_ns = 0;
   uint64_t hook_max_ns = 0;  // render thread mode: the longest single On* call, without waits
   uint64_t reg_writes = 0;   // render thread mode: register values replayed
-  // Parts of swap_ns: waiting for the texture untile workers, then D3D12Device::EndFrameTimes.
+  // Parts of swap_ns: waiting for the texture untile workers, then the backend's submit, present
+  // and fence wait (Backend::SwapResult).
   uint64_t swap_untile_ns = 0, swap_submit_ns = 0, swap_present_ns = 0, swap_fence_ns = 0;
-  uint64_t frames_held = 0;  // Swaps not presented (DrawRenderer::FrameIncomplete)
+  uint64_t frames_held = 0;  // Swaps not presented (Backend::SwapResult::incomplete)
   uint64_t submits = 0;      // lists submitted before the Swap's (--graw_native_submit_draws)
   // The guest's pad reads since the Swap before (rex_xam_take_frame_pad, taken at the Swap).
   uint64_t pad = 0;
   // Pacing (NowNs clock): when the guest thread began the frame (its previous Swap returned) and
   // reached its Swap, how long FramePacer::WaitToBegin held it before it began, and the frame's
-  // present number (D3D12Device::EndFrameTimes::presents; 0: not presented).
+  // present number (Backend::SwapResult::presents; 0: not presented).
   uint64_t guest_begin_ns = 0, guest_swap_ns = 0, pace_wait_ns = 0, present = 0;
 };
 
@@ -116,22 +108,8 @@ class NativeRenderer {
   // back.
   void OnSwapSuspended();
 
-  // For modules.
-  D3D12Device& device() { return *device_; }
-  ID3D12Device* d3d12() const;
-  ID3D12CommandQueue* command_queue() const;
-  // The frame's direct command list: open from the previous Swap until OnSwap closes and
-  // submits it. Record into it from the On* calls only (the render thread, in that mode).
-  ID3D12GraphicsCommandList* command_list() const;
   // Swaps recorded so far (= index of the frame being recorded).
   uint64_t frame_index() const { return frame_index_; }
-  // Fence value OnSwap will signal for the frame being recorded; a resource last used in this
-  // frame may be freed once device().completed_fence() >= this.
-  uint64_t frame_fence() const;
-  // Modules owned by the renderer.
-  TextureCache& textures() { return *textures_; }
-  RenderTargets& render_targets() { return *rt_; }
-  Resolver& resolver() { return *resolver_; }
 
   ~NativeRenderer();
 
@@ -149,7 +127,7 @@ class NativeRenderer {
   void AppendCsvLumaColumns(bool header, std::string* line);
   void AddToStatsLog(const FrameStats& s, uint64_t frame_ns);
   void ResetFrameCounters();
-  // Starts a frame's module state (RenderTargets/Resolver BeginFrame) at its first On* call.
+  // Starts a frame's backend state (Backend::BeginFrame) at its first On* call.
   void BeginFrame() {
     if (!frame_begun_) BeginFrameModules();
   }
@@ -162,23 +140,11 @@ class NativeRenderer {
   // After a draw: submits the frame so far once --graw_native_submit_draws draws were recorded
   // since the last submission.
   void SubmitEarly();
-  // Before each submission, once the untiles finished: the texture upload lists to submit first
-  // (TextureCache::CloseUploadLists), into upload_lists_. False on failure (logged).
-  bool CloseUploadLists();
   // A failed submission or present: logs and turns the native path off for the rest of the run.
   // In primary mode it also releases the game window to ReXGlue's presenter (on the thread that
   // records, which owns the swapchain), and the guest thread hands the game to the Xenos plugin
   // at its next Swap (HandOver).
   void Fail();
-  // Primary mode, at a Swap before anything is recorded into the back buffer: who presents into
-  // the game window. The renderer while it draws the game and no XAM dialog is up; ReXGlue's
-  // presenter otherwise (the dialogs are its ImGui overlay, and after the renderer switch it
-  // shows the Xenos plugin's frames). A window has one swapchain at a time: the presenter's
-  // surface is disconnected before ours is created, and ours released before it is connected
-  // again. Returns false when the swapchain cannot be created (logged).
-  bool OwnGameWindow(bool own);
-  // OwnGameWindow(false) from any state, including a half-done OwnGameWindow(true).
-  void ReleaseGameWindow();
   // Render thread mode.
   struct Queue;
   void QueueDraw(const uint8_t* base, const HookArgs& args);
@@ -205,25 +171,17 @@ class NativeRenderer {
 
   std::unique_ptr<Queue> queue_;  // render thread mode only
 
-  std::unique_ptr<D3D12Device> device_;
-  bool primary_ = false;       // --graw_native_primary: presenting into the game window
-  bool window_taken_ = false;  // OwnGameWindow disconnected ReXGlue's presenter from the window
-  std::unique_ptr<RenderTargets> rt_;
-  std::unique_ptr<Resolver> resolver_;
-  std::unique_ptr<TextureCache> textures_;
-  std::unique_ptr<DrawRenderer> draw_;
-  std::unique_ptr<Presenter> present_;
+  std::unique_ptr<Backend> backend_;
+  bool primary_ = false;  // --graw_native_primary: presenting into the game window
   // Primary mode with --graw_native_frame_latency > 0, or observing only with --graw_native_csv.
   std::unique_ptr<FramePacer> pacer_;
-  GpuTimer* gpu_timer_ = nullptr;  // device_'s, with --graw_native_gpu_timing
   bool frame_begun_ = false;
   uint64_t frame_index_ = 0;
   uint64_t frame_start_ns_ = 0;
   FrameStats stats_;
   // Ticks inside ExecuteDraw, ExecuteClear and ExecuteResolve, into stats_ at the Swap.
   uint64_t draw_ticks_ = 0, clear_ticks_ = 0, resolve_ticks_ = 0;
-  uint64_t draws_submitted_ = 0;                  // stats_.draws at the frame's last SubmitEarly
-  std::vector<ID3D12CommandList*> upload_lists_;  // CloseUploadLists'
+  uint64_t draws_submitted_ = 0;  // stats_.draws at the frame's last SubmitEarly
   struct Csv;
   std::unique_ptr<Csv> csv_;
 };

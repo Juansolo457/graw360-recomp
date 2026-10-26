@@ -2,6 +2,7 @@
 // See present.h.
 #include "present.h"
 
+#include "d3d12_backend.h"
 #include "d3d12_device.h"
 #include "guest_memory.h"
 #include "present_debug.h"
@@ -201,7 +202,7 @@ bool ReadbackRgb(ID3D12Resource* readback, uint32_t row_pitch, uint32_t width, u
 }  // namespace
 
 struct Presenter::Impl {
-  NativeRenderer& r;
+  D3D12Backend& r;
   ComPtr<ID3D12RootSignature> root_signature;
   ComPtr<ID3D12PipelineState> pso, hdr_pso;  // into kBackBufferFormat, kHdrBackBufferFormat
   ComPtr<ID3D12DescriptorHeap> heap;
@@ -238,7 +239,7 @@ struct Presenter::Impl {
   present_debug::GlitchCatch glitch;
   present_debug::LumaProbeReadback probe;
 
-  explicit Impl(NativeRenderer& renderer) : r(renderer) {}
+  explicit Impl(D3D12Backend& renderer) : r(renderer) {}
   ~Impl() {
     if (capture.writer.joinable()) capture.writer.join();
   }
@@ -664,7 +665,7 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown) {
   }
 }
 
-Presenter::Presenter(NativeRenderer& renderer) : impl_(std::make_unique<Impl>(renderer)) {}
+Presenter::Presenter(D3D12Backend& renderer) : impl_(std::make_unique<Impl>(renderer)) {}
 Presenter::~Presenter() = default;
 
 bool Presenter::Initialize() { return impl_->Initialize(); }

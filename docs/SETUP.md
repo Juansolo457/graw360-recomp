@@ -58,6 +58,8 @@ pwsh -NoProfile -File tools/setup.ps1
    - `gpu-skip-draws`: lets the campaign's native renderer take over drawing.
    - pgr4-native's `0021` and `0022`: shader translator changes the native renderer is built
      against.
+   - `implicit-gradients-switch`: lets `--graw_native_implicit_gradients=false` turn 0021 off
+     (a Steam Deck shimmer test).
 3. From that source, it builds the patched code generator and the campaign's renderer plugin.
 
 ## 3. Extract your disc

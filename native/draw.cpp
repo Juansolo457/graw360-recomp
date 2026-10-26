@@ -102,7 +102,14 @@ REXCVAR_DEFINE_INT32(graw_native_draw_log_frames, 1, "GRAW native",
 REXCVAR_DEFINE_INT32(graw_native_anisotropy, 1, "GRAW native",
                      "Anisotropic filtering of the game's linearly filtered textures with mips, "
                      "at least this many samples per pixel (2, 4, 8 or 16; 1: the game's own)");
+REXCVAR_DEFINE_BOOL(graw_native_implicit_gradients, true, "GRAW native",
+                    "Experiment (Steam Deck shimmer): translate computed-LOD texture fetches in "
+                    "pixel shaders with sample_b and the GPU's own derivatives (pgr4-native 0021); "
+                    "false: sample_d with explicit coarse gradients, as before 0021");
 REXCVAR_DECLARE(std::string, graw_native_capture_dir);
+namespace rex::graphics {
+extern bool g_dxbc_implicit_gradients;  // dxbc_translator_fetch.cpp (local SDK experiment)
+}
 
 namespace graw::native {
 
@@ -1518,6 +1525,9 @@ bool DrawRenderer::Impl::Initialize() {
   REXLOG_INFO(
       "GRAW native draw: up (shared memory 512 MB {}, bindless heaps {} views / {} samplers)",
       shared_tiled ? "reserved" : "committed", kViewHeapSize, kSamplerHeapSize);
+  rex::graphics::g_dxbc_implicit_gradients = REXCVAR_GET(graw_native_implicit_gradients);
+  REXLOG_INFO("GRAW native draw: implicit gradients {}",
+              rex::graphics::g_dxbc_implicit_gradients ? "on" : "off");
   D3D12_FEATURE_DATA_D3D12_OPTIONS16 options16 = {};
   dynamic_depth_bias = REXCVAR_GET(graw_native_dynamic_depth_bias) &&
                        SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS16,
@@ -1532,7 +1542,8 @@ bool DrawRenderer::Impl::Initialize() {
     if (dir.empty()) {
       REXLOG_WARN("GRAW native pipelines: no cache root, no pipeline cache");
     } else {
-      dir /= "graw-native";
+      // Shaders translated the other way can't share the cache's pipelines.
+      dir /= rex::graphics::g_dxbc_implicit_gradients ? "graw-native" : "graw-native-gradients";
       store.Open(dir, sizeof(PipelineKey), kPipelineKeyVersion);
       library_path = dir / "pipelines.d3d12lib";
     }

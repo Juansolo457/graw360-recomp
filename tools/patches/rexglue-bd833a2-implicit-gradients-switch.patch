@@ -1,0 +1,24 @@
+diff --git a/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp b/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
+index bdce483..cd77eae 100644
+--- a/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
++++ b/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
+@@ -30,6 +30,10 @@ REXCVAR_DEFINE_BOOL(draw_resolution_scaled_texture_offsets, true, "GPU/Shader",
+ namespace rex::graphics {
+ using namespace ucode;
+ 
++// GRAW Deck experiment: false translates computed-LOD pixel shader fetches with sample_d and
++// explicit coarse gradients again (before pgr4-native 0021). Set by the native renderer.
++bool g_dxbc_implicit_gradients = true;
++
+ void DxbcShaderTranslator::ProcessVertexFetchInstruction(
+     const ParsedVertexFetchInstruction& instr) {
+   if (emit_source_map_) {
+@@ -1435,7 +1439,7 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+             a_.OpMul(lod_dest, lod_src, dxbc::Src::LF(1.0f / 32.0f));
+           }
+         }
+-        implicit_gradients = use_computed_lod && is_pixel_shader() &&
++        implicit_gradients = g_dxbc_implicit_gradients && use_computed_lod && is_pixel_shader() &&
+                              !instr.attributes.use_register_gradients &&
+                              instr.dimension != xenos::FetchOpDimension::k3DOrStacked;
+         if (use_computed_lod && !implicit_gradients) {

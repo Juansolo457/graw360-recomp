@@ -100,7 +100,12 @@ if(WIN32 AND EXISTS "${GRAW_REXGLUE_SDK_SRC}/src/graphics/pipeline/shader/dxbc_t
     target_link_libraries(graw_native PRIVATE rex::runtime rex::xxhash)
     include("${GRAW_NATIVE_SRC}/shader_xlate.cmake")
     target_include_directories(graw_shader_xlate BEFORE PRIVATE "${GRAW_REXGLUE_SDK_SRC}/include")
-    target_link_libraries(grawyeti PRIVATE graw_native graw_shader_xlate d3d12 dxgi dxguid)
+    target_include_directories(graw_shader_xlate_spirv BEFORE PRIVATE "${GRAW_REXGLUE_SDK_SRC}/include")
+    # The Vulkan backend's sources include the SPIR-V translator's and glslang's headers.
+    target_include_directories(graw_native PRIVATE
+        "${GRAW_REXGLUE_SDK_SRC}/thirdparty/glslang" "${GRAW_REXGLUE_SDK_SRC}/thirdparty/renderdoc")
+    target_link_libraries(grawyeti PRIVATE graw_native graw_shader_xlate graw_shader_xlate_spirv
+        d3d12 dxgi dxguid)
     target_compile_definitions(grawyeti PRIVATE GRAW_NATIVE_RENDERER=1)
 else()
     message(STATUS "grawyeti: native renderer not built (needs Windows and ${GRAW_REXGLUE_SDK_SRC})")

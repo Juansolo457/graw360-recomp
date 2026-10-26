@@ -251,6 +251,40 @@ pre-refactor clean-folder run (another part of the level, so a sanity check only
 The D3D12 default, run after it, is unchanged: gameplay with HUD and Cross-Com, 1,888
 draws/frame at 0.76 µs/draw, no errors.
 
+## M3 in steps
+M3 (pipelines and draws, menus drawing) is split so each step ends in something checkable:
+
+| Step | What | Done when |
+|---|---|---|
+| M3a | SPIR-V translation inside the game, shader modules per variant | Done (below) |
+| M3b | The API-free draw core out of `draw.cpp`: register helpers (viewport, scissor, depth, color mask), sampler keys, fan indices, the guest-memory page watches and range copies (`RequestRange`, the watch thread, about 300 lines), `Prepare` | D3D12 identical before and after |
+| M3c | Vulkan shared memory (storage buffer) and uploads, the five uniform buffers (system constants ported from the SDK's Vulkan backend), pipelines from the render state (dynamic rendering), render targets, the draws | Draws recorded, validation clean |
+| M3d | The frame shown at Swap (the front buffer, or the render target it was resolved from) | The menus visible on Vulkan |
+
+## M3a status (2026-10-26)
+**Done.**
+- **Compiled into the game:** the SDK's SPIR-V translator, and glslang's `SpvBuilder`,
+  `InReadableOrder` and `Logger` (`shader_xlate.cmake`: `graw_shader_xlate_spirv`,
+  `graw_glslang_spirv`), with the same cvar shim as the DXBC translator.
+- **`vulkan_shaders.h/.cpp`:** ucode, then SPIR-V per variant, then a `VkShaderModule`.
+- **`spirv_translate.h/.cpp`:** variant selection, mirroring the SDK's Vulkan pipeline cache.
+- **`shader_modifications.h/.cpp`:** the API-free part (`ShaderDrawRegs`, `DrawReachesPipeline`,
+  `PixelShaderNeeded`), used by both translators.
+- **`vulkan_device.h`:** includes the SDK's `rex/ui/vulkan/api.h`, so every file sees one Vulkan
+  configuration.
+- **The translator's `Features` come from the device:** the float controls from
+  `VkPhysicalDeviceVulkan12Properties`; clip/cull distance, stores, sample rate shading and
+  demote enabled when supported. With "everything on", the validation layer rejected the modules:
+  NVIDIA has no 32-bit denormal flush-to-zero.
+
+**Test** (GRAW save, 80 s, validation on, RTX 4090):
+- 193 shaders, 219 variants, 219 modules, **0 failures**;
+- **0 validation errors or warnings**;
+- translation took 141 ms in all, at most 1.7 ms for one variant;
+- ~2,100 draws per frame went through variant selection.
+
+The D3D12 default, run after it, is unchanged.
+
 ## Risks
 - **The SPIR-V translator's output for GRAW is unproven.** M0 exists to find gaps before
   anything else is built.

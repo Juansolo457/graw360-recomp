@@ -11,16 +11,10 @@
 // presenter has its own swapchain there. Debug window mode isn't supported.
 #pragma once
 
-#ifndef VK_NO_PROTOTYPES
-#define VK_NO_PROTOTYPES
-#endif
-#if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#define VK_USE_PLATFORM_WIN32_KHR
-#endif
-#include <vulkan/vulkan.h>
+// The SDK's Vulkan configuration (VK_NO_PROTOTYPES, beta extensions, the platform's WSI): every
+// file that includes Vulkan has to see the same one, and the SPIR-V translator's headers include
+// it too.
+#include <rex/ui/vulkan/api.h>
 #if defined(_WIN32)
 #undef DrawState  // winuser.h maps it to DrawStateA/W; d3d_state.h's struct has that name
 #endif
@@ -69,7 +63,9 @@ namespace graw::native {
   X(vkDestroySwapchainKHR)          \
   X(vkGetSwapchainImagesKHR)        \
   X(vkAcquireNextImageKHR)          \
-  X(vkQueuePresentKHR)
+  X(vkQueuePresentKHR)              \
+  X(vkCreateShaderModule)           \
+  X(vkDestroyShaderModule)
 
 class VulkanDevice {
  public:
@@ -87,6 +83,23 @@ class VulkanDevice {
     GRAW_VK_INSTANCE_FUNCTIONS(GRAW_VK_DECLARE)
     GRAW_VK_DEVICE_FUNCTIONS(GRAW_VK_DECLARE)
 #undef GRAW_VK_DECLARE
+  };
+
+  // What the GPU supports among what the SPIR-V translator can use (its Features; the
+  // supported device features are also enabled).
+  struct ShaderCaps {
+    uint32_t api_version = 0;
+    uint32_t max_storage_buffer_range = 0;
+    bool full_draw_index_uint32 = false;
+    bool vertex_pipeline_stores_and_atomics = false;
+    bool fragment_stores_and_atomics = false;
+    bool clip_distance = false, cull_distance = false;
+    bool sample_rate_shading = false;
+    bool demote_to_helper_invocation = false;
+    // Float controls (VkPhysicalDeviceVulkan12Properties) for 32-bit floats.
+    bool signed_zero_inf_nan_preserve_float32 = false;
+    bool denorm_flush_to_zero_float32 = false;
+    bool rounding_mode_rte_float32 = false;
   };
 
   // What the last EndFrame did (the frame CSV's swap columns).
@@ -123,6 +136,7 @@ class VulkanDevice {
 
   const Functions& fn() const { return fn_; }
   VkDevice device() const { return device_; }
+  const ShaderCaps& shader_caps() const { return caps_; }
 
  private:
   struct Frame {
@@ -150,6 +164,7 @@ class VulkanDevice {
   VkDevice device_ = VK_NULL_HANDLE;
   uint32_t queue_family_ = 0;
   VkQueue queue_ = VK_NULL_HANDLE;
+  ShaderCaps caps_;
   std::array<Frame, kFramesInFlight> frames_{};
   uint32_t slot_ = 0;
   uint64_t submitted_ = 0, completed_ = 0;

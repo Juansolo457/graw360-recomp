@@ -241,12 +241,68 @@ bool VulkanDevice::CreateDevice() {
   q.queueFamilyIndex = queue_family_;
   q.queueCount = 1;
   q.pQueuePriorities = &priority;
+  // What the SPIR-V translator can use (its Features, as SpirvShaderTranslator::Features reads
+  // them from the SDK's VulkanDevice): the supported ones are enabled and passed to it.
+  VkPhysicalDeviceProperties props;
+  fn_.vkGetPhysicalDeviceProperties(physical_, &props);
+  VkPhysicalDeviceVulkan13Features s13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+  VkPhysicalDeviceVulkan12Features s12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+  VkPhysicalDeviceFeatures2 supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+  const bool vk13 = props.apiVersion >= VK_API_VERSION_1_3;
+  supported.pNext = &s12;
+  if (vk13) s12.pNext = &s13;
+  fn_.vkGetPhysicalDeviceFeatures2(physical_, &supported);
+  VkPhysicalDeviceVulkan12Properties p12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
+  VkPhysicalDeviceProperties2 props2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+  props2.pNext = &p12;
+  auto get_props2 = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(
+      fn_.vkGetInstanceProcAddr(instance_, "vkGetPhysicalDeviceProperties2"));
+  if (get_props2) get_props2(physical_, &props2);
+  caps_.api_version = props.apiVersion;
+  caps_.max_storage_buffer_range = props.limits.maxStorageBufferRange;
+  const VkPhysicalDeviceFeatures& sf = supported.features;
+  caps_.full_draw_index_uint32 = sf.fullDrawIndexUint32;
+  caps_.vertex_pipeline_stores_and_atomics = sf.vertexPipelineStoresAndAtomics;
+  caps_.fragment_stores_and_atomics = sf.fragmentStoresAndAtomics;
+  caps_.clip_distance = sf.shaderClipDistance;
+  caps_.cull_distance = sf.shaderCullDistance;
+  caps_.sample_rate_shading = sf.sampleRateShading;
+  caps_.demote_to_helper_invocation = vk13 && s13.shaderDemoteToHelperInvocation;
+  caps_.signed_zero_inf_nan_preserve_float32 = p12.shaderSignedZeroInfNanPreserveFloat32;
+  caps_.denorm_flush_to_zero_float32 = p12.shaderDenormFlushToZeroFloat32;
+  caps_.rounding_mode_rte_float32 = p12.shaderRoundingModeRTEFloat32;
+  REXLOG_INFO(
+      "GRAW native Vulkan: shader caps: clip {} cull {} vertex stores {} fragment stores {} "
+      "sample rate {} demote {} | float32 signed-zero/inf/nan {} denorm-ftz {} rte {} | max "
+      "storage buffer {} MB",
+      caps_.clip_distance, caps_.cull_distance, caps_.vertex_pipeline_stores_and_atomics,
+      caps_.fragment_stores_and_atomics, caps_.sample_rate_shading,
+      caps_.demote_to_helper_invocation, caps_.signed_zero_inf_nan_preserve_float32,
+      caps_.denorm_flush_to_zero_float32, caps_.rounding_mode_rte_float32,
+      caps_.max_storage_buffer_range >> 20);
+  VkPhysicalDeviceFeatures2 enabled{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+  enabled.features.fullDrawIndexUint32 = sf.fullDrawIndexUint32;
+  enabled.features.vertexPipelineStoresAndAtomics = sf.vertexPipelineStoresAndAtomics;
+  enabled.features.fragmentStoresAndAtomics = sf.fragmentStoresAndAtomics;
+  enabled.features.shaderClipDistance = sf.shaderClipDistance;
+  enabled.features.shaderCullDistance = sf.shaderCullDistance;
+  enabled.features.sampleRateShading = sf.sampleRateShading;
+  enabled.features.samplerAnisotropy = sf.samplerAnisotropy;
+  enabled.features.independentBlend = sf.independentBlend;
+  enabled.features.depthClamp = sf.depthClamp;
+  enabled.features.depthBiasClamp = sf.depthBiasClamp;
+  enabled.features.fillModeNonSolid = sf.fillModeNonSolid;
+  enabled.features.geometryShader = sf.geometryShader;
   // M3 on: the SPIR-V translator's shaders use scalar block layout (docs/VULKAN_RENDERER.md, M0).
   VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
   f12.scalarBlockLayout = VK_TRUE;
+  VkPhysicalDeviceVulkan13Features f13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+  f13.shaderDemoteToHelperInvocation = caps_.demote_to_helper_invocation;
+  enabled.pNext = &f12;
+  if (vk13) f12.pNext = &f13;
   const char* extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
   VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
-  ci.pNext = &f12;
+  ci.pNext = &enabled;
   ci.queueCreateInfoCount = 1;
   ci.pQueueCreateInfos = &q;
   ci.enabledExtensionCount = 1;

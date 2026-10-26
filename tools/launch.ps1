@@ -15,6 +15,7 @@
 #   pwsh -NoProfile -File tools/launch.ps1 -Windowed -RefreshRate 60 -PerfLog    # 60 fps: smoother but the game logic misbehaves (#17)
 #   pwsh -NoProfile -File tools/launch.ps1 -Console -PerfLog                     # 360 settings: 720p, the game's filtering, 30 fps
 #   pwsh -NoProfile -File tools/launch.ps1 -Console -Native                      # the campaign on its own D3D12 renderer (F9: back to Xenos)
+#   pwsh -NoProfile -File tools/launch.ps1 -Console -Native -Fps 120             # ... at 120 fps (#17; AI at that rate unchecked, #7/#19)
 # This opens a window on the user's screen. Never kill a running graw.exe; ask the user to quit.
 [CmdletBinding()]
 param(
@@ -30,6 +31,12 @@ param(
     # squad commands lag and enemies react late; above 60 running animations play too fast too
     # (#17, play-tests 2026-10-25). At 240 the campaign ran at 47-127 fps.
     [ValidateRange(0,240)][double]$RefreshRate = 30,
+    # The campaign above the 360's frame rate (e.g. -Fps 120, with -Native): presents stop
+    # waiting for the guest's vblanks (--graw_present_interval=0) and the frame limiter paces them
+    # at this rate (--graw_max_fps); character animation keeps its speed on a 60 Hz tick (#17).
+    # The AI and squad issues seen at 60 Hz (#7, #19) are not yet checked at this rate. 0 = the
+    # game's own pacing (-RefreshRate).
+    [ValidateRange(0,240)][int]$Fps = 0,
     # The campaign on fear-nx's native Vulkan renderer (port-yeti-nx, #2): the front end hands
     # Campaign to that build instead of port-yeti. Built with tools/build.ps1 -Project port-yeti-nx.
     [switch]$Nx,
@@ -71,6 +78,12 @@ if ($Nx -or $Project -eq 'port-yeti-nx') {
 }
 if ($Native) { $nxArguments += @('--graw_native_primary=true') }
 elseif ($NativeSide) { $nxArguments += @('--graw_native=true') }
+if ($Fps -gt 0) {
+    # The present-interval and animation-tick hooks are only in port-yeti's manifest: port-yeti-nx
+    # would run uncapped presents with animation at the wrong speed.
+    if ($Nx -or $Project -eq 'port-yeti-nx') { throw '-Fps needs port-yeti (its hooks are not in port-yeti-nx); drop -Nx.' }
+    $nxArguments += @('--graw_present_interval=0', "--graw_max_fps=$Fps")
+}
 $running = Get-Process -Name graw, grawmp, grawyeti -ErrorAction SilentlyContinue
 if ($running) { throw "GRAW is already running (pid $($running.Id -join ', ')). Quit it first." }
 $executable = Join-Path $port "out\build\win-amd64-$($Configuration.ToLowerInvariant())\$exeName.exe"

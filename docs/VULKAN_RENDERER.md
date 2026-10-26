@@ -156,6 +156,50 @@ program's own addresses.
 - **Done when:** the table shows every shader in the corpus translating to valid SPIR-V (or a
   short list of failures with causes), and the binding model is written down here.
 
+## M0 results (2026-10-26)
+**Every GRAW shader translates to valid SPIR-V.**
+- `tools/vulkan-spike/` (local) translated the native renderer's whole shader corpus with the
+  SDK's `SpirvShaderTranslator`:
+  - `port-yeti/cache-smoke`: 814 shaders in 952 vertex and pixel variants, every one translated
+    and valid under `spirv-val` (Vulkan 1.2);
+  - `port-yeti/cache`: 338 shaders, 364 variants.
+- Translation is fast: the 952 variants take ~5 s in one thread, including validation.
+- Results per variant: `private/vulkan-spike/m0-*.csv`.
+
+**One device requirement: `scalarBlockLayout`.** The translator's system-constants uniform block
+puts a member at offset 28 that the standard and relaxed layout rules reject. All 952 fail
+`spirv-val` without scalar block layout, and pass with it. The SDK's Vulkan device enables
+`scalarBlockLayout` (`vulkan_device.cpp`). RADV on the Deck and current desktop drivers support
+it, so it's a requirement to check at start-up, not a blocker.
+
+**The binding model (the SDK's Vulkan backend, which these shaders are written for):**
+
+| Set | Contents | Changes |
+|---|---|---|
+| 0 | Shared memory (guest RAM) as storage buffers, split only where `maxStorageBufferRange` < 512 MB; EDRAM only on the interlock path we don't use | Never |
+| 1 | Five uniform buffers: system constants, vertex float constants, pixel float constants, bool/loop constants, fetch constants | Per draw, from transient pools |
+| 2 | Vertex textures: N sampled images, then M samplers, per shader | Per draw |
+| 3 | Pixel textures: the same | Per draw |
+
+There are no push constants. The texture sets' layouts come from each translated shader's
+bindings (`SpirvShader::Get{Texture,Sampler}BindingsAfterTranslation`).
+
+Our D3D12 path is bindless, with no per-draw descriptor writes. The SPIR-V translator isn't. At
+~2,000 draws per frame, writing two to three descriptor sets per draw is the CPU cost to watch on
+the Deck. Options for M3:
+- write sets per draw as the SDK does (simplest, proven);
+- cache texture sets by their contents;
+- `VK_KHR_push_descriptor` for sets 1-3 (supported by RADV).
+
+Start with the SDK's way, measure in M6/M7, and switch if it shows.
+
+**Mapping the modifications:** the DXBC and SPIR-V translators' modification fields
+correspond, and the spike maps them field by field. M3 reuses the mapping. 0021/0022's DXBC-only
+fields are dropped.
+
+**Estimate after M0:** unchanged at 3-5 weeks. The shader side is lower risk than feared. The
+work is the backend port itself (M1-M5).
+
 ## Risks
 - **The SPIR-V translator's output for GRAW is unproven.** M0 exists to find gaps before
   anything else is built.

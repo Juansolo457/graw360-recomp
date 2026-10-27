@@ -122,7 +122,9 @@ class VulkanBackend final : public Backend, public GuestMemoryMirror::Sink {
   void RecordPipeline(const VulkanPipelineKey& key, const rex::graphics::SpirvShader& vs,
                       uint64_t vs_mod, const rex::graphics::SpirvShader* ps, uint64_t ps_mod,
                       uint32_t gs_key);
-  void Prewarm();
+  // Queues the compiles of the stored pipelines not queued yet, for up to `slice` (one frame's
+  // share; the warm-up takes them all).
+  void Prewarm(std::chrono::microseconds slice = std::chrono::milliseconds(2));
   std::unique_ptr<PipelineStore> store_;
   size_t prewarm_next_ = 0;
   uint32_t prewarm_failed_ = 0, prewarm_frames_ = 0;

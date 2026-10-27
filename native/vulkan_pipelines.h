@@ -15,8 +15,9 @@
 // worker, the extra ones too. Prewarm queues the compile of a key behind the draws'. A
 // VkPipelineCache is loaded from the cache file when its header is this GPU's and driver's, and
 // saved when no compile came for 3 s, and when the pipelines are destroyed. Entries are never
-// removed.
-// Threading: Initialize, Get, Prewarm, WaitForFrame on the recording thread; the workers compile.
+// removed. WarmUp, at start, puts every worker on the queue until it drains (the warm-up).
+// Threading: Initialize, Get, Prewarm, WaitForFrame, WarmUp on the recording thread; the workers
+// compile.
 #pragma once
 
 #include "vulkan_device.h"  // first: the Vulkan platform defines
@@ -27,6 +28,7 @@
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -98,6 +100,11 @@ class VulkanPipelines {
   // After the frame's submission: waits up to `budget` for the pipelines its draws skipped;
   // returns the microseconds waited.
   uint64_t WaitForFrame(std::chrono::milliseconds budget);
+  // The warm-up: waits up to `budget` for every queued compile (prewarm's included), with every
+  // worker on them, the extra ones too. `progress` gets (compiled, queued at the start) about
+  // once a second. Returns the compiles still queued or running (0: done).
+  size_t WarmUp(std::chrono::milliseconds budget,
+                const std::function<void(size_t, size_t)>& progress);
 
   VulkanPipelineStats stats() const;
   size_t count() const { return pipelines_.size(); }
@@ -136,6 +143,8 @@ class VulkanPipelines {
   std::deque<Entry*> jobs_;           // draws are waiting for these
   std::deque<Entry*> prewarm_jobs_;   // taken only when jobs_ is empty
   bool waiting_ = false;              // WaitForFrame is waiting
+  bool warming_ = false;              // WarmUp is waiting
+  uint32_t compiling_ = 0;            // compiles in progress
   bool stopping_ = false;
   std::vector<Entry*> frame_pending_;
   uint64_t frame_serial_ = 1;

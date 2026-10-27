@@ -711,6 +711,43 @@ Still to see on the Deck: whether this was the whole menu problem (its frame log
 (a VM, so it overstates the Deck). The video's untiling runs on the recording thread (p90 2.3 ms
 on the PC's menu), where D3D12's runs on workers.
 
+## M7c (2026-10-26): the shader warm-up; Deck test 5 notes
+**Deck test 5 reports:**
+- assets and allies' guns missing, once blocking progress;
+- hitches on explosions;
+- pause-menu artifacts (#33);
+- black sky at some angles in the helicopter scenes (#32).
+
+The one log sent was Instant Action's (`grawmp`, the emulated renderer): 360 pipelines over 11
+minutes, nothing failed, and no game file failed to open. Its 118 shader-include errors appear on
+Windows too. The campaign's own logs (`graw-…~grawyeti-….log`, `grawyeti-frames*.csv`) are
+needed for the rest.
+
+Two points for reading those logs:
+- The native renderer never shows a frame with draws skipped for a pipeline still compiling: it
+  holds the frame. So objects missing for good point at a failure (a pipeline or a texture the
+  Deck's driver refuses), which the campaign log counts.
+- #7 (allies' guns) was also seen at 30 fps before the frame-rate unlock, after explosions, so
+  locking 30 alone may not fix it.
+
+**Done: the shader warm-up.** At start, before the first frame, the backend translates every
+pipeline the store holds (not 2 ms per frame) and `VulkanPipelines::WarmUp` waits until they're
+compiled, with every worker on them, the extra ones too. It has a 2-minute limit and logs
+progress. `--graw_native_vulkan_warmup=false` goes back to the background slices. A store copied
+from a GPU with D24S8 depth gets this one's format for kD24S8 (AMD has no D24 depth).
+
+**Test:**
+- Windows: 823 stored pipelines in 0.4-0.5 s, with and without the pipeline caches; 0 errors.
+- Linux (the Deck test 6 package in WSL, second start): 189 stored pipelines in 0.7 s; 0 errors.
+
+**Seen while reproducing #33** (pause after loading the training mission, `load-graw-pause.txt`):
+- The pause menu looked the same on the emulated, D3D12 and Vulkan renderers.
+- But both native renderers' coherency checks flagged ~200 stale index-buffer reads (45 pages,
+  only while paused). These pages had been watched again after a hot spell; their data changed
+  with no write trap.
+- The SDK combines the watchers' unwatch ranges as an intersection, so another watcher can't
+  unprotect them. To trace with `--graw_native_watch_trace`.
+
 ## Risks
 - **The SPIR-V translator's output for GRAW is unproven.** M0 exists to find gaps before
   anything else is built.

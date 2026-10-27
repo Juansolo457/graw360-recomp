@@ -145,4 +145,15 @@ else
   [[ -x "$install/bin/rexglue" ]] || { echo "SDK build: $install/bin/rexglue is missing" >&2; exit 1; }
   echo "$linux_tree" > "$stamp"
 fi
+# Guest memory a build from before rexglue-bd833a2-linux-shm-unlink left in /dev/shm: that patch
+# stops new leaks but can't free these, which take RAM until removed or a reboot. Only a build
+# from before the patch names its memory there, so they are safe to remove once no ReXGlue game
+# is running (a running old build, GRAW's or another ReXGlue title's, still uses its own).
+leaked=(/dev/shm/xenia_memory_*)
+if [[ -e "${leaked[0]}" ]]; then
+  size=$(du -ch "${leaked[@]}" | tail -1 | cut -f1)
+  echo "Leftover guest memory from earlier runs: ${#leaked[@]} /dev/shm/xenia_memory_* ($size)."
+  echo "With no GRAW (or other ReXGlue) game running, remove them: rm /dev/shm/xenia_memory_*"
+  echo "(or reboot)."
+fi
 echo 'Setup done. Next: the disc files in port/assets (docs/SETUP.md), then tools/build-linux.sh.'

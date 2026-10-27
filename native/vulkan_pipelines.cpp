@@ -194,6 +194,28 @@ uint64_t VulkanPipelines::WaitForFrame(std::chrono::milliseconds budget) {
   return us;
 }
 
+size_t VulkanPipelines::WarmUp(std::chrono::milliseconds budget,
+                               const std::function<void(size_t, size_t)>& progress) {
+  if (threads_.empty()) return 0;
+  std::unique_lock<std::mutex> lock(mutex_);
+  auto left = [this] { return jobs_.size() + prewarm_jobs_.size() + compiling_; };
+  const size_t total = left();
+  if (!total) return 0;
+  warming_ = true;
+  wait_cv_.notify_all();
+  work_cv_.notify_all();
+  const auto end = std::chrono::steady_clock::now() + budget;
+  for (;;) {
+    const auto next = std::min(end, std::chrono::steady_clock::now() + std::chrono::seconds(1));
+    const bool done = ready_cv_.wait_until(lock, next, [&] { return left() == 0; });
+    const size_t compiled = total - std::min(total, left());
+    progress(compiled, total);
+    if (done || std::chrono::steady_clock::now() >= end) break;
+  }
+  warming_ = false;
+  return left();
+}
+
 VulkanPipelineStats VulkanPipelines::stats() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return stats_;
@@ -215,7 +237,10 @@ void VulkanPipelines::Worker(bool saves, bool on_wait) {
   auto has_work = [this] { return stopping_ || !jobs_.empty() || !prewarm_jobs_.empty(); };
   for (;;) {
     if (on_wait) {
-      wait_cv_.wait(lock, [this] { return stopping_ || (waiting_ && !jobs_.empty()); });
+      wait_cv_.wait(lock, [this] {
+        return stopping_ || (waiting_ && !jobs_.empty()) ||
+               (warming_ && (!jobs_.empty() || !prewarm_jobs_.empty()));
+      });
     } else if (saves && cache_dirty_.load(std::memory_order_relaxed)) {
       // Saved once no new pipeline came for 3 s (the burst is over).
       if (!work_cv_.wait_for(lock, std::chrono::seconds(3), has_work)) {
@@ -232,9 +257,11 @@ void VulkanPipelines::Worker(bool saves, bool on_wait) {
     Entry* e = queue.front();
     queue.pop_front();
     e->in_prewarm = false;
+    ++compiling_;
     lock.unlock();
     Compile(e);
     lock.lock();
+    --compiling_;
     ready_cv_.notify_all();
   }
 }

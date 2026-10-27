@@ -131,7 +131,7 @@ Saves stay in `port/user`.
 - **A crash:** the game writes `crash-<time>.txt` to a `logs` folder (`port/logs` or
   `port-yeti/logs`), next to each run's log. Please attach both to an issue on GitHub.
 
-## Linux (in progress, #38)
+## Linux and the Steam Deck (#38)
 
 The three programs build on Linux x86-64, with the hand-over between them ported. The campaign
 draws with the native renderer's Vulkan backend, on by default there with no switch to the

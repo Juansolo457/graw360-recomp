@@ -59,10 +59,13 @@ extern "C" rex::system::IGraphicsSystem* rex_gpu_create(uint32_t abi_version,
 // The runtime signs in only player 1 (a local profile; Xbox Live is gone) and gives controllers
 // player slots in connection order. On the user's PC a Logitech virtual XInput device takes slot
 // 0, so the Xbox pad was player 2: unsigned, "PLAYER TWO" in Instant Action, and in F.E.A.R. no
-// saves. As in fear360, every controller (and the keyboard) drives player 1 by default.
+// saves. As in fear360, every controller (and the keyboard) drives player 1 by default. Off, each
+// pad has a player slot of its own, for Instant Action's split-screen (autopilot.h's
+// CreatePlayerSlots); only player 1 is signed in.
 REXCVAR_DEFINE_BOOL(graw_shared_controllers, true, "GRAW",
                     "Every connected controller (and the keyboard) drives player 1, the "
-                    "signed-in profile that can save; off = one controller per player slot")
+                    "signed-in profile that can save; off = one controller per player (split-"
+                    "screen: the first pad connected is player 1, the next player 2, up to 4)")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 class GrawApp : public rex::ReXApp {
@@ -114,6 +117,9 @@ class GrawApp : public rex::ReXApp {
           if (REXCVAR_GET(graw_shared_controllers)) {
             system->SetDeviceAssignment(std::make_unique<rex::input::SharedAssignment>());
             REXLOG_INFO("GRAW: every controller drives player 1 (the signed-in profile)");
+          } else {
+            system->SetDeviceAssignment(graw::autopilot::CreatePlayerSlots());
+            REXLOG_INFO("GRAW: one controller per player, up to 4 (split-screen)");
           }
           if (auto autopilot = graw::autopilot::Create()) system->AddDriver(std::move(autopilot));
         }

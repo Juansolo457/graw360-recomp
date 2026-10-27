@@ -22,6 +22,8 @@
 #include <rex/system/kernel_state.h>
 #include <rex/system/xmemory.h>
 
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -34,6 +36,10 @@
 REXCVAR_DEFINE_BOOL(graw_native_vulkan_validation, false, "GRAW native",
                     "With --graw_native_api=vulkan: enable the Khronos validation layer when it "
                     "is installed (the Vulkan SDK); its errors and warnings go to the log");
+REXCVAR_DEFINE_BOOL(graw_native_vulkan_warmup, true, "GRAW native",
+                    "With --graw_native_api=vulkan: compile the pipelines earlier runs stored "
+                    "before the first frame, on every compile thread (the shader warm-up; up to "
+                    "2 minutes, logged); false: in the background, a slice per frame");
 REXCVAR_DEFINE_BOOL(graw_native_vulkan_show_target, false, "GRAW native",
                     "With --graw_native_api=vulkan: show the color render target most of the "
                     "frame's draws went to (the 3D scene) instead of the front buffer, to check "
@@ -235,7 +241,33 @@ bool VulkanBackend::Initialize(const Options& o) {
     pipeline_wait_ = REXCVAR_GET(graw_native_pipeline_wait);
   }
   gpu_->pipelines.Initialize(threads, extra_threads, cache_file);
-  Prewarm();  // the first slice before the first frame, which needs some of them
+  if (store_ && threads && REXCVAR_GET(graw_native_vulkan_warmup) &&
+      !store_->loaded_pipelines().empty()) {
+    // The warm-up: the stored pipelines translated now and compiled before the game draws, so
+    // the levels earlier runs reached don't hitch or wait on their first frames.
+    // One two-minute budget covers translating and compiling; pipelines it doesn't reach are
+    // left to the per-frame slices.
+    const auto t0 = std::chrono::steady_clock::now();
+    const std::chrono::milliseconds budget = std::chrono::minutes(2);
+    Prewarm(budget);
+    const auto spent = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0);
+    const size_t queued = prewarm_next_ - prewarm_failed_;
+    const size_t left = gpu_->pipelines.WarmUp(
+        std::max(budget - spent, std::chrono::milliseconds(0)),
+        [queued](size_t done, size_t total) {
+          REXLOG_INFO("GRAW native Vulkan: shader warm-up, {} of {} pipelines compiled",
+                      queued - std::min(queued, total - done), queued);
+        });
+    const size_t untranslated = store_->loaded_pipelines().size() - prewarm_next_;
+    REXLOG_INFO("GRAW native Vulkan: shader warm-up: {} stored pipelines in {:.1f} s{}{}", queued,
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
+                left ? fmt::format(", {} still compiling (time limit)", left) : std::string(),
+                untranslated ? fmt::format(", {} left for later frames", untranslated)
+                             : std::string());
+  } else {
+    Prewarm();  // the first slice before the first frame, which needs some of them
+  }
 
   threaded_ = REXCVAR_GET(graw_native_render_thread);
   if (!mirror_.Initialize(memory, this, REXCVAR_GET(graw_native_watch_trace),
@@ -1384,7 +1416,7 @@ void VulkanBackend::RecordPipeline(const VulkanPipelineKey& key, const SpirvShad
                          ps ? ps_mod : 0, &stored);
 }
 
-void VulkanBackend::Prewarm() {
+void VulkanBackend::Prewarm(std::chrono::microseconds slice) {
   if (!store_) return;
   const std::vector<PipelineStore::Pipeline>& list = store_->loaded_pipelines();
   if (prewarm_next_ >= list.size()) return;
@@ -1427,9 +1459,12 @@ void VulkanBackend::Prewarm() {
       continue;
     }
     key.layout = layout->layout;
+    // A store from a GPU with D24S8 depth (pipelines.bin can be copied between machines): this
+    // one's format for kD24S8 instead.
+    if (key.has_depth && key.depth_format == VK_FORMAT_D24_UNORM_S8_UINT)
+      key.depth_format = gpu_->targets.DepthFormat(0);
     gpu_->pipelines.Prewarm(key);
-  } while (prewarm_next_ < list.size() &&
-           std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(2));
+  } while (prewarm_next_ < list.size() && std::chrono::steady_clock::now() - t0 < slice);
   prewarm_ms_ +=
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   ++prewarm_frames_;

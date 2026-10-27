@@ -1,0 +1,119 @@
+diff --git a/src/core/exception_handler_posix.cpp b/src/core/exception_handler_posix.cpp
+index 8b1c76a..93692d5 100644
+--- a/src/core/exception_handler_posix.cpp
++++ b/src/core/exception_handler_posix.cpp
+@@ -20,8 +20,13 @@
+ #if REX_PLATFORM_LINUX || REX_PLATFORM_MAC
+ 
+ #include <signal.h>
++#include <unistd.h>
++#if defined(__GLIBC__)
++#include <execinfo.h>
++#endif
+ 
+ #include <cstdint>
++#include <cstdio>
+ #include <cstring>
+ 
+ #include <rex/assert.h>
+@@ -49,6 +54,38 @@ constexpr size_t kMaxHandlerCount = 8;
+ // Executed in order.
+ std::pair<ExceptionHandler::Handler, void*> handlers_[kMaxHandlerCount];
+ 
++// Returning from the signal handler runs the faulting instruction again. A fault no handler
++// claims is retried a few times (another thread may be changing the page's protection), then
++// reported once with a host backtrace and handed to the original handler (normally the default:
++// the process dies). Before, it was retried forever, logging every time.
++constexpr uint32_t kUnhandledRetries = 16;
++thread_local uint64_t unhandled_address_ = 0;
++thread_local uint32_t unhandled_count_ = 0;
++
++void ReportUnhandledAndRestore(int signal_number, uint64_t fault_address, uint64_t host_pc) {
++  REXLOG_CRITICAL(
++      "Unhandled signal {} at host address 0x{:016X} (host pc 0x{:016X}), retried {} times: "
++      "crashing, host backtrace on stderr",
++      signal_number, fault_address, host_pc, kUnhandledRetries);
++  rex::FlushLogging();
++  char line[160];
++  const int length = std::snprintf(
++      line, sizeof(line), "rexglue: unhandled signal %d at 0x%016llx, host pc 0x%016llx\n",
++      signal_number, static_cast<unsigned long long>(fault_address),
++      static_cast<unsigned long long>(host_pc));
++  if (length > 0) (void)!write(STDERR_FILENO, line, size_t(length));
++#if defined(__GLIBC__)
++  void* frames[64];
++  backtrace_symbols_fd(frames, backtrace(frames, 64), STDERR_FILENO);
++#endif
++  struct sigaction* original = &original_sigsegv_handler_;
++  if (signal_number == SIGILL) original = &original_sigill_handler_;
++#if REX_PLATFORM_MAC
++  if (signal_number == SIGBUS) original = &original_sigbus_handler_;
++#endif
++  sigaction(signal_number, original, nullptr);
++}
++
+ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
+                                      void* signal_context) {
+ #if REX_PLATFORM_MAC
+@@ -263,6 +300,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
+   for (size_t i = 0; i < rex::countof(handlers_) && handlers_[i].first; ++i) {
+     if (handlers_[i].first(&ex, handlers_[i].second)) {
+       // Exception handled.
++      unhandled_count_ = 0;
+ #if REX_ARCH_AMD64
+ #if REX_PLATFORM_MAC
+       mcontext->__ss.__rip = thread_context.rip;
+@@ -417,6 +455,21 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
+       return;
+     }
+   }
++
++  // No handler claimed it.
++  const uint64_t fault_address = reinterpret_cast<uint64_t>(signal_info->si_addr);
++  if (fault_address != unhandled_address_) {
++    unhandled_address_ = fault_address;
++    unhandled_count_ = 0;
++  }
++  if (++unhandled_count_ > kUnhandledRetries) {
++#if REX_ARCH_AMD64
++    const uint64_t host_pc = thread_context.rip;
++#else
++    const uint64_t host_pc = thread_context.pc;
++#endif
++    ReportUnhandledAndRestore(signal_number, fault_address, host_pc);
++  }
+ }
+ 
+ void ExceptionHandler::Install(Handler fn, void* data) {
+diff --git a/src/ui/renderdoc_api.cpp b/src/ui/renderdoc_api.cpp
+index e1a5287..dc57bb7 100644
+--- a/src/ui/renderdoc_api.cpp
++++ b/src/ui/renderdoc_api.cpp
+@@ -12,6 +12,10 @@
+ #include <rex/logging.h>
+ #include <rex/ui/renderdoc_api.h>
+ 
++#if REX_PLATFORM_LINUX
++#include <dlfcn.h>
++#endif
++
+ namespace rex {
+ namespace ui {
+ 
+@@ -28,6 +32,16 @@ std::unique_ptr<RenderDocAPI> RenderDocAPI::CreateIfConnected() {
+   // Try to load the RenderDoc library. If RenderDoc is attached, the library
+   // should already be loaded into the process and this will increment the
+   // reference count. If not attached, the load will fail and we return nullptr.
++#if REX_PLATFORM_LINUX
++  // Not on Linux: distributions (SteamOS among them) install librenderdoc.so system-wide, so a
++  // plain dlopen succeeds and loads RenderDoc into every run, hooking every Vulkan call. Only a
++  // RenderDoc that is already in the process (launched under it) is used.
++  if (void* attached = dlopen(platform::lib_names::kRenderDoc, RTLD_NOW | RTLD_NOLOAD)) {
++    dlclose(attached);
++  } else {
++    return nullptr;
++  }
++#endif
+   if (!renderdoc_api->library_.Load(platform::lib_names::kRenderDoc)) {
+     return nullptr;
+   }

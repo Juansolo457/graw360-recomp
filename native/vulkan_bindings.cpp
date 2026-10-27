@@ -5,6 +5,7 @@
 #include "vulkan_bindings.h"
 
 #include "guest_memory_mirror.h"
+#include "profile.h"
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -506,6 +507,7 @@ bool VulkanBindings::Bind(VkCommandBuffer cmd, const Layout& layout, const uint3
   } else {
     ++stats_.constant_set_reuses;
   }
+  profile::Mark(profile::kPack);
 
   VkDescriptorSet sets[T::kDescriptorSetCount] = {shared_set_, constants_set_, VK_NULL_HANDLE,
                                                   VK_NULL_HANDLE};
@@ -524,6 +526,7 @@ bool VulkanBindings::Bind(VkCommandBuffer cmd, const Layout& layout, const uint3
   if (!sets[2] && sets[3])
     fn.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout.layout, 3, 1, &sets[3],
                                0, nullptr);
+  profile::Mark(profile::kDescriptors);
   return true;
 }
 

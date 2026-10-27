@@ -6,6 +6,7 @@
 #include "guest_memory.h"  // GpuAddress
 #include "pipeline_store.h"
 #include "present.h"       // SwapCall
+#include "profile.h"
 #include "resolve_params.h"  // ResolveParams
 #include "vulkan_bindings.h"
 #include "vulkan_memory.h"
@@ -392,6 +393,7 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
       return;
     }
   }
+  profile::Mark(profile::kVertices);
   auto* vs = static_cast<SpirvShader*>(prep ? prep->vs : LoadShader(state.vs, ShaderType::kVertex));
   auto* ps = static_cast<SpirvShader*>(prep ? prep->ps : LoadShader(state.ps, ShaderType::kPixel));
   if (!vs) {
@@ -424,6 +426,7 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
     ++stats_.failed;
     return;
   }
+  profile::Mark(profile::kShaders);
 
   const RegisterFile& regs = *reinterpret_cast<const RegisterFile*>(state.regs);
   const auto prim = xenos::PrimitiveType(state.primitive);
@@ -535,6 +538,7 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
   ViewportInfo vp;
   HostViewportInfo(regs, ps && ps->writes_depth(), vp, 16384, /*origin_bottom_left=*/false);
   const uint32_t height = std::clamp(scissor.offset[1] + scissor.extent[1], 1u, 2048u);
+  profile::Mark(profile::kSetup);
 
   // System constants as UpdateSystemConstantValues sets them for the host render target path.
   const uint32_t used_textures = vs->GetUsedTextureMaskAfterTranslation() |
@@ -556,9 +560,11 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
   const ShaderTextures vs_textures{texture_views_.data(), samplers_.data()};
   const ShaderTextures ps_textures{texture_views_.data() + vs_views,
                                    samplers_.data() + vs_samplers};
+  profile::Mark(profile::kTextures);
   SpirvShaderTranslator::SystemConstants sys;
   FillSpirvSystemConstants(regs, prim, polygonal, index_endian, vp, used_textures, signs, sys);
   if (REXCVAR_GET(graw_native_vulkan_debug) & 2) sys.alpha_to_mask = 0;
+  profile::Mark(profile::kSysConst);
   VulkanBoundTargets bound;
   if (!targets.Bind(cmd, SurfaceRegsFromRegisters(state.regs), rt_mask, depth_used, height,
                     &bound)) {
@@ -570,6 +576,7 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
     ++use.draws;
     use.rows = std::max(use.rows, std::min(height, bound.color[0]->height));
   }
+  profile::Mark(profile::kRtBind);
   const VulkanBindings::Layout* layout = bindings.GetLayout(*vs, ps);
   if (!layout || !bindings.Bind(cmd, *layout, state.regs, *vs, ps, sys, device_->frame_fence(),
                                 vs_textures, ps_textures)) {
@@ -672,6 +679,7 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
       rt.op_a = uint8_t(kVkBlendOp[op_a]);
     }
   }
+  profile::Mark(profile::kPipelineKey);
   bool pending, is_new;
   const VkPipeline pipeline = gpu_->pipelines.Get(key, &pending, &is_new);
   if (is_new) {
@@ -690,6 +698,8 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
       ++stats_.failed;
     return;
   }
+
+  profile::Mark(profile::kPipeline);
 
   // Dynamic state, then the draw.
   const VulkanDevice::Functions& fn = device_->fn();
@@ -738,6 +748,7 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
   } else {
     fn.vkCmdDraw(cmd, state.count, 1, 0, 0);
   }
+  profile::Mark(profile::kRecord);
   ++stats_.draws;
   if (draw_index >= dump_target_first_ && draw_index <= dump_target_last_ && bound.color[0] &&
       DumpingFrame())

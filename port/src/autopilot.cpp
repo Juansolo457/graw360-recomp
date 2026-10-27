@@ -3,6 +3,7 @@
 #include "autopilot.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -37,9 +38,21 @@ using rex::input::X_INPUT_KEYSTROKE;
 using rex::input::X_INPUT_STATE;
 using rex::input::X_INPUT_VIBRATION;
 
-constexpr DeviceId kDevice = static_cast<DeviceId>(0x47524157);  // "GRAW"
+constexpr DeviceId kDevice = static_cast<DeviceId>(0x47524157);  // "GRAW": player 1's
+constexpr uint32_t kPlayers = rex::input::kMaxGuestUsers;
+
+// Player p's device (0-based): kDevice + p.
+DeviceId PlayerDevice(uint32_t player) {
+  return static_cast<DeviceId>(static_cast<uint64_t>(kDevice) + player);
+}
+// The player (1-based) of one of the autopilot's devices; 0 for any other device.
+uint32_t PlayerOf(DeviceId id) {
+  const uint64_t offset = static_cast<uint64_t>(id) - static_cast<uint64_t>(kDevice);
+  return offset < kPlayers ? uint32_t(offset) + 1 : 0;
+}
 
 struct Event {
+  uint32_t player = 0;  // 0-based
   double start = 0, end = 0;
   uint16_t buttons = 0;
   bool stick = false, trigger = false;
@@ -73,6 +86,14 @@ bool Parse(const std::string& path, std::vector<Event>& events) {
     if (!(words >> e.start >> what)) continue;
     double hold = 0.15;
     std::transform(what.begin(), what.end(), what.begin(), ::toupper);
+    if (what.size() == 2 && what[0] == 'P' && what[1] >= '1' && what[1] < char('1' + kPlayers)) {
+      e.player = uint32_t(what[1] - '1');
+      if (!(words >> what)) {
+        REXLOG_ERROR("GRAW autopilot: line {}: P{} without an input", number, e.player + 1);
+        return false;
+      }
+      std::transform(what.begin(), what.end(), what.begin(), ::toupper);
+    }
     if (what == "STICK") {
       e.stick = true;
       words >> e.lx >> e.ly >> e.rx >> e.ry;
@@ -106,34 +127,42 @@ class AutopilotDriver final : public rex::input::InputDriver {
  public:
   explicit AutopilotDriver(std::vector<Event> events)
       : InputDriver(nullptr, 0), events_(std::move(events)),
-        start_(std::chrono::steady_clock::now()) {}
+        start_(std::chrono::steady_clock::now()) {
+    // Player 1's controller always; the others when the script has events for them.
+    used_[0] = true;
+    for (const Event& e : events_) used_[e.player] = true;
+  }
 
   X_STATUS Setup() override { return X_STATUS_SUCCESS; }
 
   void EnumerateDevices(std::vector<DeviceInfo>& out) override {
-    DeviceInfo info;
-    info.id = kDevice;
-    info.name = "GRAW autopilot";
-    info.guid = "graw-autopilot";
-    info.synthetic = true;
-    out.push_back(info);
+    for (uint32_t p = 0; p < kPlayers; ++p) {
+      if (!used_[p]) continue;
+      DeviceInfo info;
+      info.id = PlayerDevice(p);
+      info.name = p ? "GRAW autopilot P" + std::to_string(p + 1) : "GRAW autopilot";
+      info.guid = p ? "graw-autopilot-p" + std::to_string(p + 1) : "graw-autopilot";
+      info.synthetic = true;  // takes no slot of the real pads (CreatePlayerSlots places it)
+      out.push_back(info);
+    }
   }
 
   X_RESULT GetDeviceState(DeviceId id, X_INPUT_STATE* out) override {
-    if (id != kDevice) return X_ERROR_DEVICE_NOT_CONNECTED;
+    if (!Connected(id)) return X_ERROR_DEVICE_NOT_CONNECTED;
     if (!out) return X_ERROR_SUCCESS;
+    const uint32_t player = PlayerOf(id) - 1;
     const double t =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start_).count();
     uint16_t buttons = 0;
     float lx = 0, ly = 0, rx = 0, ry = 0, lt = 0, rt = 0;
     for (const Event& e : events_) {
-      if (t < e.start || t >= e.end) continue;
+      if (e.player != player || t < e.start || t >= e.end) continue;
       buttons |= e.buttons;
       if (e.stick) { lx = e.lx; ly = e.ly; rx = e.rx; ry = e.ry; }
       if (e.trigger) { lt = e.lt; rt = e.rt; }
     }
     std::memset(out, 0, sizeof(*out));
-    out->packet_number = ++packet_;
+    out->packet_number = ++packet_[player];
     out->gamepad.buttons = buttons;
     out->gamepad.left_trigger = Trigger(lt);
     out->gamepad.right_trigger = Trigger(rt);
@@ -145,7 +174,7 @@ class AutopilotDriver final : public rex::input::InputDriver {
   }
 
   X_RESULT GetDeviceCapabilities(DeviceId id, uint32_t, X_INPUT_CAPABILITIES* out) override {
-    if (id != kDevice) return X_ERROR_DEVICE_NOT_CONNECTED;
+    if (!Connected(id)) return X_ERROR_DEVICE_NOT_CONNECTED;
     if (out) {
       std::memset(out, 0, sizeof(*out));
       out->type = 0x01;      // XINPUT_DEVTYPE_GAMEPAD
@@ -158,17 +187,47 @@ class AutopilotDriver final : public rex::input::InputDriver {
   }
 
   X_RESULT SetDeviceVibration(DeviceId id, X_INPUT_VIBRATION*) override {
-    return id == kDevice ? X_ERROR_SUCCESS : X_ERROR_DEVICE_NOT_CONNECTED;
+    return Connected(id) ? X_ERROR_SUCCESS : X_ERROR_DEVICE_NOT_CONNECTED;
   }
 
   X_RESULT GetDeviceKeystroke(DeviceId id, uint32_t, X_INPUT_KEYSTROKE*) override {
-    return id == kDevice ? X_ERROR_EMPTY : X_ERROR_DEVICE_NOT_CONNECTED;
+    return Connected(id) ? X_ERROR_EMPTY : X_ERROR_DEVICE_NOT_CONNECTED;
   }
 
  private:
+  bool Connected(DeviceId id) const {
+    const uint32_t player = PlayerOf(id);
+    return player && used_[player - 1];
+  }
+
   std::vector<Event> events_;
+  std::array<bool, kPlayers> used_{};
   std::chrono::steady_clock::time_point start_;
-  std::atomic<uint32_t> packet_{0};
+  std::array<std::atomic<uint32_t>, kPlayers> packet_{};
+};
+
+class PlayerSlots final : public rex::input::DeviceAssignment {
+ public:
+  void OnDevicesChanged(const std::vector<DeviceInfo>& devices) override {
+    for (auto& user : users_) user.clear();
+    for (const DeviceInfo& d : devices) {
+      if (const uint32_t player = PlayerOf(d.id)) {
+        users_[player - 1].push_back(d.id);
+      } else if (d.synthetic) {
+        users_[0].push_back(d.id);  // the keyboard
+      } else if (d.ordinal < kPlayers) {
+        users_[d.ordinal].push_back(d.id);
+      }
+    }
+  }
+
+  void DevicesForUser(uint32_t user_index, std::vector<DeviceId>& out) const override {
+    out.clear();
+    if (user_index < kPlayers) out = users_[user_index];
+  }
+
+ private:
+  std::array<std::vector<DeviceId>, kPlayers> users_;
 };
 
 }  // namespace
@@ -185,6 +244,10 @@ std::unique_ptr<rex::input::InputDriver> Create() {
   auto driver = std::make_unique<AutopilotDriver>(std::move(events));
   driver->Setup();
   return driver;
+}
+
+std::unique_ptr<rex::input::DeviceAssignment> CreatePlayerSlots() {
+  return std::make_unique<PlayerSlots>();
 }
 
 }  // namespace graw::autopilot

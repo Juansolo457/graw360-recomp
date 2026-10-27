@@ -29,8 +29,8 @@ as the console did:
   tracks the road to 1.0, and [#38](https://github.com/Juansolo457/graw360-recomp/issues/38) the
   Linux build;
 - Instant Action and co-op load and play on Windows, including Local Play split-screen for up to
-  four players ([docs/MULTIPLAYER.md](docs/MULTIPLAYER.md)); on the Steam Deck a match still
-  crashes after about a minute. Online multiplayer is being scoped (#34, #35).
+  four players ([docs/MULTIPLAYER.md](docs/MULTIPLAYER.md)); two players have played
+  split-screen on one Steam Deck. Online play is being scoped (#35, #48).
 
 - [docs/SETUP.md](docs/SETUP.md): build and play from your own disc
 - [docs/HANDOFF.md](docs/HANDOFF.md): current state, how things work, where things live

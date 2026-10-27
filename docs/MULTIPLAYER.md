@@ -31,6 +31,11 @@ off:
 - On a PC with a virtual controller that enumerates first (Logitech G HUB's "XInput Controller
   #1"), that controller is player 1 and the real pads start at player 2. Disabling the virtual
   controller, or connecting the real pad first, puts it on player 1.
+- When the players aren't on controller slots 1 and 2 (as above, with the virtual controller
+  idle on slot 1), the first player's view in the match can be black: only the HUD draws, which
+  leaves that player unable to play. Seen once on Windows (2026-10-26), cause not known yet.
+- On the Steam Deck, an Instant Action match crashes after about a minute (the game reports a
+  "pure virtual function call"), split-screen or not.
 - A controller SDL has no mapping for is ignored (the log says "has no gamepad mapping").
 
 **Test** (2026-10-26, Windows, `private/autopilot/mp-local-2.txt` with a scripted second player,

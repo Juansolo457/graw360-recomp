@@ -245,17 +245,26 @@ bool VulkanBackend::Initialize(const Options& o) {
       !store_->loaded_pipelines().empty()) {
     // The warm-up: the stored pipelines translated now and compiled before the game draws, so
     // the levels earlier runs reached don't hitch or wait on their first frames.
+    // One two-minute budget covers translating and compiling; pipelines it doesn't reach are
+    // left to the per-frame slices.
     const auto t0 = std::chrono::steady_clock::now();
-    Prewarm(std::chrono::hours(1));
-    const size_t stored = store_->loaded_pipelines().size() - prewarm_failed_;
+    const std::chrono::milliseconds budget = std::chrono::minutes(2);
+    Prewarm(budget);
+    const auto spent = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0);
+    const size_t queued = prewarm_next_ - prewarm_failed_;
     const size_t left = gpu_->pipelines.WarmUp(
-        std::chrono::minutes(2), [stored](size_t done, size_t total) {
+        std::max(budget - spent, std::chrono::milliseconds(0)),
+        [queued](size_t done, size_t total) {
           REXLOG_INFO("GRAW native Vulkan: shader warm-up, {} of {} pipelines compiled",
-                      stored - (total - done), stored);
+                      queued - std::min(queued, total - done), queued);
         });
-    REXLOG_INFO("GRAW native Vulkan: shader warm-up: {} stored pipelines in {:.1f} s{}", stored,
+    const size_t untranslated = store_->loaded_pipelines().size() - prewarm_next_;
+    REXLOG_INFO("GRAW native Vulkan: shader warm-up: {} stored pipelines in {:.1f} s{}{}", queued,
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
-                left ? fmt::format(", {} still compiling (time limit)", left) : std::string());
+                left ? fmt::format(", {} still compiling (time limit)", left) : std::string(),
+                untranslated ? fmt::format(", {} left for later frames", untranslated)
+                             : std::string());
   } else {
     Prewarm();  // the first slice before the first frame, which needs some of them
   }

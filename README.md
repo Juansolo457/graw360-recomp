@@ -17,16 +17,20 @@ from [Lost Odyssey Recomp](https://github.com/freefrank/LostOdysseyRecomp).
 
 ## Status
 
-**The campaign plays; a work in progress.** The disc holds three programs, each recompiled
-separately, and the front end hands over between them as the console did:
+**Version 0.5: the campaign plays on Windows and on Linux / Steam Deck; a work in progress.** The
+disc holds three programs, each recompiled separately, and the front end hands over between them
+as the console did:
 
 - the front end (start screen, menus) works;
-- the campaign plays, with a native Direct3D 12 renderer: up to 4K internal resolution, true
-  120 fps with character animation at the right speed, the Cross-Com feed and the tactical map.
-  It hasn't been played through end to end yet; [#36](https://github.com/Juansolo457/graw360-recomp/issues/36)
-  tracks the road to 1.0, and Linux is next ([#38](https://github.com/Juansolo457/graw360-recomp/issues/38));
-- Instant Action and co-op load and play, but the 3D view is still dark (#9); multiplayer is
-  being scoped (#34, #35).
+- the campaign plays, with a native renderer: Direct3D 12 on Windows (up to 4K internal
+  resolution, true 120 fps with character animation at the right speed) and Vulkan on Linux and
+  the Steam Deck (a steady 30 fps there), with the Cross-Com feed and the tactical map. It hasn't
+  been played through end to end yet; [#36](https://github.com/Juansolo457/graw360-recomp/issues/36)
+  tracks the road to 1.0, and [#38](https://github.com/Juansolo457/graw360-recomp/issues/38) the
+  Linux build;
+- Instant Action and co-op load and play on Windows, including Local Play split-screen for up to
+  four players ([docs/MULTIPLAYER.md](docs/MULTIPLAYER.md)); on the Steam Deck a match still
+  crashes after about a minute. Online multiplayer is being scoped (#34, #35).
 
 - [docs/SETUP.md](docs/SETUP.md): build and play from your own disc
 - [docs/HANDOFF.md](docs/HANDOFF.md): current state, how things work, where things live

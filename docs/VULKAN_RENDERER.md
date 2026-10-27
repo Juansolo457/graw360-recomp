@@ -748,6 +748,15 @@ from a GPU with D24S8 depth gets this one's format for kD24S8 (AMD has no D24 de
 - The SDK combines the watchers' unwatch ranges as an intersection, so another watcher can't
   unprotect them. To trace with `--graw_native_watch_trace`.
 
+**Deck test 6 (the warm-up, 30 fps):**
+- the frame rate holds 30 almost all the time, and the frame-time graph is much better;
+- explosions no longer drop it, and the hitching and loading stalls are gone;
+- the pause menu is mostly clean, but after 30-45 s of pause small artifacts flash in and out.
+  That fits the stale index pages above: data that stops changing while paused leaves the hot
+  hashing, is watched again, and a later write goes unseen. Next: fix that in the mirror, with
+  `load-graw-pause.txt` and the coherency check as the test;
+- the sky still fails to draw at some angles in scripted sequences (#32; screenshot to come).
+
 ## Risks
 - **The SPIR-V translator's output for GRAW is unproven.** M0 exists to find gaps before
   anything else is built.

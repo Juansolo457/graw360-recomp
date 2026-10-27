@@ -1,0 +1,23 @@
+diff --git a/src/core/exception_handler_posix.cpp b/src/core/exception_handler_posix.cpp
+index 8040c40..f703f44 100644
+--- a/src/core/exception_handler_posix.cpp
++++ b/src/core/exception_handler_posix.cpp
+@@ -88,7 +88,17 @@ void ReportUnhandledAndRestore(int signal_number, uint64_t fault_address, uint64
+   WriteStderr(": crashing, host backtrace follows\n");
+ #if defined(__GLIBC__)
+   // backtrace was called once at Install, so libgcc is loaded already and it doesn't allocate;
+-  // backtrace_symbols_fd writes without malloc.
++  // backtrace_symbols_fd writes without malloc. backtrace itself is still not async-signal-safe
++  // (the unwinder takes the dynamic loader's lock), so a fault inside the loader could hang it:
++  // SIGALRM's default action ends the process 5 s later whatever happens.
++  struct sigaction alarm_default = {};
++  alarm_default.sa_handler = SIG_DFL;
++  sigaction(SIGALRM, &alarm_default, nullptr);
++  sigset_t alarm_set;
++  sigemptyset(&alarm_set);
++  sigaddset(&alarm_set, SIGALRM);
++  sigprocmask(SIG_UNBLOCK, &alarm_set, nullptr);
++  alarm(5);
+   void* frames[64];
+   backtrace_symbols_fd(frames, backtrace(frames, 64), STDERR_FILENO);
+ #endif

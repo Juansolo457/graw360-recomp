@@ -36,16 +36,19 @@ expected_tree=54ab5932e76ba1b8c9e454891c9ba52c16bfdda0  # after the last patch
 # into every run, #51). Guest memory's shared segment is unlinked once created: named, it
 # outlived every hard exit in /dev/shm (a tmpfs of half the RAM), and a few restarts or
 # hand-overs filled it, the next guest page touched raising SIGBUS (F.E.A.R. 360's Deck crash).
+# The crash report's backtrace runs under a 5 s alarm, so a hang inside the unwinder still ends
+# the process (#53 review).
 linux_patches=(rexglue-bd833a2-launch-title-path rexglue-bd833a2-linux-crash-renderdoc
-               rexglue-bd833a2-linux-shm-unlink)
-linux_tree=3a2a409da3864dbd34b93398d11c182feeb87706
+               rexglue-bd833a2-linux-shm-unlink rexglue-bd833a2-linux-crash-watchdog)
+linux_tree=4cfbf3788bf07152abe3511de5b6f9bbe3b534b2
 # Checkouts made by an earlier version of this script move forward by the patches added since,
 # rather than a new clone and full SDK build: "<tree> <patch>..." pairs, each tree -> the next.
 upgrades=("f9d5a19f96e3f2f7ed79ee5b08155eab343a5b9c rexglue-bd833a2-spirv-exp-adjust"
           "2fd253876480df2f8bf35e394a8163c2ba93c65c rexglue-bd833a2-spirv-implicit-gradients"
           "ecaf46d0c9f324b0a43468f20edda3a6e787ab78 rexglue-bd833a2-spirv-implicit-gradients"
           "379fa50a65a1bbf7ec9e525f0316489759223e00 rexglue-bd833a2-linux-crash-renderdoc"
-          "88fa3e8437490f8c7c0628370326eaa4561c4788 rexglue-bd833a2-linux-shm-unlink")
+          "88fa3e8437490f8c7c0628370326eaa4561c4788 rexglue-bd833a2-linux-shm-unlink"
+          "3a2a409da3864dbd34b93398d11c182feeb87706 rexglue-bd833a2-linux-crash-watchdog")
 force=0
 jobs=$(( $(nproc) > 2 ? $(nproc) - 2 : 1 ))
 while [[ $# -gt 0 ]]; do

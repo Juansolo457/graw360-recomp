@@ -34,8 +34,9 @@ off:
 - When the players aren't on controller slots 1 and 2 (as above, with the virtual controller
   idle on slot 1), the first player's view in the match can be black: only the HUD draws, which
   leaves that player unable to play. Seen once on Windows (2026-10-26), cause not known yet.
-- On the Steam Deck, an Instant Action match crashes after about a minute (the game reports a
-  "pure virtual function call"), split-screen or not.
+- On the Steam Deck, an Instant Action match crashed once after about a minute (Deck test 6:
+  the game reported a "pure virtual function call"). It didn't come back in later play (test 7),
+  so the cause is still open.
 - A controller SDL has no mapping for is ignored (the log says "has no gamepad mapping").
 
 **Test** (2026-10-26, Windows, `private/autopilot/mp-local-2.txt` with a scripted second player,
@@ -45,4 +46,8 @@ see `src/autopilot.h`'s `P<n>`):
 - 60 fps, with one dip while the match loaded;
 - no errors beyond the shader-include ones every `grawmp` run logs.
 
-Not checked yet: three and four players, a full match, the Steam Deck.
+**Steam Deck** (test 7, 2026-10-26, played by the user): two players on one Deck in Instant
+Action and Elimination, no black screens, a good frame rate.
+
+Not checked yet: three and four players, a full match. Online play is #48, a third-person camera
+#49.

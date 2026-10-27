@@ -18,6 +18,10 @@ using rex::graphics::FormatInfo;
 namespace {
 
 constexpr uint32_t kMemorySize = 512u << 20;
+constexpr uint32_t kPageMask = 4095;
+// The memory unwatches at most the 4 MB-aligned block around a write fault
+// (PhysicalHeap::TriggerCallbacks).
+constexpr uint32_t kUnwatchWindow = 4u << 20;
 
 // A host component swizzle (3 bits per component: 0-3 a host channel, 4 zero, 5 one) from the
 // fetch constant's guest swizzle and the host format's channel order, as D3D12's
@@ -117,6 +121,7 @@ VulkanTextureCache::VulkanTextureCache(VulkanDevice& device, VulkanMemory& memor
     : device_(device), memory_(memory), guest_(guest) {
   membase_ = guest_->physical_membase();
   upload_.SetMemory(&memory_);
+  watch_buckets_.resize(kMemorySize >> kWatchBucketShift);
   invalidation_handle_ = guest_->RegisterPhysicalMemoryInvalidationCallback(InvalidationThunk, this);
 }
 
@@ -133,16 +138,51 @@ VulkanTextureCache::~VulkanTextureCache() {
 
 std::pair<uint32_t, uint32_t> VulkanTextureCache::InvalidationThunk(void* context, uint32_t start,
                                                                     uint32_t length, bool exact) {
-  return static_cast<VulkanTextureCache*>(context)->Invalidate(start, length);
+  return static_cast<VulkanTextureCache*>(context)->Invalidate(start, length, exact);
 }
 
-std::pair<uint32_t, uint32_t> VulkanTextureCache::Invalidate(uint32_t start, uint32_t length) {
+std::pair<uint32_t, uint32_t> VulkanTextureCache::Invalidate(uint32_t start, uint32_t length,
+                                                             bool exact) {
   if (!length || start >= kMemorySize) return {start, length};
   const uint32_t end = start + std::min(length, kMemorySize - start);
+  uint32_t lo = start, hi = end;
   std::lock_guard<std::mutex> lock(watch_mutex_);
-  for (const Watch& w : watches_)
-    if (w.start < end && start < w.end) w.texture->dirty.store(true, std::memory_order_release);
-  return {start, length};
+  for (uint32_t b = start >> kWatchBucketShift; b <= (end - 1) >> kWatchBucketShift; ++b)
+    for (const Watch& w : watch_buckets_[b])
+      if (w.start < end && start < w.end) w.texture->dirty.store(true, std::memory_order_release);
+  if (!exact) {
+    // As textures.cpp: out to the nearest clean texture on each side. The pages of stale
+    // textures need no watch (their next upload re-arms them), so a texture being rewritten
+    // (a video's planes, every frame) faults once rather than once per 4 KB page. Any texture
+    // overlapping [start, end) is stale now, and a watch lies in every bucket it touches, so
+    // each scan stops at the first bucket holding a clean one.
+    auto clean = [](const Watch& w) { return !w.texture->dirty.load(std::memory_order_acquire); };
+    const uint32_t window_lo = start & ~(kUnwatchWindow - 1);
+    const uint32_t window_hi = ((end - 1) | (kUnwatchWindow - 1)) + 1;
+    lo = window_lo;
+    for (uint32_t b = start >> kWatchBucketShift;; --b) {
+      for (const Watch& w : watch_buckets_[b])
+        if (w.end <= start && clean(w)) lo = std::max(lo, w.end);
+      if (lo != window_lo || b == window_lo >> kWatchBucketShift) break;
+    }
+    hi = window_hi;
+    for (uint32_t b = (end - 1) >> kWatchBucketShift;; ++b) {
+      for (const Watch& w : watch_buckets_[b])
+        if (w.start >= end && clean(w)) hi = std::min(hi, w.start);
+      if (hi != window_hi || b == (window_hi - 1) >> kWatchBucketShift) break;
+    }
+    // The page holding a clean texture's last byte stays watched.
+    lo = std::min(start, (lo + kPageMask) & ~kPageMask);
+    hi = std::max(end, hi & ~kPageMask);
+  }
+  return {lo, hi - lo};
+}
+
+void VulkanTextureCache::WatchRange(Texture* t, uint32_t start, uint32_t length) {
+  if (!length || start >= kMemorySize) return;
+  const uint32_t end = start + std::min(length, kMemorySize - start);
+  for (uint32_t b = start >> kWatchBucketShift; b <= (end - 1) >> kWatchBucketShift; ++b)
+    watch_buckets_[b].push_back({start, end, t});
 }
 
 void VulkanTextureCache::ForgetResolvedImage(VkImage image, uint64_t frame) {
@@ -188,8 +228,8 @@ VulkanTextureCache::Texture* VulkanTextureCache::Create(const TextureKey& key,
   Texture* raw = t.get();
   {
     std::lock_guard<std::mutex> lock(watch_mutex_);
-    if (base_bytes) watches_.push_back({key.base_page << 12, (key.base_page << 12) + base_bytes, raw});
-    if (mips_bytes) watches_.push_back({key.mip_page << 12, (key.mip_page << 12) + mips_bytes, raw});
+    WatchRange(raw, key.base_page << 12, base_bytes);
+    WatchRange(raw, key.mip_page << 12, mips_bytes);
   }
   ++stats_.created;
   if (key.mip_levels() > 1) ++stats_.with_mips;
@@ -211,10 +251,15 @@ bool VulkanTextureCache::Upload(Texture& t, VkCommandBuffer cmd, uint64_t frame)
   uint32_t base_bytes = 0, mips_bytes = 0;
   GetGuestExtents(key, layout, &base_bytes, &mips_bytes);
   const uint32_t base = key.base_page << 12, mips = key.mip_page << 12;
-  // Watched before it is read: a write from here on makes it dirty again.
+  // Watched before it is read: a write from here on makes it dirty again. Mips from the page
+  // after the base's last: one protection change for both.
   t.dirty.store(false, std::memory_order_release);
-  if (base_bytes) guest_->EnablePhysicalMemoryAccessCallbacks(base, base_bytes, true, false);
-  if (mips_bytes) guest_->EnablePhysicalMemoryAccessCallbacks(mips, mips_bytes, true, false);
+  if (base_bytes && mips_bytes && mips == base + ((base_bytes + kPageMask) & ~kPageMask)) {
+    guest_->EnablePhysicalMemoryAccessCallbacks(base, mips - base + mips_bytes, true, false);
+  } else {
+    if (base_bytes) guest_->EnablePhysicalMemoryAccessCallbacks(base, base_bytes, true, false);
+    if (mips_bytes) guest_->EnablePhysicalMemoryAccessCallbacks(mips, mips_bytes, true, false);
+  }
   VulkanUploadPool::Alloc a;
   if (!upload_.Allocate(total, 16, frame, &a)) return false;
   GuestTextureMemory mem;

@@ -100,7 +100,11 @@ class VulkanTextureCache {
   };
   static std::pair<uint32_t, uint32_t> InvalidationThunk(void* context, uint32_t start,
                                                          uint32_t length, bool exact);
-  std::pair<uint32_t, uint32_t> Invalidate(uint32_t start, uint32_t length);
+  // Marks the textures on [start, start + length) stale and returns the range the memory may
+  // unwatch: unless exact, widened over the pages of stale textures around it (textures.cpp's).
+  std::pair<uint32_t, uint32_t> Invalidate(uint32_t start, uint32_t length, bool exact);
+  // Lists [start, start + length) of t in the watch buckets (watch_mutex_ held).
+  void WatchRange(Texture* t, uint32_t start, uint32_t length);
   Texture* Create(const TextureKey& key, const HostFormat* host);
   bool Upload(Texture& t, VkCommandBuffer cmd, uint64_t frame);
   VkImageView View(Texture& t, bool is_signed, uint32_t swizzle);
@@ -112,13 +116,15 @@ class VulkanTextureCache {
   void* invalidation_handle_ = nullptr;
   VulkanResolvedLookup resolved_;
   std::unordered_map<TextureKey, std::unique_ptr<Texture>, TextureKeyHasher> textures_;
-  // Watched ranges (physical [start, end)) per texture; Invalidate scans them.
+  // Watched ranges (physical [start, end)) per texture, listed in each 64 KB bucket of guest
+  // physical memory they touch: Invalidate looks up the faulting range's buckets.
   struct Watch {
     uint32_t start, end;
     Texture* texture;
   };
-  std::mutex watch_mutex_;
-  std::vector<Watch> watches_;
+  static constexpr uint32_t kWatchBucketShift = 16;
+  std::mutex watch_mutex_;  // the watches (fault callbacks on guest threads vs recording)
+  std::vector<std::vector<Watch>> watch_buckets_;
   // Views of resolved images, by (image, view format, swizzle).
   struct ResolvedViewKey {
     VkImage image;

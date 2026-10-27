@@ -685,6 +685,32 @@ A depth bias difference would look like this, and on the Deck could show as shim
 **Next:** the Steam Deck test (shimmer, 30 fps pacing, performance); that depth parity; Vulkan
 frame pacing on the display.
 
+## M7b (2026-10-26): the campaign menu on the Deck
+**Deck test 4:** on the campaign menu the video was slow and choppy, the frame rate was under 20
+with an uneven frame-time graph, and the audio chugged; the menu itself still responded.
+
+**A cause, from the PC's frame logs:** the menu video's frames are textures the game rewrites every
+frame. The Vulkan texture cache let the memory unwatch only the faulting page, so every 4 KB
+page the decoder wrote trapped. That was 210 traps per frame on the menu (p90 393), against 32 on
+D3D12. The D3D12 cache widens the unwatch over the stale texture, so a rewritten texture traps
+once. On Linux a trap is a signal plus `mprotect` on three views of guest memory, with
+cross-core TLB flushes, on the game's own threads.
+
+**Fix:** the Vulkan cache now does as the D3D12 one:
+- its watches are listed per 64 KB bucket, not scanned whole on every trap;
+- a trap's unwatch widens over the stale textures around it;
+- base and mips are armed with one call when they're contiguous.
+
+**Test:**
+- Windows menu traps 210 -> 29 per frame (p90 393 -> 38), with no stale pages in the coherency
+  check; gameplay unchanged;
+- Linux (WSL) menu traps 273 -> 20; Deck test 5 has the fix.
+
+Still to see on the Deck: whether this was the whole menu problem (its frame logs).
+**Seen on the way:** re-arming a watch costs about 67 µs per call in WSL against 5 µs on Windows
+(a VM, so it overstates the Deck). The video's untiling runs on the recording thread (p90 2.3 ms
+on the PC's menu), where D3D12's runs on workers.
+
 ## Risks
 - **The SPIR-V translator's output for GRAW is unproven.** M0 exists to find gaps before
   anything else is built.

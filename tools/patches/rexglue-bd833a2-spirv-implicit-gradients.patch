@@ -1,0 +1,58 @@
+GRAW: pgr4-native 0021 for the SPIR-V translator: computed-LOD fetches of 1D, 2D and cube
+textures in pixel shaders sample with implicit derivatives and the LOD bias
+(OpImageSampleImplicitLod with Bias) rather than explicit coarse gradients. Explicit gradients
+gave a dot of noise per 2x2 quad on GRAW's lit terrain on the native Vulkan renderer
+(docs/VULKAN_RENDERER.md, M4). g_spirv_implicit_gradients = false restores them.
+
+--- a/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
++++ b/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
+@@ -24,6 +24,14 @@
+ 
+ namespace rex::graphics {
+ 
++// GRAW: pgr4-native 0021 for this translator. A computed-LOD fetch of a 1D, 2D or cube texture in
++// a pixel shader, without register gradients, samples with the GPU's own derivatives and the LOD
++// bias (OpImageSampleImplicitLod with Bias) instead of explicit coarse gradients scaled by
++// 2^bias, which give the same LOD. Stacked textures keep the explicit gradients (the layer filter
++// reads them). false: explicit gradients for all, as before. Set by the native renderer
++// (--graw_native_implicit_gradients).
++bool g_spirv_implicit_gradients = true;
++
+ void SpirvShaderTranslator::ProcessVertexFetchInstruction(
+     const ParsedVertexFetchInstruction& instr) {
+   UpdateInstructionPredication(instr.is_predicated, instr.predicate_condition);
+@@ -1454,7 +1462,11 @@
+         // k2D.
+         // 3D vectors for k3DOrStacked, kCube.
+         spv::Id gradients_h = spv::NoResult, gradients_v = spv::NoResult;
+-        if (use_computed_lod) {
++        const bool implicit_gradients =
++            g_spirv_implicit_gradients && use_computed_lod && is_pixel_shader() &&
++            !instr.attributes.use_register_gradients &&
++            instr.dimension != xenos::FetchOpDimension::k3DOrStacked;
++        if (use_computed_lod && !implicit_gradients) {
+           // TODO(Triang3l): Gradient exponent adjustment is currently not done
+           // in getCompTexLOD, so not doing it here too for now. Apply the
+           // gradient exponent biases from the word 4 of the fetch constant in
+@@ -1615,7 +1627,9 @@
+ 
+         // Sample the texture.
+         spv::ImageOperandsMask image_operands_mask =
+-            use_computed_lod ? spv::ImageOperandsGradMask : spv::ImageOperandsLodMask;
++            implicit_gradients ? spv::ImageOperandsMaskNone
++            : use_computed_lod ? spv::ImageOperandsGradMask
++                               : spv::ImageOperandsLodMask;
+         spv::Id sample_result_unsigned, sample_result_signed;
+         if (!use_computed_lod) {
+           texture_parameters.lod = lod;
+@@ -1837,7 +1851,9 @@
+           sample_result_signed =
+               if_data_is_3d.createMergePhi(sample_result_signed_3d, sample_result_signed_stacked);
+         } else {
+-          if (use_computed_lod) {
++          if (implicit_gradients) {
++            texture_parameters.bias = lod;
++          } else if (use_computed_lod) {
+             texture_parameters.gradX = gradients_h;
+             texture_parameters.gradY = gradients_v;
+           }

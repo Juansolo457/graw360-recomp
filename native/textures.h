@@ -22,6 +22,7 @@
 // thread that faults on a watched page.
 #pragma once
 
+#include "backend.h"  // TextureStats
 #include "resolve.h"  // ResolvedImage
 #include "texture_layout.h"
 #include "upload_pool.h"
@@ -80,16 +81,7 @@ struct TextureBinding {
 
 class TextureCache {
  public:
-  struct Stats {
-    uint64_t gets = 0, uploads = 0, upload_bytes = 0, resolved_copies = 0, resolved_aliases = 0;
-    uint64_t untile_ns = 0;
-    // Profile counters (cumulative): memo misses, textures created, time in Create (resource
-    // creation), Upload (buffer creation + untile + copies) and CopyResolved.
-    uint64_t memo_misses = 0, created = 0, create_ns = 0, upload_ns = 0, copy_resolved_ns = 0;
-    uint64_t evicted = 0, evict_ns = 0;  // textures evicted over the budget, time in Retire
-    uint64_t deferred_uploads = 0;       // uploads on the upload lists (CloseUploadLists)
-    uint64_t upload_record_ns = 0;       // recording them (worker CPU, as untile_ns)
-  };
+  using Stats = TextureStats;  // backend.h
   // Texture memory budget, by the resources' allocation sizes. Over soft_bytes, textures unused
   // for soft_lifetime_ms are evicted; over hard_bytes, the least recently used ones regardless.
   // Either way only textures no frame in flight uses. Offline

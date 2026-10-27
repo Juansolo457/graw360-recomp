@@ -53,13 +53,14 @@ if(WIN32)
     target_link_libraries(grawyeti PRIVATE dbghelp shell32)
 endif()
 
-# The native D3D12 renderer (native/, docs/NATIVE_RENDERER.md), off at run time unless
-# --graw_native. It compiles ReXGlue's shader translator and texture format tables from the SDK
-# source tree (the plugin DLL exports none of them): third_party/rexglue-sdk-bd833a2, the same
-# commit as the prebuilt SDK.
+# The native renderer (native/, docs/NATIVE_RENDERER.md), off at run time unless --graw_native:
+# D3D12 and Vulkan on Windows, Vulkan only elsewhere (docs/VULKAN_RENDERER.md). It compiles
+# ReXGlue's shader translators and texture format tables from the SDK source tree (the plugin
+# exports none of them): third_party/rexglue-sdk-bd833a2, the same commit as the SDK the game
+# links (on Linux the checkout tools/build-linux.sh passes, which the SDK was built from).
 set(GRAW_REXGLUE_SDK_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/rexglue-sdk-bd833a2"
     CACHE PATH "ReXGlue SDK source tree (bd833a2) for the native renderer")
-if(WIN32 AND EXISTS "${GRAW_REXGLUE_SDK_SRC}/src/graphics/pipeline/shader/dxbc_translator.cpp")
+if(EXISTS "${GRAW_REXGLUE_SDK_SRC}/src/graphics/pipeline/shader/dxbc_translator.cpp")
     # The tree must carry the SDK patches the native renderer compiles against (tools/setup.ps1
     # applies them): a line each one adds, so an unpatched tree stops here rather than in
     # native/'s compile or link errors.
@@ -68,7 +69,9 @@ if(WIN32 AND EXISTS "${GRAW_REXGLUE_SDK_SRC}/src/graphics/pipeline/shader/dxbc_t
             "pgr4-native/0022-*.patch|include/rex/graphics/pipeline/shader/dxbc_translator.h|textures_unsigned"
             "rexglue-bd833a2-gpu-skip-draws.patch|include/rex/graphics/command_processor.h|for presenters"
             "rexglue-bd833a2-gpu-skip-draws.patch|src/graphics/command_processor.cpp|gpu_skip_draws"
-            "rexglue-bd833a2-implicit-gradients-switch.patch|src/graphics/pipeline/shader/dxbc_translator_fetch.cpp|bool g_dxbc_implicit_gradients")
+            "rexglue-bd833a2-implicit-gradients-switch.patch|src/graphics/pipeline/shader/dxbc_translator_fetch.cpp|bool g_dxbc_implicit_gradients"
+            "rexglue-bd833a2-spirv-exp-adjust.patch|src/graphics/pipeline/shader/spirv_translator_fetch.cpp|fetch_constant_word_3_signed"
+            "rexglue-bd833a2-spirv-implicit-gradients.patch|src/graphics/pipeline/shader/spirv_translator_fetch.cpp|bool g_spirv_implicit_gradients")
         string(REPLACE "|" ";" check "${check}")
         list(GET check 0 patch)
         list(GET check 1 file)
@@ -83,6 +86,12 @@ if(WIN32 AND EXISTS "${GRAW_REXGLUE_SDK_SRC}/src/graphics/pipeline/shader/dxbc_t
     endforeach()
     set(GRAW_NATIVE_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../native")
     file(GLOB GRAW_NATIVE_SOURCES CONFIGURE_DEPENDS "${GRAW_NATIVE_SRC}/*.cpp")
+    if(NOT WIN32)
+        # The D3D12 renderer's files (its device, draws, textures, resolves, present, frame
+        # pacer, DXBC shaders); the rest is API-free or the Vulkan backend's.
+        list(FILTER GRAW_NATIVE_SOURCES EXCLUDE REGEX
+             "/(d3d12_[a-z_]+|draw|frame_pacer|geometry_shader|gpu_timer|pipeline_library|present|present_debug|render_targets|resolve|resolve_debug|shader_cache|shader_specialize|shader_translate|textures)\\.cpp$")
+    endif()
     # An object library: its hooks (REX_HOOK_RAW) override the generated functions only when
     # their objects are linked in, and it compiles against the SDK source tree's headers first,
     # which carry the pgr4-native SDK patches the renderer needs (tools/patches/pgr4-native/:
@@ -93,12 +102,29 @@ if(WIN32 AND EXISTS "${GRAW_REXGLUE_SDK_SRC}/src/graphics/pipeline/shader/dxbc_t
         "${GRAW_REXGLUE_SDK_SRC}/src/graphics/pipeline/texture/info_formats.cpp")
     target_include_directories(graw_native BEFORE PRIVATE "${GRAW_REXGLUE_SDK_SRC}/include")
     target_include_directories(graw_native PRIVATE "${GRAW_NATIVE_SRC}" "${GRAW_REXGLUE_SDK_SRC}")
+    # The Vulkan backend (vulkan_device.h): headers only, the loader is opened at run time; VMA
+    # (vulkan_memory.cpp implements it).
+    target_include_directories(graw_native PRIVATE
+        "${GRAW_REXGLUE_SDK_SRC}/thirdparty/vulkan-headers/include"
+        "${GRAW_REXGLUE_SDK_SRC}/thirdparty/vulkan-memory-allocator/include")
     rexglue_apply_target_settings(graw_native)
     target_link_libraries(graw_native PRIVATE rex::runtime rex::xxhash)
     include("${GRAW_NATIVE_SRC}/shader_xlate.cmake")
     target_include_directories(graw_shader_xlate BEFORE PRIVATE "${GRAW_REXGLUE_SDK_SRC}/include")
-    target_link_libraries(grawyeti PRIVATE graw_native graw_shader_xlate d3d12 dxgi dxguid)
+    target_include_directories(graw_shader_xlate_spirv BEFORE PRIVATE "${GRAW_REXGLUE_SDK_SRC}/include")
+    # The Vulkan backend's sources include the SPIR-V translator's and glslang's headers.
+    target_include_directories(graw_native PRIVATE
+        "${GRAW_REXGLUE_SDK_SRC}/thirdparty/glslang" "${GRAW_REXGLUE_SDK_SRC}/thirdparty/renderdoc")
+    target_link_libraries(grawyeti PRIVATE graw_native graw_shader_xlate graw_shader_xlate_spirv)
+    if(WIN32)
+        target_link_libraries(grawyeti PRIVATE d3d12 dxgi dxguid)
+    else()
+        # The game window is SDL's (game_window.cpp, vulkan_device.cpp): its headers from the
+        # tree, its functions from the SDK runtime, which links SDL statically and exports them.
+        target_include_directories(graw_native PRIVATE "${GRAW_REXGLUE_SDK_SRC}/thirdparty/sdl3/include")
+        target_link_libraries(grawyeti PRIVATE ${CMAKE_DL_LIBS})
+    endif()
     target_compile_definitions(grawyeti PRIVATE GRAW_NATIVE_RENDERER=1)
 else()
-    message(STATUS "grawyeti: native renderer not built (needs Windows and ${GRAW_REXGLUE_SDK_SRC})")
+    message(STATUS "grawyeti: native renderer not built (needs ${GRAW_REXGLUE_SDK_SRC})")
 endif()

@@ -24,35 +24,15 @@
 #include <rex/graphics/pipeline/shader/dxbc.h>
 #include <rex/graphics/pipeline/shader/dxbc_translator.h>
 
+#include "shader_modifications.h"
+
 namespace graw::native {
 
 using rex::graphics::DxbcShader;
 using rex::graphics::DxbcShaderTranslator;
 
-// Raw guest register values that select the translation of a draw's shaders.
-struct ShaderDrawRegs {
-  uint32_t sq_program_cntl = 0;
-  uint32_t sq_context_misc = 0;
-  uint32_t sq_interpolator_cntl = 0;
-  uint32_t pa_cl_clip_cntl = 0;
-  uint32_t vgt_draw_initiator = 0;  // only prim_type is read
-  uint32_t vgt_output_path_cntl = 0;
-  uint32_t pa_su_sc_mode_cntl = 0;
-  uint32_t rb_modecontrol = 0;
-  uint32_t rb_surface_info = 0;
-  uint32_t rb_colorcontrol = 0;
-  uint32_t rb_color_mask = 0;
-  uint32_t rb_color_info[4] = {};  // RB_COLOR_INFO, RB_COLOR1_INFO, RB_COLOR2_INFO, RB_COLOR3_INFO
-};
+// ShaderDrawRegs, ShaderModifications: shader_modifications.h.
 
-struct ShaderModifications {
-  // false: the plugin drops the draw (EDRAM copy mode, i.e. the D3D's own resolve rectangles, or
-  // nothing can rasterize and the vertex shader does not memexport); nothing else is valid then.
-  bool draw = false;
-  bool pixel_shader_used = false;  // false: draw without a pixel shader (depth only)
-  uint64_t vertex = 0;
-  uint64_t pixel = 0;
-};
 
 // Mirrors D3D12CommandProcessor::IssueDraw + PipelineCache::GetCurrent*ShaderModification for
 // the host-render-target path. Both shaders must have their ucode analyzed (ShaderCache::Load

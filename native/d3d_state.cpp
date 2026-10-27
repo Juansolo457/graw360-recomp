@@ -4,6 +4,7 @@
 #include "d3d_state.h"
 
 #include "guest_memory.h"
+#include "native_thread.h"
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -15,8 +16,6 @@
 #include <string>
 
 #include <fmt/format.h>
-#include <windows.h>
-#undef DrawState  // winuser.h maps it to DrawStateA/W
 
 REXCVAR_DEFINE_BOOL(graw_native_stream_log, false, "GRAW native",
                     "Log the push-buffer tracker's counters now and then (decoded dwords, "
@@ -126,7 +125,7 @@ void GuestStateTracker::Sync(uint8_t* base, uint32_t device, uint32_t fn, bool e
             "GRAW native state: torn packet {:08X} at {:08X} still needs {} dwords: window ended "
             "at {:08X}, next one at {:08X} starts {:08X} (thread {}, last {})",
             header_, packet_address_, need_, last_sync_fn_, fn, Load32(base, cursor_ + 4),
-            GetCurrentThreadId(), last_sync_thread_);
+            CurrentThreadId(), last_sync_thread_);
       in_packet_ = false;
     }
     for (uint32_t a = cursor_ + 4; a <= cur; a += 4) Feed(base, a, Load32(base, a));
@@ -142,7 +141,7 @@ void GuestStateTracker::Sync(uint8_t* base, uint32_t device, uint32_t fn, bool e
   }
   cursor_ = cur;
   last_sync_fn_ = fn;
-  last_sync_thread_ = GetCurrentThreadId();
+  last_sync_thread_ = CurrentThreadId();
 }
 
 void GuestStateTracker::Jump(const uint8_t* base, uint32_t device, uint32_t fn) {
@@ -157,7 +156,7 @@ void GuestStateTracker::Jump(const uint8_t* base, uint32_t device, uint32_t fn) 
           "needs {} more; cursor {:08X} -> {:08X}, then {:08X} {:08X} (thread {})",
           header_, packet_address_, fn, pkt_.size(), need_, cursor_,
           Load32(base, device + dev::kPush), Load32(base, Load32(base, device + dev::kPush) + 4),
-          Load32(base, Load32(base, device + dev::kPush) + 8), GetCurrentThreadId());
+          Load32(base, Load32(base, device + dev::kPush) + 8), CurrentThreadId());
     in_packet_ = false;
   }
   cursor_ = Load32(base, device + dev::kPush);
@@ -248,7 +247,7 @@ void GuestStateTracker::HandlePacket(const uint8_t* base) {
         for (size_t i = first; i < pkt_.size() && i < first + 8; ++i)
           values += fmt::format(" {:08X}", pkt_[i]);
         REXLOG_INFO("GRAW native state: predicated write {:04X} x{}:{} (op {:02X}, thread {})", reg,
-                    pkt_.size() - first, values, op, GetCurrentThreadId());
+                    pkt_.size() - first, values, op, CurrentThreadId());
       }
     }
     for (size_t i = first; i < pkt_.size(); ++i) Put(reg + uint32_t(i - first), pkt_[i]);

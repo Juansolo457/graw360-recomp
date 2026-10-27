@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 
@@ -175,7 +176,17 @@ class GrawApp : public rex::ReXApp {
 
   // XamLoaderLaunchTitle ends the title; start the program that holds the requested executable.
   void OnGuestThreadExit(rex::system::XThread* thread) override {
-    if (thread && thread->main_thread()) graw::loader::HandOff();
+    if (!thread || !thread->main_thread()) return;
+    graw::loader::HandOff();
+#if !defined(_WIN32)
+    // Then hard-exit, as ReXApp::OnClosing does when the window closes: TerminateTitle leaves
+    // straggling guest threads running, and on Linux the runtime's teardown under them ended in
+    // an uncaught std::system_error ("Invalid argument", exit 134) on the Steam Deck when the
+    // campaign returned to the front end.
+    REXLOG_INFO("GRAW: the title ended itself; exiting");
+    rex::FlushLogging();
+    std::_Exit(0);
+#endif
   }
 
  private:

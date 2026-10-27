@@ -76,20 +76,25 @@ fs::path SiblingProgram(const char* project, const char* name) {
 fs::path ProgramFor(const std::string& executable) {
   // A packaged copy keeps the three programs side by side; a build tree has them in sibling
   // projects' build folders.
-  const auto pick = [](const std::string& set, const char* project, const char* name) {
+  const auto pick = [](const std::string& set, const char* project, const char* base) {
     if (!set.empty()) return fs::path(set);
+#if defined(_WIN32)
+    const std::string name = std::string(base) + ".exe";
+#else
+    const std::string name = base;
+#endif
     const fs::path beside = graw::process::OwnExecutable().parent_path() / name;
     std::error_code error;
-    return fs::exists(beside, error) ? beside : SiblingProgram(project, name);
+    return fs::exists(beside, error) ? beside : SiblingProgram(project, name.c_str());
   };
   if (executable == "default.xex") {
-    return pick(REXCVAR_GET(graw_frontend_exe), "port", "graw.exe");
+    return pick(REXCVAR_GET(graw_frontend_exe), "port", "graw");
   }
   if (executable == "gr3xenon_release.exe") {
-    return pick(REXCVAR_GET(graw_mp_exe), "port-mp", "grawmp.exe");
+    return pick(REXCVAR_GET(graw_mp_exe), "port-mp", "grawmp");
   }
   if (executable == "yeti_final_xenon.exe") {
-    return pick(REXCVAR_GET(graw_campaign_exe), "port-yeti", "grawyeti.exe");
+    return pick(REXCVAR_GET(graw_campaign_exe), "port-yeti", "grawyeti");
   }
   return {};
 }

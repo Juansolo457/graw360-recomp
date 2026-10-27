@@ -130,3 +130,30 @@ Saves stay in `port/user`.
   built. Run `tools/setup.ps1`.
 - **A crash:** the game writes `crash-<time>.txt` to a `logs` folder (`port/logs` or
   `port-yeti/logs`), next to each run's log. Please attach both to an issue on GitHub.
+
+## Linux (in progress, #38)
+
+The three programs build on Linux x86-64, with the hand-over between them ported. The campaign
+draws with the native renderer's Vulkan backend, on by default there with no switch to the
+emulated renderer (docs/VULKAN_RENDERER.md). The front end and Instant Action still run
+ReXGlue's emulated renderer. Built on Ubuntu 26.04 (WSL2) with clang 21, and for the Deck in the
+container below; the campaign boots on SteamOS 3.9.
+
+1. Packages (Ubuntu names): `clang lld cmake ninja-build git python3 autoconf libgtk-3-dev
+   libx11-xcb-dev libxss-dev libwayland-dev wayland-protocols libxkbcommon-dev libdecor-0-dev
+   libasound2-dev libpulse-dev libpipewire-0.3-dev libvulkan-dev`.
+2. Clone this repository on a Linux file system (a Windows checkout's CRLF line endings break the
+   SDK's FFmpeg build) and put your disc's files in `port/assets` (link `port-mp/assets` and
+   `port-yeti/assets` to it).
+3. `tools/setup-linux.sh`: the patched SDK from source (plus a Linux-only runtime fix), built and
+   installed for RelWithDebInfo and Release (the code generator). The first run takes a while.
+4. `tools/build-linux.sh --project port`, `--project port-mp` and `tools/build-linux.sh` (the
+   campaign).
+
+A build made on a recent distribution needs that distribution's glibc (2.43 on Ubuntu 26.04),
+which SteamOS doesn't have. For the Steam Deck, `tools/build-deck.sh` (needs `podman`) does steps
+3 and 4 in an Ubuntu 22.04 container (`tools/linux/deck.Containerfile`, the environment ReXGlue's
+own Linux releases are built in), with its own SDK checkout and build folder
+(`port-yeti/out/build/deck-amd64-relwithdebinfo`), and checks the result: the campaign and its
+libraries need glibc 2.35 and libstdc++ `GLIBCXX_3.4.32` (GCC 13) at most, and otherwise only
+X11, xcb and Wayland client libraries.

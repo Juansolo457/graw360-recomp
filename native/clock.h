@@ -3,13 +3,17 @@
 // Ticks() reads the time-stamp counter, which runs at a constant rate on every CPU the build
 // targets and costs a few ns, where QueryPerformanceCounter under Wine is a syscall (about
 // 0.15 µs). NowNs() is the same clock in nanoseconds, calibrated against QueryPerformanceCounter
-// over 20 ms at its first use. Hot paths sum ticks and convert the sum once (TicksToNs).
+// (CLOCK_MONOTONIC elsewhere) over 20 ms at its first use. Hot paths sum ticks and convert the sum once (TicksToNs).
 #pragma once
 
 #include <cstdint>
 
 #if defined(_M_X64) || defined(__x86_64__)
+#if defined(_WIN32)
 #include <intrin.h>
+#else
+#include <x86intrin.h>
+#endif
 #endif
 
 namespace graw::native {

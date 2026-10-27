@@ -37,6 +37,7 @@
 // render thread, later, from the DrawPrep the hook side made.
 #pragma once
 
+#include "backend.h"
 #include "d3d12_device.h"
 #include "d3d_state.h"
 
@@ -46,100 +47,19 @@
 #include <utility>
 #include <vector>
 
-namespace rex::graphics {
-class DxbcShader;
-}
-
 namespace graw::native {
 
-class NativeRenderer;
-struct ClearCall;
-struct CoherencyJob;
-struct ResolveParams;
+class D3D12Backend;
 
-// Guest memory copied into upload memory, to be copied into shared memory at `dst`.
-struct VertexCopy {
-  ID3D12Resource* src;
-  uint64_t src_offset;
-  uint32_t dst, size;
-};
-
-// --graw_native_mark_audit: a guest range a draw reads, with the XXH3 of its bytes when the draw
-// was prepared, which shared memory must hold when the GPU reaches the draw.
-struct AuditRange {
-  uint32_t start, size;
-  uint64_t hash;
-};
-
-// The guest-thread half of one draw (DrawRenderer::Prepare).
-struct DrawPrep {
-  rex::graphics::DxbcShader* vs = nullptr;  // nullptr: no vertex shader (the draw is dropped)
-  rex::graphics::DxbcShader* ps = nullptr;
-  bool upload_ok = true;               // every vertex/index range was copied
-  const VertexCopy* copies = nullptr;  // set by the render side before OnDraw
-  uint32_t copy_count = 0;
-  bool copy_segment = false;  // Prepare: the draw's copies start a copy segment
-  // Triangle fans: the converted host indices in upload memory.
-  D3D12_GPU_VIRTUAL_ADDRESS fan_indices = 0;
-  uint32_t fan_count = 0;
-  bool fan_wide = false;
-  uint64_t captured = ~0ull;  // TextureCache::MarkCapture stamp (kCapturedNow: none)
-  // --graw_native_coherency_check: XXH3 of the register file's blocks as Prepare saw them
-  // (render state, float constants VS and PS, fetch and bool/loop constants), 0: not taken.
-  uint64_t regs_hash[5] = {};
-  // --graw_native_mark_audit: the ranges to check, set by the render side like `copies`.
-  const AuditRange* audit = nullptr;
-  uint32_t audit_count = 0;
-};
-
+// DrawPrep::vs/ps hold rex::graphics::DxbcShader objects here (shader_cache.h).
 class DrawRenderer {
  public:
-  struct Stats {
-    uint64_t draws = 0;        // issued host draws
-    uint64_t skipped = 0;      // dropped like the plugin does: nothing to draw or write
-    uint64_t unsupported = 0;  // see the header comment; logged once per reason
-    uint64_t failed = 0;       // shader/PSO/RT/upload failures
-    uint64_t pso_created = 0;
-    uint64_t pso_pending = 0;   // draws skipped while their pipeline compiles (async)
-    uint64_t pso_generic = 0;   // draws on unspecialized shaders while a specialization compiles
-    uint64_t pso_wait_us = 0;   // the frame waiting for the pipelines of its skipped draws
-    uint64_t upload_bytes = 0;  // guest memory copied into shared memory
-    uint64_t uploads = 0;       // copy regions recorded
-    uint64_t textures = 0, textures_missing = 0;  // bindings; missing = null SRV bound
-    uint64_t textures_stale = 0;  // bindings for draws queued before a newer guest write
-    uint64_t srv_lookups = 0, srv_created = 0, samplers_created = 0;
-    uint64_t views = 0;  // texture views in the bindless heap (at the frame's end)
-    uint64_t bind_memo_hits = 0, bind_memo_misses = 0;  // whole-shader texture binding memo
-    uint64_t watch_faults = 0;  // guest writes caught by a page watch (any watcher), per frame
-    uint64_t copy_batches = 0;  // groups of shared-memory copies, each between two barriers
-    uint64_t watch_arms = 0, watch_arm_pages = 0;  // vertex/index watches armed (calls, pages)
-    // ... pages found written between their copy and the arm, and the watch thread's time.
-    uint64_t watch_arm_changed = 0, watch_arm_ns = 0;
-    uint64_t hash_pages = 0, hash_copies = 0;  // pages hashed, and copied as they changed
-    // --graw_native_coherency_check: pages whose guest memory differed from shared memory's
-    // copy although the page watch said it was current, and pages rewritten after a draw of
-    // the frame read them.
-    uint64_t stale_pages = 0, late_pages = 0;
-    // ... and pages whose shared memory copy, read back at the end of a frame, differs from
-    // the bytes the frame's copies carried.
-    uint64_t gpu_mismatch_pages = 0;
-    uint64_t reg_mismatches = 0;  // draws whose register file differs from Prepare's
-  };
-  // Prepare's draw path counters (the draw diag of --graw_native_profile).
-  struct PrepareDiag {
-    uint64_t shader_loads = 0, shader_loads_immediate = 0;
-    uint64_t ranges = 0, range_pages = 0, range_runs = 0;  // watched ranges, their pages, copies
-    uint64_t unwatched = 0;                                // unwatched ranges (copied whole)
-  };
-  // Prepare's numbers for one frame (EndFramePrepare), added to stats() and the draw diag by
-  // AddPrepareCounters.
-  struct PrepareCounters {
-    uint64_t upload_bytes = 0, uploads = 0, stale_pages = 0, late_pages = 0;
-    PrepareDiag diag;
-    std::shared_ptr<CoherencyJob> job;  // the frame's copied ranges to read back, or null
-  };
+  // backend.h: the types the renderer host queues and reports.
+  using Stats = DrawStats;
+  using PrepareDiag = graw::native::PrepareDiag;
+  using PrepareCounters = graw::native::PrepareCounters;
 
-  explicit DrawRenderer(NativeRenderer& renderer);
+  explicit DrawRenderer(D3D12Backend& renderer);
   ~DrawRenderer();
   DrawRenderer(const DrawRenderer&) = delete;
   DrawRenderer& operator=(const DrawRenderer&) = delete;
@@ -197,7 +117,7 @@ class DrawRenderer {
   // At Swap, before EndFrame: the frame skipped draws in a burst of new pipelines (a scene's
   // first frame, before its draws began waiting for them), so it is not worth showing.
   bool FrameIncomplete() const;
-  // Per frame, with the fence values of NativeRenderer (once per Swap, after EndFrame).
+  // Per frame, with the fence values of D3D12Backend (once per Swap, after EndFrame).
   void EndFrame(uint64_t completed_fence);
 
   const Stats& stats() const { return stats_; }
@@ -210,7 +130,7 @@ class DrawRenderer {
 
  private:
   struct Impl;
-  NativeRenderer& renderer_;
+  D3D12Backend& renderer_;
   Stats stats_;  // before impl_, which keeps a reference to it
   std::unique_ptr<Impl> impl_;
 };

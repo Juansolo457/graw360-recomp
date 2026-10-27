@@ -23,8 +23,7 @@
 #include <rex/system/xmemory.h>
 #include <rex/types.h>
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "host_memory.h"
 
 REXCVAR_DEFINE_BOOL(graw_debug_shader_compile, false, "GRAW",
                     "Log the game's HLSL compile calls and every parser reduction "
@@ -44,17 +43,7 @@ uint8_t* Base() { return rex::system::kernel_memory()->virtual_membase(); }
 // stale value that points at unmapped guest memory; the first version of this hook crashed on one).
 bool Readable(uint32_t a, size_t n) {
   if (a < 0x10000) return false;
-  const uint8_t* p = Base() + a;
-  const uint8_t* end = p + n;
-  while (p < end) {
-    MEMORY_BASIC_INFORMATION info;
-    if (!VirtualQuery(p, &info, sizeof(info)) || info.State != MEM_COMMIT ||
-        (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) || info.Protect == 0) {
-      return false;
-    }
-    p = static_cast<const uint8_t*>(info.BaseAddress) + info.RegionSize;
-  }
-  return true;
+  return graw::HostReadable(Base() + a, n);
 }
 bool Plausible(uint32_t a) { return a < 0xC0000000u && Readable(a, 64); }
 

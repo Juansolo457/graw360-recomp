@@ -61,12 +61,16 @@
 #include <thread>
 
 #include "async_file.h"
+
+#if defined(_WIN32)
 #include "win_handle.h"  // windows.h
 
 struct ID3D12Fence;
+#endif
 
 namespace graw::native {
 
+#if defined(_WIN32)
 class FramePacer {
  public:
   static constexpr uint32_t kMaxFrameLatency = 3;
@@ -191,5 +195,20 @@ class FramePacer {
   uint64_t probe_period_ns_ = kProbePeriodNs;
   int64_t probe_delay_ns_ = 0;  // D's ceiling until probe_end_frame_
 };
+#else
+// Elsewhere the native renderer runs the Vulkan backend, which doesn't pace on the display yet
+// (VulkanBackend::SetPacer): the renderer creates no pacer, and the game keeps its vblank pacing.
+// The class is here for the code that holds one.
+class FramePacer {
+ public:
+  static constexpr uint32_t kMaxFrameLatency = 3;
+  uint32_t frame_latency() const { return 0; }
+  bool pacing() const { return false; }
+  void Presented(uint64_t) {}
+  void RetireUnshown() {}
+  uint64_t WaitToBegin() { return 0; }
+  void Stop() {}
+};
+#endif
 
 }  // namespace graw::native

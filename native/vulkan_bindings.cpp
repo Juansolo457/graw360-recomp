@@ -10,6 +10,8 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#include <xxhash.h>
+
 #include <algorithm>
 #include <bit>
 #include <cstring>
@@ -299,6 +301,10 @@ void VulkanBindings::BeginFrame(uint64_t frame) {
   for (VkDescriptorPool p : f.pools) device_.fn().vkResetDescriptorPool(device_.device(), p, 0);
   f.current = 0;
   constants_set_ = VK_NULL_HANDLE;
+  texture_sets_.clear();
+  texture_set_keys_.clear();
+  bound_layout_ = VK_NULL_HANDLE;
+  bound_sets_ = {};
 }
 
 VkDescriptorSet VulkanBindings::AllocateSet(VkDescriptorSetLayout layout) {
@@ -398,8 +404,7 @@ VkDescriptorSet VulkanBindings::TextureSet(const Layout& layout, bool vertex,
                                            const ShaderTextures& bound) {
   const auto& textures = shader.GetTextureBindingsAfterTranslation();
   const auto& samplers = shader.GetSamplerBindingsAfterTranslation();
-  VkDescriptorSet set = AllocateSet(vertex ? layout.textures_vertex : layout.textures_pixel);
-  if (!set) return VK_NULL_HANDLE;
+  const VkDescriptorSetLayout set_layout = vertex ? layout.textures_vertex : layout.textures_pixel;
   image_infos_.clear();
   for (size_t n = 0; n < textures.size(); ++n) {
     const SpirvShader::TextureBinding& t = textures[n];
@@ -415,6 +420,27 @@ VkDescriptorSet VulkanBindings::TextureSet(const Layout& layout, bool vertex,
     const VkSampler s = bound.samplers ? bound.samplers[n] : VK_NULL_HANDLE;
     image_infos_.emplace_back().sampler = s ? s : sampler_;
   }
+  // A set this frame already wrote the same way.
+  key_scratch_.clear();
+  key_scratch_.push_back(uint64_t(set_layout));
+  for (size_t n = 0; n < textures.size(); ++n)
+    key_scratch_.push_back(uint64_t(image_infos_[n].imageView));
+  for (size_t n = 0; n < samplers.size(); ++n)
+    key_scratch_.push_back(uint64_t(image_infos_[textures.size() + n].sampler));
+  const size_t key_bytes = key_scratch_.size() * sizeof(uint64_t);
+  const uint64_t hash = XXH3_64bits(key_scratch_.data(), key_bytes);
+  TextureSetEntry& entry = texture_sets_[hash];
+  if (entry.set && entry.key_size == key_scratch_.size() &&
+      !std::memcmp(texture_set_keys_.data() + entry.key_offset, key_scratch_.data(), key_bytes)) {
+    ++stats_.texture_set_reuses;
+    return entry.set;
+  }
+  VkDescriptorSet set = AllocateSet(set_layout);
+  if (!set) return VK_NULL_HANDLE;
+  entry.key_offset = uint32_t(texture_set_keys_.size());
+  entry.key_size = uint32_t(key_scratch_.size());
+  entry.set = set;  // a hash collision replaces the older set
+  texture_set_keys_.insert(texture_set_keys_.end(), key_scratch_.begin(), key_scratch_.end());
   VkWriteDescriptorSet w[2] = {};
   uint32_t n = 0;
   if (!textures.empty()) {
@@ -518,9 +544,20 @@ bool VulkanBindings::Bind(VkCommandBuffer cmd, const Layout& layout, const uint3
       !(sets[T::kDescriptorSetTexturesPixel] = TextureSet(layout, false, *ps, ps_textures)))
     return fail("pixel texture descriptor set");
 
-  // Sets 0 and 1, then the texture sets the shaders have.
+  // Sets 0 and 1, then the texture sets the shaders have; nothing when the last draw bound the
+  // same sets with the same layout.
   const VulkanDevice::Functions& fn = device_.fn();
   const uint32_t count = sets[2] ? (sets[3] ? 4 : 3) : 2;
+  bool same = layout.layout == bound_layout_;
+  for (uint32_t i = 0; same && i < T::kDescriptorSetCount; ++i)
+    same = !sets[i] || sets[i] == bound_sets_[i];
+  if (same) {
+    ++stats_.bind_skips;
+    profile::Mark(profile::kDescriptors);
+    return true;
+  }
+  bound_layout_ = layout.layout;
+  for (uint32_t i = 0; i < T::kDescriptorSetCount; ++i) bound_sets_[i] = sets[i];
   fn.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout.layout, 0, count, sets,
                              0, nullptr);
   if (!sets[2] && sets[3])

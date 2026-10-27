@@ -35,7 +35,7 @@ expected_tree=54ab5932e76ba1b8c9e454891c9ba52c16bfdda0  # after the last patch
 # when it's already in the process (SteamOS installs librenderdoc.so, so a plain dlopen loaded it
 # into every run, #51).
 linux_patches=(rexglue-bd833a2-launch-title-path rexglue-bd833a2-linux-crash-renderdoc)
-linux_tree=e991d15fbd55bd409b6dc3238e44a1bebb400a53
+linux_tree=88fa3e8437490f8c7c0628370326eaa4561c4788
 # Checkouts made by an earlier version of this script move forward by the patches added since,
 # rather than a new clone and full SDK build: "<tree> <patch>..." pairs, each tree -> the next.
 upgrades=("f9d5a19f96e3f2f7ed79ee5b08155eab343a5b9c rexglue-bd833a2-spirv-exp-adjust"

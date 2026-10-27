@@ -1,0 +1,137 @@
+diff --git a/src/core/exception_handler_posix.cpp b/src/core/exception_handler_posix.cpp
+index 8b1c76a..8040c40 100644
+--- a/src/core/exception_handler_posix.cpp
++++ b/src/core/exception_handler_posix.cpp
+@@ -20,6 +20,10 @@
+ #if REX_PLATFORM_LINUX || REX_PLATFORM_MAC
+ 
+ #include <signal.h>
++#include <unistd.h>
++#if defined(__GLIBC__)
++#include <execinfo.h>
++#endif
+ 
+ #include <cstdint>
+ #include <cstring>
+@@ -49,6 +53,47 @@ constexpr size_t kMaxHandlerCount = 8;
+ // Executed in order.
+ std::pair<ExceptionHandler::Handler, void*> handlers_[kMaxHandlerCount];
+ 
++// Returning from the signal handler runs the faulting instruction again. A fault no handler
++// claims is retried a few times (another thread may be changing the page's protection), then
++// reported once with a host backtrace and handed to the original handler (normally the default:
++// the process dies). Before, it was retried forever, logging every time.
++constexpr uint32_t kUnhandledRetries = 16;
++thread_local uint64_t unhandled_address_ = 0;
++thread_local uint32_t unhandled_count_ = 0;
++
++// Only async-signal-safe calls from here on (signal-safety(7)): the fault may have interrupted
++// the logger or the allocator while holding a lock, so no logging, snprintf or malloc.
++void WriteStderr(const char* text) { (void)!write(STDERR_FILENO, text, std::strlen(text)); }
++
++void WriteStderrHex(uint64_t value) {
++  char text[19] = "0x";
++  for (int i = 0; i < 16; ++i) text[2 + i] = "0123456789abcdef"[(value >> (60 - 4 * i)) & 0xF];
++  text[18] = 0;
++  WriteStderr(text);
++}
++
++void ReportUnhandledAndRestore(int signal_number, uint64_t fault_address, uint64_t host_pc) {
++  // The original handler first: if the report below faults too, the process still dies.
++  struct sigaction* original = &original_sigsegv_handler_;
++  if (signal_number == SIGILL) original = &original_sigill_handler_;
++#if REX_PLATFORM_MAC
++  if (signal_number == SIGBUS) original = &original_sigbus_handler_;
++#endif
++  sigaction(signal_number, original, nullptr);
++  WriteStderr(signal_number == SIGILL ? "rexglue: unhandled SIGILL at "
++                                       : "rexglue: unhandled fault at ");
++  WriteStderrHex(fault_address);
++  WriteStderr(", host pc ");
++  WriteStderrHex(host_pc);
++  WriteStderr(": crashing, host backtrace follows\n");
++#if defined(__GLIBC__)
++  // backtrace was called once at Install, so libgcc is loaded already and it doesn't allocate;
++  // backtrace_symbols_fd writes without malloc.
++  void* frames[64];
++  backtrace_symbols_fd(frames, backtrace(frames, 64), STDERR_FILENO);
++#endif
++}
++
+ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
+                                      void* signal_context) {
+ #if REX_PLATFORM_MAC
+@@ -263,6 +308,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
+   for (size_t i = 0; i < rex::countof(handlers_) && handlers_[i].first; ++i) {
+     if (handlers_[i].first(&ex, handlers_[i].second)) {
+       // Exception handled.
++      unhandled_count_ = 0;
+ #if REX_ARCH_AMD64
+ #if REX_PLATFORM_MAC
+       mcontext->__ss.__rip = thread_context.rip;
+@@ -417,6 +463,21 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
+       return;
+     }
+   }
++
++  // No handler claimed it.
++  const uint64_t fault_address = reinterpret_cast<uint64_t>(signal_info->si_addr);
++  if (fault_address != unhandled_address_) {
++    unhandled_address_ = fault_address;
++    unhandled_count_ = 0;
++  }
++  if (++unhandled_count_ > kUnhandledRetries) {
++#if REX_ARCH_AMD64
++    const uint64_t host_pc = thread_context.rip;
++#else
++    const uint64_t host_pc = thread_context.pc;
++#endif
++    ReportUnhandledAndRestore(signal_number, fault_address, host_pc);
++  }
+ }
+ 
+ void ExceptionHandler::Install(Handler fn, void* data) {
+@@ -426,6 +487,11 @@ void ExceptionHandler::Install(Handler fn, void* data) {
+     std::memset(&signal_handler, 0, sizeof(signal_handler));
+     signal_handler.sa_sigaction = ExceptionHandlerCallback;
+     signal_handler.sa_flags = SA_SIGINFO;
++#if defined(__GLIBC__)
++    // The first backtrace call loads libgcc (dlopen, malloc): done here, not in the handler.
++    void* frame;
++    backtrace(&frame, 1);
++#endif
+ 
+     if (sigaction(SIGILL, &signal_handler, &original_sigill_handler_) != 0) {
+       assert_always("Failed to install new SIGILL handler");
+diff --git a/src/ui/renderdoc_api.cpp b/src/ui/renderdoc_api.cpp
+index e1a5287..dc57bb7 100644
+--- a/src/ui/renderdoc_api.cpp
++++ b/src/ui/renderdoc_api.cpp
+@@ -12,6 +12,10 @@
+ #include <rex/logging.h>
+ #include <rex/ui/renderdoc_api.h>
+ 
++#if REX_PLATFORM_LINUX
++#include <dlfcn.h>
++#endif
++
+ namespace rex {
+ namespace ui {
+ 
+@@ -28,6 +32,16 @@ std::unique_ptr<RenderDocAPI> RenderDocAPI::CreateIfConnected() {
+   // Try to load the RenderDoc library. If RenderDoc is attached, the library
+   // should already be loaded into the process and this will increment the
+   // reference count. If not attached, the load will fail and we return nullptr.
++#if REX_PLATFORM_LINUX
++  // Not on Linux: distributions (SteamOS among them) install librenderdoc.so system-wide, so a
++  // plain dlopen succeeds and loads RenderDoc into every run, hooking every Vulkan call. Only a
++  // RenderDoc that is already in the process (launched under it) is used.
++  if (void* attached = dlopen(platform::lib_names::kRenderDoc, RTLD_NOW | RTLD_NOLOAD)) {
++    dlclose(attached);
++  } else {
++    return nullptr;
++  }
++#endif
+   if (!renderdoc_api->library_.Load(platform::lib_names::kRenderDoc)) {
+     return nullptr;
+   }

@@ -48,6 +48,12 @@ enum Stage : uint32_t {
   kGuestD3d,
   // Nested inside kSubmit or the swap: NativeRenderer::CloseUploadLists.
   kUploadList,
+  // The Vulkan backend's draw (vulkan_backend.cpp) is one Mark chain that also uses stages above:
+  // kVertices (the guest thread's copies), kShaders, kSetup, kTextures (views and samplers),
+  // kSysConst, kRtBind, kPack (VulkanBindings::Bind: constant uploads and their set), then
+  // kDescriptors, kPipelineKey, kPipeline (VulkanPipelines::Get), kRecord (dynamic state, draw).
+  kDescriptors,  // VulkanBindings::Bind: texture descriptor sets, vkCmdBindDescriptorSets
+  kPipelineKey,  // building the VulkanPipelineKey
   kStageCount
 };
 
@@ -55,7 +61,8 @@ inline constexpr const char* kStageNames[kStageCount] = {
     "read_state", "shaders",  "setup",   "rt_bind",     "translate",    "pipeline",
     "textures",   "sysconst", "pack",    "vertices",    "cbv",          "record",
     "submit",     "track",    "imm_vs",  "cap_shaders", "cap_vertices", "cap_record",
-    "tex_miss",   "tex_get",  "tex_srv", "guest_d3d",   "upload_list"};
+    "tex_miss",   "tex_get",  "tex_srv", "guest_d3d",   "upload_list",  "descriptors",
+    "pipeline_key"};
 
 // Per-frame event counts (CSV columns, reset every frame), counted while the profiler is on.
 enum Counter : uint32_t {

@@ -38,6 +38,8 @@ struct VulkanBindingStats {
   uint64_t constant_uploads = 0;  // constant buffers uploaded (not reused)
   uint64_t constant_bytes = 0;
   uint64_t constant_set_reuses = 0;  // draws that kept the previous constants set
+  uint64_t texture_set_reuses = 0;   // texture sets taken from this frame's earlier draws
+  uint64_t bind_skips = 0;           // draws whose sets were all bound already
 };
 
 // A shader's textures and samplers for its descriptor set, in the order of its bindings
@@ -152,6 +154,20 @@ class VulkanBindings {
   bool placeholders_ready_ = false;
 
   std::vector<VkDescriptorImageInfo> image_infos_;
+  // This frame's texture sets (#51), by what was written: the set layout, then the views and
+  // samplers after placeholders and the default sampler are filled in (the placeholder depends
+  // on the shader's texture dimension, so the bound views alone aren't enough). Cleared with the
+  // pools at BeginFrame.
+  struct TextureSetEntry {
+    uint32_t key_offset = 0, key_size = 0;  // in texture_set_keys_
+    VkDescriptorSet set = VK_NULL_HANDLE;
+  };
+  std::unordered_map<uint64_t, TextureSetEntry> texture_sets_;
+  std::vector<uint64_t> texture_set_keys_, key_scratch_;
+  // The sets the last draw bound in this frame's command buffer (Bind skips the bind when the
+  // next draw's are the same).
+  VkPipelineLayout bound_layout_ = VK_NULL_HANDLE;
+  std::array<VkDescriptorSet, SpirvShaderTranslator::kDescriptorSetCount> bound_sets_{};
   bool bind_failed_logged_ = false;
   VulkanBindingStats stats_;
 };

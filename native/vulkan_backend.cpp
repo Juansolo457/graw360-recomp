@@ -6,6 +6,7 @@
 #include "guest_memory.h"  // GpuAddress
 #include "pipeline_store.h"
 #include "present.h"       // SwapCall
+#include "profile.h"
 #include "resolve_params.h"  // ResolveParams
 #include "vulkan_bindings.h"
 #include "vulkan_memory.h"
@@ -392,6 +393,7 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
       return;
     }
   }
+  profile::Mark(profile::kVertices);
   auto* vs = static_cast<SpirvShader*>(prep ? prep->vs : LoadShader(state.vs, ShaderType::kVertex));
   auto* ps = static_cast<SpirvShader*>(prep ? prep->ps : LoadShader(state.ps, ShaderType::kPixel));
   if (!vs) {
@@ -424,6 +426,7 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
     ++stats_.failed;
     return;
   }
+  profile::Mark(profile::kShaders);
 
   const RegisterFile& regs = *reinterpret_cast<const RegisterFile*>(state.regs);
   const auto prim = xenos::PrimitiveType(state.primitive);
@@ -535,6 +538,7 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
   ViewportInfo vp;
   HostViewportInfo(regs, ps && ps->writes_depth(), vp, 16384, /*origin_bottom_left=*/false);
   const uint32_t height = std::clamp(scissor.offset[1] + scissor.extent[1], 1u, 2048u);
+  profile::Mark(profile::kSetup);
 
   // System constants as UpdateSystemConstantValues sets them for the host render target path.
   const uint32_t used_textures = vs->GetUsedTextureMaskAfterTranslation() |
@@ -556,9 +560,11 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
   const ShaderTextures vs_textures{texture_views_.data(), samplers_.data()};
   const ShaderTextures ps_textures{texture_views_.data() + vs_views,
                                    samplers_.data() + vs_samplers};
+  profile::Mark(profile::kTextures);
   SpirvShaderTranslator::SystemConstants sys;
   FillSpirvSystemConstants(regs, prim, polygonal, index_endian, vp, used_textures, signs, sys);
   if (REXCVAR_GET(graw_native_vulkan_debug) & 2) sys.alpha_to_mask = 0;
+  profile::Mark(profile::kSysConst);
   VulkanBoundTargets bound;
   if (!targets.Bind(cmd, SurfaceRegsFromRegisters(state.regs), rt_mask, depth_used, height,
                     &bound)) {
@@ -570,6 +576,7 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
     ++use.draws;
     use.rows = std::max(use.rows, std::min(height, bound.color[0]->height));
   }
+  profile::Mark(profile::kRtBind);
   const VulkanBindings::Layout* layout = bindings.GetLayout(*vs, ps);
   if (!layout || !bindings.Bind(cmd, *layout, state.regs, *vs, ps, sys, device_->frame_fence(),
                                 vs_textures, ps_textures)) {
@@ -672,6 +679,7 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
       rt.op_a = uint8_t(kVkBlendOp[op_a]);
     }
   }
+  profile::Mark(profile::kPipelineKey);
   bool pending, is_new;
   const VkPipeline pipeline = gpu_->pipelines.Get(key, &pending, &is_new);
   if (is_new) {
@@ -691,6 +699,8 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
     return;
   }
 
+  profile::Mark(profile::kPipeline);
+
   // Dynamic state, then the draw.
   const VulkanDevice::Functions& fn = device_->fn();
   VkRect2D scissor_rect;
@@ -704,40 +714,81 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
     ++stats_.skipped;
     return;
   }
-  fn.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+  // Only what changed since the last draw in this command buffer.
+  RecordedState& rs = recorded_;
+  // Dynamic state is undefined when a command buffer begins: its first draw sets all of it.
+  const bool fresh = rs.fence != device_->frame_fence();
+  if (fresh) {
+    rs = {};
+    rs.fence = device_->frame_fence();
+  }
+  if (rs.pipeline != pipeline) {
+    rs.pipeline = pipeline;
+    fn.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+  }
   const VkViewport viewport{float(vp.xy_offset[0]), float(vp.xy_offset[1]),
                             float(vp.xy_extent[0]), float(vp.xy_extent[1]), vp.z_min, vp.z_max};
-  fn.vkCmdSetViewport(cmd, 0, 1, &viewport);
-  fn.vkCmdSetScissor(cmd, 0, 1, &scissor_rect);
+  if (fresh || std::memcmp(&rs.viewport, &viewport, sizeof(viewport))) {
+    rs.viewport = viewport;
+    fn.vkCmdSetViewport(cmd, 0, 1, &viewport);
+  }
+  if (fresh || std::memcmp(&rs.scissor, &scissor_rect, sizeof(scissor_rect))) {
+    rs.scissor = scissor_rect;
+    fn.vkCmdSetScissor(cmd, 0, 1, &scissor_rect);
+  }
   float poly_offset = 0.0f, poly_offset_scale = 0.0f;
   if (rasterization) GetPreferredFacePolygonOffset(regs, polygonal, poly_offset_scale, poly_offset);
-  fn.vkCmdSetDepthBias(cmd,
-                       float(rex::graphics::draw_util::GetD3D10IntegerPolygonOffset(
-                           regs.Get<reg::RB_DEPTH_INFO>().depth_format, poly_offset)),
-                       0.0f, poly_offset_scale * xenos::kPolygonOffsetScaleSubpixelUnit);
+  const float depth_bias[2] = {
+      float(rex::graphics::draw_util::GetD3D10IntegerPolygonOffset(
+          regs.Get<reg::RB_DEPTH_INFO>().depth_format, poly_offset)),
+      poly_offset_scale * xenos::kPolygonOffsetScaleSubpixelUnit};
+  if (fresh || std::memcmp(rs.depth_bias, depth_bias, sizeof(depth_bias))) {
+    std::memcpy(rs.depth_bias, depth_bias, sizeof(depth_bias));
+    fn.vkCmdSetDepthBias(cmd, depth_bias[0], 0.0f, depth_bias[1]);
+  }
   const float blend_constants[4] = {regs.Get<float>(rex::graphics::XE_GPU_REG_RB_BLEND_RED),
                                     regs.Get<float>(rex::graphics::XE_GPU_REG_RB_BLEND_GREEN),
                                     regs.Get<float>(rex::graphics::XE_GPU_REG_RB_BLEND_BLUE),
                                     regs.Get<float>(rex::graphics::XE_GPU_REG_RB_BLEND_ALPHA)};
-  fn.vkCmdSetBlendConstants(cmd, blend_constants);
+  if (fresh || std::memcmp(rs.blend, blend_constants, sizeof(blend_constants))) {
+    std::memcpy(rs.blend, blend_constants, sizeof(blend_constants));
+    fn.vkCmdSetBlendConstants(cmd, blend_constants);
+  }
   const auto ref = regs.Get<reg::RB_STENCILREFMASK>();
   const auto ref_bf = polygonal && depth_control.backface_enable
                           ? regs.Get<reg::RB_STENCILREFMASK>(
                                 rex::graphics::XE_GPU_REG_RB_STENCILREFMASK_BF)
                           : ref;
-  fn.vkCmdSetStencilCompareMask(cmd, VK_STENCIL_FACE_FRONT_BIT, ref.stencilmask);
-  fn.vkCmdSetStencilCompareMask(cmd, VK_STENCIL_FACE_BACK_BIT, ref_bf.stencilmask);
-  fn.vkCmdSetStencilWriteMask(cmd, VK_STENCIL_FACE_FRONT_BIT, ref.stencilwritemask);
-  fn.vkCmdSetStencilWriteMask(cmd, VK_STENCIL_FACE_BACK_BIT, ref_bf.stencilwritemask);
-  fn.vkCmdSetStencilReference(cmd, VK_STENCIL_FACE_FRONT_BIT, ref.stencilref);
-  fn.vkCmdSetStencilReference(cmd, VK_STENCIL_FACE_BACK_BIT, ref_bf.stencilref);
+  // Each stencil value for both faces in one call when they match (the usual case).
+  auto stencil = [&](uint32_t i, uint32_t front, uint32_t back,
+                     PFN_vkCmdSetStencilReference set) {
+    const bool f = fresh || rs.stencil[i] != front, b = fresh || rs.stencil[i + 3] != back;
+    if (!f && !b) return;
+    rs.stencil[i] = front;
+    rs.stencil[i + 3] = back;
+    if (front == back) {
+      set(cmd, VK_STENCIL_FACE_FRONT_AND_BACK, front);
+    } else {
+      if (f) set(cmd, VK_STENCIL_FACE_FRONT_BIT, front);
+      if (b) set(cmd, VK_STENCIL_FACE_BACK_BIT, back);
+    }
+  };
+  stencil(0, ref.stencilmask, ref_bf.stencilmask, fn.vkCmdSetStencilCompareMask);
+  stencil(1, ref.stencilwritemask, ref_bf.stencilwritemask, fn.vkCmdSetStencilWriteMask);
+  stencil(2, ref.stencilref, ref_bf.stencilref, fn.vkCmdSetStencilReference);
   if (state.indexed) {
-    fn.vkCmdBindIndexBuffer(cmd, gpu_->shared.buffer, state.index_address,
-                            state.index_32bit ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
-    fn.vkCmdDrawIndexed(cmd, state.count, 1, 0, 0, 0);
+    // The shared buffer stays bound at offset 0; the guest's index address is the first index.
+    const VkIndexType type = state.index_32bit ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
+    if (rs.index_type != int32_t(type)) {
+      rs.index_type = int32_t(type);
+      fn.vkCmdBindIndexBuffer(cmd, gpu_->shared.buffer, 0, type);
+    }
+    fn.vkCmdDrawIndexed(cmd, state.count, 1, state.index_address >> (state.index_32bit ? 2 : 1),
+                        0, 0);
   } else {
     fn.vkCmdDraw(cmd, state.count, 1, 0, 0);
   }
+  profile::Mark(profile::kRecord);
   ++stats_.draws;
   if (draw_index >= dump_target_first_ && draw_index <= dump_target_last_ && bound.color[0] &&
       DumpingFrame())
@@ -1656,8 +1707,9 @@ Backend::SwapResult VulkanBackend::Swap(const SwapCall& swap, std::optional<bool
                 s.failures);
     const VulkanBindingStats& b = gpu_->bindings.stats();
     REXLOG_INFO("GRAW native Vulkan bindings: {} descriptor sets, {} constant uploads ({} KB), "
-                "{} draws kept the constants set",
-                b.sets, b.constant_uploads, b.constant_bytes >> 10, b.constant_set_reuses);
+                "{} draws kept the constants set, {} texture sets reused, {} binds skipped",
+                b.sets, b.constant_uploads, b.constant_bytes >> 10, b.constant_set_reuses,
+                b.texture_set_reuses, b.bind_skips);
     const VulkanPipelineStats p = gpu_->pipelines.stats();
     REXLOG_INFO("GRAW native Vulkan pipelines: {} created ({} from the cache, {} prewarmed; "
                 "{:.0f} us total, max {:.0f} us), {} failed, {} queued; {} render targets",

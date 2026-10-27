@@ -134,6 +134,20 @@ class VulkanBackend final : public Backend, public GuestMemoryMirror::Sink {
   uint32_t frame_draw_ = 0;
   uint32_t skip_first_ = UINT32_MAX, skip_last_ = 0;
   DrawStats stats_;
+  // What the draws set in this frame's command buffer (#51): Draw skips the calls whose values
+  // are unchanged. Valid for one command buffer (`fence`, its frame); the present pass binds its
+  // own pipeline at the end of it.
+  struct RecordedState {
+    uint64_t fence = 0;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkViewport viewport{};
+    VkRect2D scissor{};
+    float depth_bias[2] = {};
+    float blend[4] = {};
+    uint32_t stencil[6] = {};  // compare, write masks and reference: front, then back
+    int32_t index_type = -1;   // VkIndexType of the bound shared buffer, -1: none
+  };
+  RecordedState recorded_;
   bool front_buffer_found_ = false;
   bool front_buffer_logged_ = false;
   uint64_t resolves_ = 0, resolves_skipped_ = 0, resolve_clears_ = 0, depth_resolves_ = 0;

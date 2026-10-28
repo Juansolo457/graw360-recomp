@@ -40,6 +40,11 @@ class PadBridge final : public rex::ui::ImGuiDialog {
     ApplyWindowScale(io);
     const uint16_t buttons = rex::kernel::xam::xeXamIsUIActive() ? Buttons() : 0;
     const uint16_t changed = static_cast<uint16_t>(buttons ^ previous_);
+    // ImGui only activates the focused button (Enter) while its nav cursor is visible, and a new
+    // window shows it only after an arrow key, so A alone on a fresh runtime dialog did nothing
+    // (seen in doax2-360-recomp, 2026-10-27). Any pad press in a dialog makes it visible, so the
+    // first A takes the default button, as on the console.
+    if (changed & buttons) ImGui::SetNavCursorVisible(true);
     for (const Mapping& m : kMappings) {
       if (changed & m.button) io.AddKeyEvent(m.key, (buttons & m.button) != 0);
     }

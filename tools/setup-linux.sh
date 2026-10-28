@@ -33,15 +33,19 @@ expected_tree=54ab5932e76ba1b8c9e454891c9ba52c16bfdda0  # after the last patch
 # requested program's path came out with glibc's free-list pointers in it). A fault no handler
 # claims crashes with a host backtrace instead of re-faulting forever, and RenderDoc is used only
 # when it's already in the process (SteamOS installs librenderdoc.so, so a plain dlopen loaded it
-# into every run, #51).
-linux_patches=(rexglue-bd833a2-launch-title-path rexglue-bd833a2-linux-crash-renderdoc)
-linux_tree=88fa3e8437490f8c7c0628370326eaa4561c4788
+# into every run, #51). Guest memory's shared segment is unlinked once created: named, it
+# outlived every hard exit in /dev/shm (a tmpfs of half the RAM), and a few restarts or
+# hand-overs filled it, the next guest page touched raising SIGBUS (F.E.A.R. 360's Deck crash).
+linux_patches=(rexglue-bd833a2-launch-title-path rexglue-bd833a2-linux-crash-renderdoc
+               rexglue-bd833a2-linux-shm-unlink)
+linux_tree=3a2a409da3864dbd34b93398d11c182feeb87706
 # Checkouts made by an earlier version of this script move forward by the patches added since,
 # rather than a new clone and full SDK build: "<tree> <patch>..." pairs, each tree -> the next.
 upgrades=("f9d5a19f96e3f2f7ed79ee5b08155eab343a5b9c rexglue-bd833a2-spirv-exp-adjust"
           "2fd253876480df2f8bf35e394a8163c2ba93c65c rexglue-bd833a2-spirv-implicit-gradients"
           "ecaf46d0c9f324b0a43468f20edda3a6e787ab78 rexglue-bd833a2-spirv-implicit-gradients"
-          "379fa50a65a1bbf7ec9e525f0316489759223e00 rexglue-bd833a2-linux-crash-renderdoc")
+          "379fa50a65a1bbf7ec9e525f0316489759223e00 rexglue-bd833a2-linux-crash-renderdoc"
+          "88fa3e8437490f8c7c0628370326eaa4561c4788 rexglue-bd833a2-linux-shm-unlink")
 force=0
 jobs=$(( $(nproc) > 2 ? $(nproc) - 2 : 1 ))
 while [[ $# -gt 0 ]]; do
@@ -140,5 +144,16 @@ else
   done
   [[ -x "$install/bin/rexglue" ]] || { echo "SDK build: $install/bin/rexglue is missing" >&2; exit 1; }
   echo "$linux_tree" > "$stamp"
+fi
+# Guest memory a build from before rexglue-bd833a2-linux-shm-unlink left in /dev/shm: that patch
+# stops new leaks but can't free these, which take RAM until removed or a reboot. Only a build
+# from before the patch names its memory there, so they are safe to remove once no ReXGlue game
+# is running (a running old build, GRAW's or another ReXGlue title's, still uses its own).
+leaked=(/dev/shm/xenia_memory_*)
+if [[ -e "${leaked[0]}" ]]; then
+  size=$(du -ch "${leaked[@]}" | tail -1 | cut -f1)
+  echo "Leftover guest memory from earlier runs: ${#leaked[@]} /dev/shm/xenia_memory_* ($size)."
+  echo "With no GRAW (or other ReXGlue) game running, remove them: rm /dev/shm/xenia_memory_*"
+  echo "(or reboot)."
 fi
 echo 'Setup done. Next: the disc files in port/assets (docs/SETUP.md), then tools/build-linux.sh.'

@@ -1,0 +1,16 @@
+diff --git a/src/core/memory_posix.cpp b/src/core/memory_posix.cpp
+index b52bf39..de959ea 100644
+--- a/src/core/memory_posix.cpp
++++ b/src/core/memory_posix.cpp
+@@ -483,6 +483,11 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
+     shm_unlink(full_path.c_str());
+     return kFileMappingHandleInvalid;
+   }
++  // The descriptor keeps the memory; without a name the kernel frees it when the process ends,
++  // however it ends. Named, it outlived every hard exit (the usual way a title ends) in
++  // /dev/shm, a tmpfs of half the RAM: a few restarts filled it, and the next guest page touched
++  // raised SIGBUS. Nothing opens the mapping again by name.
++  shm_unlink(full_path.c_str());
+   return static_cast<FileMappingHandle>(ret);
+ #endif
+ }

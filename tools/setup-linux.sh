@@ -40,7 +40,7 @@ expected_tree=12884d9f3cbcc28abdd88159c8ed93651bc9192d  # after the last patch
 # the process (#53 review).
 linux_patches=(rexglue-bd833a2-launch-title-path rexglue-bd833a2-linux-crash-renderdoc
                rexglue-bd833a2-linux-shm-unlink rexglue-bd833a2-linux-crash-watchdog)
-linux_tree=a881409bf9480ab179a287ddfc7c2c5ce80e45e8
+linux_tree=f481d5e488b14bcd76ed16c98e069da692f1fe67
 # Checkouts made by an earlier version of this script move forward by the patches added since,
 # rather than a new clone and full SDK build: "<tree> <patch>..." pairs, each tree -> the next.
 upgrades=("f9d5a19f96e3f2f7ed79ee5b08155eab343a5b9c rexglue-bd833a2-spirv-exp-adjust"
@@ -49,7 +49,7 @@ upgrades=("f9d5a19f96e3f2f7ed79ee5b08155eab343a5b9c rexglue-bd833a2-spirv-exp-ad
           "379fa50a65a1bbf7ec9e525f0316489759223e00 rexglue-bd833a2-linux-crash-renderdoc"
           "88fa3e8437490f8c7c0628370326eaa4561c4788 rexglue-bd833a2-linux-shm-unlink"
           "3a2a409da3864dbd34b93398d11c182feeb87706 rexglue-bd833a2-linux-crash-watchdog"
-          "4cfbf3788bf07152abe3511de5b6f9bbe3b534b2 rexglue-bd833a2-vexptefp-underflow")
+          "8b6704526e838bc5de441a142dade478a73f0450 rexglue-bd833a2-vexptefp-underflow")
 force=0
 jobs=$(( $(nproc) > 2 ? $(nproc) - 2 : 1 ))
 while [[ $# -gt 0 ]]; do

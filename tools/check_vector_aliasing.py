@@ -82,27 +82,33 @@ def main():
     by_mnemonic = collections.Counter()
     checked = collections.Counter()
     examples = {}
+
+    def finish(path, mnemonic, block):
+        if not mnemonic or not block:
+            return
+        if 'ctx.v' in ''.join(block):
+            checked[mnemonic.split()[0]] += 1
+        hits = check_block(mnemonic, block)
+        if mnemonic.startswith('vexptefp') and not any('cmpunord' in b for b in block):
+            hits.append((mnemonic.split()[-1].split(',')[0], 'no underflow clamp',
+                         block[0].strip()))
+        for hit in hits:
+            key = mnemonic.split()[0]
+            by_mnemonic[key] += 1
+            examples.setdefault(key, (path, mnemonic, hit))
+
     for path in sorted(glob.glob(os.path.join(root, '*_recomp.*.cpp'))):
         block, mnemonic = [], None
         with open(path, encoding='utf-8', errors='replace') as f:
             for line in f:
                 s = line.strip()
                 if s.startswith('// ') and re.match(r'// [a-z][\w.]*( |$)', s):
-                    if mnemonic and block:
-                        if 'ctx.v' in ''.join(block):
-                            checked[mnemonic.split()[0]] += 1
-                        hits = check_block(mnemonic, block)
-                        if mnemonic.startswith('vexptefp') and not any(
-                                'cmpunord' in b for b in block):
-                            hits.append((mnemonic.split()[-1].split(',')[0], 'no underflow clamp',
-                                         block[0].strip()))
-                        for hit in hits:
-                            key = mnemonic.split()[0]
-                            by_mnemonic[key] += 1
-                            examples.setdefault(key, (path, mnemonic, hit))
+                    finish(path, mnemonic, block)
                     mnemonic, block = s[3:], []
                 elif mnemonic is not None:
                     block.append(line)
+        # The file's last instruction ends with the file.
+        finish(path, mnemonic, block)
     for key, count in by_mnemonic.most_common():
         path, mnemonic, (reg, lane, line) = examples[key]
         print(f'{count:6} {key:12} e.g. {mnemonic}  ({reg} {lane}): {line[:110]}')

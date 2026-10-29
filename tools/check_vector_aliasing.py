@@ -6,6 +6,10 @@ Each instruction's translation starts with a `// mnemonic operands` comment. Wit
 instruction, the source operands must be read before the destination is written, so a read of
 bytes the same instruction already wrote is a hazard (the destination aliases a source).
 
+It also reports vexptefp translated without the clamp of tools/patches/
+rexglue-bd833a2-vexptefp-underflow.patch: the stock code generator built 2^x's exponent as
+(floor(x) + 127) << 23, which wraps below 2^-127 (2^-130 came out as -8.5e37, not 0).
+
     python tools/check_vector_aliasing.py port-yeti/generated/yeti_final_xenon
 
 Exits 1 when it finds a hazard (tools/build.ps1 relies on that).
@@ -87,7 +91,12 @@ def main():
                     if mnemonic and block:
                         if 'ctx.v' in ''.join(block):
                             checked[mnemonic.split()[0]] += 1
-                        for hit in check_block(mnemonic, block):
+                        hits = check_block(mnemonic, block)
+                        if mnemonic.startswith('vexptefp') and not any(
+                                'cmpunord' in b for b in block):
+                            hits.append((mnemonic.split()[-1].split(',')[0], 'no underflow clamp',
+                                         block[0].strip()))
+                        for hit in hits:
                             key = mnemonic.split()[0]
                             by_mnemonic[key] += 1
                             examples.setdefault(key, (path, mnemonic, hit))
@@ -98,7 +107,7 @@ def main():
         path, mnemonic, (reg, lane, line) = examples[key]
         print(f'{count:6} {key:12} e.g. {mnemonic}  ({reg} {lane}): {line[:110]}')
     if not by_mnemonic:
-        print('no read-after-write hazards found')
+        print('no read-after-write hazards or unclamped vexptefp found')
     print(f'checked {sum(checked.values())} vector instructions ({len(checked)} mnemonics)')
     return 1 if by_mnemonic else 0
 

@@ -5,9 +5,10 @@
 #   2. third_party/rexglue-sdk-bd833a2: ReXGlue's source at that nightly's commit with this
 #      project's patches (tools/patches), checked against the exact source tree the release was
 #      built from;
-#   3. from that source, the patched code generator (rexgluerd.exe: vpkd3d128, docs/TACMAP.md)
-#      and the campaign's renderer plugin (rexgpu-xenosrd.dll: resolves into freed memory, vblank
-#      pacing, gpu_skip_draws for the native renderer). tools/build.ps1 uses both.
+#   3. from that source, the patched code generator (rexgluerd.exe: vpkd3d128, docs/TACMAP.md;
+#      vexptefp below 2^-127) and the campaign's renderer plugin (rexgpu-xenosrd.dll: resolves
+#      into freed memory, vblank pacing, gpu_skip_draws for the native renderer). tools/build.ps1
+#      uses both.
 #   pwsh -NoProfile -File tools/setup.ps1            # all of it (skips what is there already)
 #   pwsh -NoProfile -File tools/setup.ps1 -Force     # replace an existing SDK source checkout
 [CmdletBinding()]
@@ -25,18 +26,32 @@ $sdkCommit = 'bd833a2ab69d305f99ddf57418fc38ffec8af93d'
 # In order; then pgr4-native's shader translator changes the native renderer compiles against
 # (docs/NATIVE_RENDERER.md), a switch for 0021 (--graw_native_implicit_gradients), the SPIR-V
 # translator's texture exponent bias read from fetch constant word 3 (the Vulkan renderers), and
-# 0021 for the SPIR-V translator (the native Vulkan renderer, docs/VULKAN_RENDERER.md).
+# 0021 for the SPIR-V translator (the native Vulkan renderer, docs/VULKAN_RENDERER.md). Last, the
+# code generator's vexptefp (2^x estimate): it built the exponent as (floor(x) + 127) << 23, which
+# wraps below 2^-127 (2^-130 came out as -8.5e37) where the hardware gives 0 (found in
+# lotr-conquest-360-recomp's audio; GRAW uses it at 10 sites).
 $sdkPatches = @('rexglue-bd833a2-vpkd3d128-alias', 'rexglue-bd833a2-freed-page-resolve',
                 'rexglue-bd833a2-vblank-pacing', 'rexglue-bd833a2-gpu-skip-draws',
                 'pgr4-native/0021-gpu-sample-computed-LOD-pixel-shader-fetches-with-sa',
                 'pgr4-native/0022-gpu-add-a-pixel-shader-modification-for-textures-kno',
                 'rexglue-bd833a2-implicit-gradients-switch', 'rexglue-bd833a2-spirv-exp-adjust',
-                'rexglue-bd833a2-spirv-implicit-gradients')
-$expectedTree = '54ab5932e76ba1b8c9e454891c9ba52c16bfdda0'   # after the last patch
+                'rexglue-bd833a2-spirv-implicit-gradients', 'rexglue-bd833a2-vexptefp-underflow')
+$expectedTree = '12884d9f3cbcc28abdd88159c8ed93651bc9192d'   # after the last patch
+# Checkouts made by an earlier version of this script move forward by the patches added since,
+# rather than a new clone: "<tree> <patch>..." pairs, each tree -> the next (as setup-linux.sh).
+$upgrades = @('54ab5932e76ba1b8c9e454891c9ba52c16bfdda0 rexglue-bd833a2-vexptefp-underflow')
 
 function Invoke-Git {
     & git.exe @args
     if ($LASTEXITCODE) { throw "git $($args -join ' ') failed ($LASTEXITCODE)." }
+}
+
+function Add-SdkPatch([string]$name) {
+    # The patches are LF; a checkout may have given them CRLF.
+    $text = [IO.File]::ReadAllText((Join-Path $PSScriptRoot "patches/$name.patch")) -replace "`r`n", "`n"
+    $tmp = New-TemporaryFile
+    [IO.File]::WriteAllText($tmp, $text)
+    try { Invoke-Git -C $sdk apply $tmp.FullName } finally { Remove-Item $tmp }
 }
 
 # Prerequisites.
@@ -97,6 +112,15 @@ if (Test-Path $sdk) {
     # -Force's job, since it may hold someone's own changes.
     $head = & git -C $sdk rev-parse --verify --quiet 'HEAD^{tree}' 2>$null
     $changes = & git -C $sdk status --porcelain --ignore-submodules=all 2>$null
+    foreach ($upgrade in $upgrades) {
+        $from, $names = $upgrade -split ' '
+        if ($head -ne $from -or $changes) { continue }
+        Write-Host "SDK source: adding patches since the last setup: $names"
+        foreach ($name in $names) { Add-SdkPatch $name }
+        Invoke-Git -C $sdk add -A
+        Invoke-Git -C $sdk -c user.name=graw360-recomp -c user.email=setup@localhost commit --quiet -m "graw360-recomp patches: $names"
+        $head = & git -C $sdk rev-parse 'HEAD^{tree}'
+    }
     if ($head -ne $expectedTree -or $changes) {
         throw "SDK source: $sdk is incomplete, on another commit or changed by hand. Run tools/setup.ps1 -Force to replace it."
     }
@@ -109,13 +133,7 @@ if (Test-Path $sdk) {
     Invoke-Git -C $sdk config core.longpaths true
     Invoke-Git -C $sdk checkout --quiet --detach $sdkCommit
     Write-Host "SDK source: applying $($sdkPatches.Count) patches"
-    foreach ($name in $sdkPatches) {
-        # The patches are LF; a checkout may have given them CRLF.
-        $text = [IO.File]::ReadAllText((Join-Path $PSScriptRoot "patches/$name.patch")) -replace "`r`n", "`n"
-        $tmp = New-TemporaryFile
-        [IO.File]::WriteAllText($tmp, $text)
-        try { Invoke-Git -C $sdk apply $tmp.FullName } finally { Remove-Item $tmp }
-    }
+    foreach ($name in $sdkPatches) { Add-SdkPatch $name }
     Invoke-Git -C $sdk add -A
     $tree = & git -C $sdk write-tree
     if ($tree -ne $expectedTree) {
@@ -148,7 +166,10 @@ foreach ($repo in $repos) {
 # 3. Build the patched code generator and the campaign's renderer plugin.
 $out = Join-Path $sdk 'out\win-amd64\RelWithDebInfo'
 $built = @('rexgluerd.exe', 'rexgpu-xenosrd.dll') | Where-Object { !(Test-Path (Join-Path $out $_)) }
-if (!$built -and !$Force) {
+# The build records the source tree it was built from, so a new patch rebuilds it.
+$stamp = Join-Path $out 'graw360-sdk-tree'
+$stampTree = if (Test-Path $stamp) { (Get-Content $stamp -Raw).Trim() }
+if (!$built -and !$Force -and $stampTree -eq $expectedTree) {
     Write-Host "SDK tools: built ($out)"
 } else {
     Import-Module (Join-Path $vs 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
@@ -166,5 +187,6 @@ if (!$built -and !$Force) {
     foreach ($f in 'rexgluerd.exe', 'rexgpu-xenosrd.dll') {
         if (!(Test-Path (Join-Path $out $f))) { throw "SDK build: $f is missing in $out." }
     }
+    Set-Content -Path $stamp -Value $expectedTree -NoNewline
 }
 Write-Host 'Setup done. Next: tools/extract.ps1 with your disc image, then tools/build.ps1 (docs/SETUP.md).'

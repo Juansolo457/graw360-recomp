@@ -71,21 +71,23 @@ try {
     # The SDK's prebuilt code generator mistranslates vpkd3d128 with the destination aliasing a
     # source (the sign of element 0 is lost: the tactical map and the Cross-Com feed draw off
     # screen, #3, #31). docs/TACMAP.md has the patched generator; it regenerates when the stock
-    # one produced the hazard, so a manifest change can't bring the bug back unnoticed.
+    # one produced the hazard, so a manifest change can't bring the bug back unnoticed. The same
+    # check finds vexptefp without the underflow clamp (tools/patches/
+    # rexglue-bd833a2-vexptefp-underflow.patch), so code generated before that patch regenerates.
     $generated = Join-Path $port "generated/$outDir"
     $checker = Join-Path $PSScriptRoot 'check_vector_aliasing.py'
     & python -I $checker $generated | Out-Null
     if ($LASTEXITCODE) {
         $patched = Join-Path $root 'third_party/rexglue-sdk-bd833a2/out/win-amd64/RelWithDebInfo/rexgluerd.exe'
         if (!(Test-Path $patched)) {
-            throw "The generated code has the vpkd3d128 aliasing bug (tools/check_vector_aliasing.py $generated) and the patched code generator isn't built: see docs/TACMAP.md."
+            throw "The generated code has the vpkd3d128 aliasing bug or an unclamped vexptefp (tools/check_vector_aliasing.py $generated) and the patched code generator isn't built: run tools/setup.ps1 (docs/TACMAP.md)."
         }
-        Write-Host 'Regenerating with the patched code generator (vpkd3d128 aliasing, docs/TACMAP.md)'
+        Write-Host 'Regenerating with the patched code generator (vpkd3d128 aliasing, vexptefp underflow; docs/TACMAP.md)'
         $manifest = Get-ChildItem $port -Filter '*_manifest.toml' | Select-Object -First 1
         & $patched codegen --ignore-stamp $manifest.FullName
         if ($LASTEXITCODE) { throw 'Patched code generation failed.' }
         & python -I $checker $generated
-        if ($LASTEXITCODE) { throw 'The patched code generator still left vector aliasing hazards.' }
+        if ($LASTEXITCODE) { throw 'The patched code generator still left vector aliasing hazards or an unclamped vexptefp: run tools/setup.ps1 to rebuild it.' }
     }
     if ($firstTime) {
         & $cmake --preset $preset $prefix @archFlags

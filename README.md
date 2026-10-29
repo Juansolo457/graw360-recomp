@@ -22,9 +22,10 @@ disc holds three programs, each recompiled separately, and the front end hands o
 as the console did:
 
 - the front end (start screen, menus) works;
-- the campaign plays, with a native renderer: Direct3D 12 on Windows (up to 4K internal
-  resolution, true 120 fps with character animation at the right speed) and Vulkan on Linux and
-  the Steam Deck (a steady 30 fps there), with the Cross-Com feed and the tactical map. It hasn't
+- the campaign plays, with a native renderer: Direct3D 12 on Windows (true 120 fps with
+  character animation at the right speed) and Vulkan on Linux and the Steam Deck (a steady 30 fps
+  there), with the Cross-Com feed and the tactical map. It draws at the 360's 1280×720 for now;
+  the emulated renderer goes up to 4K internal resolution. It hasn't
   been played through end to end yet; [#36](https://github.com/Juansolo457/graw360-recomp/issues/36)
   tracks the road to 1.0, and [#38](https://github.com/Juansolo457/graw360-recomp/issues/38) the
   Linux build;
@@ -47,7 +48,7 @@ pwsh -NoProfile -File tools/extract.ps1 -Iso 'D:\path\to\your\graw.iso'   # ~4.8
 pwsh -NoProfile -File tools/build.ps1                                        # front end
 pwsh -NoProfile -File tools/build.ps1 -Project port-yeti                     # campaign
 pwsh -NoProfile -File tools/build.ps1 -Project port-mp                       # Instant Action / multiplayer
-pwsh -NoProfile -File tools/launch.ps1 -Native -Scale 3 -Fps 120             # play: 4K, 120 fps
+pwsh -NoProfile -File tools/launch.ps1 -Native -Fps 120                      # play: native renderer, 120 fps
 ```
 
 Supported disc: USA/Europe multilingual, title `555307D5` (the build checks each executable's

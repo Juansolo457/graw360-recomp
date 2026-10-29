@@ -64,12 +64,18 @@ first_time=0
 # Codegen first (a no-op when nothing changed), then reconfigure once if the generated sources
 # didn't exist yet (the recomp target only appears once they do), then build.
 cmake --build "$build" --parallel "$jobs" --target "${name}_codegen"
-# The installed code generator is the patched one (vpkd3d128, docs/TACMAP.md); the check keeps a
-# stock generator from bringing the bug back unnoticed.
-python3 -I "$root/tools/check_vector_aliasing.py" "generated/$out" >/dev/null || {
-  echo "The generated code has the vpkd3d128 aliasing bug: is the SDK patched? (docs/TACMAP.md)" >&2
-  exit 1
-}
+# The installed code generator is the patched one (vpkd3d128, docs/TACMAP.md; vexptefp underflow).
+# Code generated before a generator patch is regenerated (the codegen stamp only follows the
+# manifest and the executable), and a stock generator can't bring either bug back unnoticed.
+if ! python3 -I "$root/tools/check_vector_aliasing.py" "generated/$out" >/dev/null; then
+  echo "Regenerating with the patched code generator (vpkd3d128 aliasing, vexptefp underflow)"
+  "$sdk_install/bin/rexglue" codegen --ignore-stamp "$port/${name}_manifest.toml"
+  python3 -I "$root/tools/check_vector_aliasing.py" "generated/$out" >/dev/null || {
+    echo "The generated code has the vpkd3d128 aliasing bug or an unclamped vexptefp: is the SDK" \
+         "patched? (tools/setup-linux.sh, docs/TACMAP.md)" >&2
+    exit 1
+  }
+fi
 if [[ $first_time -eq 1 ]]; then cmake "${args[@]}"; fi
 cmake --build "$build" --parallel "$jobs"
 # The program finds its shared libraries beside itself ($ORIGIN): the SDK stages the renderer

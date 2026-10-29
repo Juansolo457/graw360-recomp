@@ -8,7 +8,7 @@
 #   2. that SDK built and installed into its out/install/linux-amd64, RelWithDebInfo and Release:
 #      the libraries the game links, the patched renderer plugin (resolves into freed memory,
 #      vblank pacing, gpu_skip_draws) and the patched code generator (vpkd3d128,
-#      docs/TACMAP.md), which the SDK installs from Release only.
+#      docs/TACMAP.md; vexptefp below 2^-127), which the SDK installs from Release only.
 # Needs clang (20 or later), CMake 3.25+, Ninja, git, python3 and the SDK's system libraries
 # (docs/SETUP.md, "Linux"). The SDK build takes a while the first time (FFmpeg among others).
 #   tools/setup-linux.sh             # all of it (skips what is there already)
@@ -27,8 +27,8 @@ sdk_patches=(rexglue-bd833a2-vpkd3d128-alias rexglue-bd833a2-freed-page-resolve
              pgr4-native/0021-gpu-sample-computed-LOD-pixel-shader-fetches-with-sa
              pgr4-native/0022-gpu-add-a-pixel-shader-modification-for-textures-kno
              rexglue-bd833a2-implicit-gradients-switch rexglue-bd833a2-spirv-exp-adjust
-             rexglue-bd833a2-spirv-implicit-gradients)
-expected_tree=54ab5932e76ba1b8c9e454891c9ba52c16bfdda0  # after the last patch
+             rexglue-bd833a2-spirv-implicit-gradients rexglue-bd833a2-vexptefp-underflow)
+expected_tree=12884d9f3cbcc28abdd88159c8ed93651bc9192d  # after the last patch
 # Then, in their own commit: XamLoaderLaunchTitle kept a string_view to a freed temporary (the
 # requested program's path came out with glibc's free-list pointers in it). A fault no handler
 # claims crashes with a host backtrace instead of re-faulting forever, and RenderDoc is used only
@@ -36,16 +36,20 @@ expected_tree=54ab5932e76ba1b8c9e454891c9ba52c16bfdda0  # after the last patch
 # into every run, #51). Guest memory's shared segment is unlinked once created: named, it
 # outlived every hard exit in /dev/shm (a tmpfs of half the RAM), and a few restarts or
 # hand-overs filled it, the next guest page touched raising SIGBUS (F.E.A.R. 360's Deck crash).
+# The crash report's backtrace runs under a 5 s alarm, so a hang inside the unwinder still ends
+# the process (#53 review).
 linux_patches=(rexglue-bd833a2-launch-title-path rexglue-bd833a2-linux-crash-renderdoc
-               rexglue-bd833a2-linux-shm-unlink)
-linux_tree=3a2a409da3864dbd34b93398d11c182feeb87706
+               rexglue-bd833a2-linux-shm-unlink rexglue-bd833a2-linux-crash-watchdog)
+linux_tree=f481d5e488b14bcd76ed16c98e069da692f1fe67
 # Checkouts made by an earlier version of this script move forward by the patches added since,
 # rather than a new clone and full SDK build: "<tree> <patch>..." pairs, each tree -> the next.
 upgrades=("f9d5a19f96e3f2f7ed79ee5b08155eab343a5b9c rexglue-bd833a2-spirv-exp-adjust"
           "2fd253876480df2f8bf35e394a8163c2ba93c65c rexglue-bd833a2-spirv-implicit-gradients"
           "ecaf46d0c9f324b0a43468f20edda3a6e787ab78 rexglue-bd833a2-spirv-implicit-gradients"
           "379fa50a65a1bbf7ec9e525f0316489759223e00 rexglue-bd833a2-linux-crash-renderdoc"
-          "88fa3e8437490f8c7c0628370326eaa4561c4788 rexglue-bd833a2-linux-shm-unlink")
+          "88fa3e8437490f8c7c0628370326eaa4561c4788 rexglue-bd833a2-linux-shm-unlink"
+          "3a2a409da3864dbd34b93398d11c182feeb87706 rexglue-bd833a2-linux-crash-watchdog"
+          "8b6704526e838bc5de441a142dade478a73f0450 rexglue-bd833a2-vexptefp-underflow")
 force=0
 jobs=$(( $(nproc) > 2 ? $(nproc) - 2 : 1 ))
 while [[ $# -gt 0 ]]; do

@@ -60,7 +60,13 @@ pwsh -NoProfile -File tools/setup.ps1
      against.
    - `implicit-gradients-switch`: lets `--graw_native_implicit_gradients=false` turn 0021 off
      (a Steam Deck shimmer test).
-3. From that source, it builds the patched code generator and the campaign's renderer plugin.
+   - `spirv-exp-adjust` and `spirv-implicit-gradients`: the same texture fixes for the Vulkan
+     shader translator ([VULKAN_RENDERER.md](VULKAN_RENDERER.md)).
+   - `vexptefp-underflow`: a code generator fix; `vexptefp` (2^x) gave huge values instead of 0
+     below 2^-127 (found in lotr-conquest-360-recomp's audio; GRAW has 10 of them).
+3. From that source, it builds the patched code generator and the campaign's renderer plugin. A
+   checkout made by an earlier version gets the patches added since, and the tools are rebuilt
+   when the patched source changed; the next build regenerates the code.
 
 ## 3. Extract your disc
 
@@ -111,12 +117,13 @@ it starts the right program. `-Native` draws the campaign with its own Direct3D 
 
 | Option | Effect |
 |---|---|
-| `-Scale 1..3` | internal resolution: 1 = 1280×720 (the console's), 2 = 2560×1440 (default), 3 = 3840×2160 |
+| `-Scale 1..3` | the emulated renderer's internal resolution: 1 = 1280×720 (the console's), 2 = 2560×1440 (default), 3 = 3840×2160. The native renderer draws at 1280×720 for now. |
 | `-Fps 120` | the campaign at 120 fps (with `-Native`); the default is the console's pacing |
 | `-Console` | as the 360 draws it: 720p, the game's own texture filtering, 30 fps |
 | `-Windowed` | a window instead of full screen |
 
-For example, `tools/launch.ps1 -Native -Scale 3 -Fps 120` gives 4K at 120 fps.
+For example, `tools/launch.ps1 -Native -Fps 120` gives the native renderer at 120 fps, and
+`tools/launch.ps1 -Scale 3` the emulated renderer at 4K.
 
 Saves stay in `port/user`.
 
@@ -126,8 +133,9 @@ Saves stay in `port/user`.
   above. Only those executables are supported.
 - **"Toolchain missing", or a warning that the patched renderer plugin isn't built:** run
   `tools/setup.ps1` again (with `-Force` to start the SDK source over).
-- **"The generated code has the vpkd3d128 aliasing bug":** the patched code generator isn't
-  built. Run `tools/setup.ps1`.
+- **"The generated code has the vpkd3d128 aliasing bug or an unclamped vexptefp":** the patched
+  code generator isn't built, or was built before the last code generator patch. Run
+  `tools/setup.ps1` (Linux: `tools/setup-linux.sh`).
 - **A crash:** the game writes `crash-<time>.txt` to a `logs` folder (`port/logs` or
   `port-yeti/logs`), next to each run's log. Please attach both to an issue on GitHub.
 

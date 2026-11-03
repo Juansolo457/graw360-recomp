@@ -41,6 +41,11 @@ Test 13 also: 29.9 fps average, 33.3 ms median, 36.7 ms at the 99th percentile. 
 under 27 frames, most of the worst in the first 2.5 minutes and around minute 31. What they were
 isn't known yet.
 
+A row's `gpu_*` columns and `swap_fence_us` describe the frame before it: they're read when the next
+slot's fence signals, and with two slots that's the previous frame's. The GPU columns below are
+aligned to the frame that drew those draws. The first row's `guest_*` and `render_*` usage columns
+are cumulative since the thread started, because they have no baseline yet: skip that row.
+
 Medians by draws, in ms:
 
 | Draws | Frames | Over 40 ms | GPU | GPU idle before it | Game thread CPU | Render thread CPU |
@@ -48,17 +53,18 @@ Medians by draws, in ms:
 | 300-1000 | 53,118 | 0.17% | 7.5 | 25.7 | 10.8 | 3.0 |
 | 1000-1500 | 12,051 | 0.34% | 9.2 | 24.1 | 14.0 | 4.4 |
 | 1500-2000 | 6,459 | 1.24% | 14.6 | 18.6 | 16.7 | 6.3 |
-| 2000-2500 | 3,519 | 5.51% | 19.5 | 13.3 | 18.7 | 7.5 |
-| 2500-3000 | 436 | 13.07% | 22.6 | 8.9 | 19.8 | 8.4 |
-| 3000+ | 15 | 40% | 21.4 | 0.7 | 24.0 | 11.2 |
+| 2000-2500 | 3,519 | 5.51% | 19.5 | 13.1 | 18.7 | 7.5 |
+| 2500-3000 | 436 | 13.07% | 22.7 | 8.3 | 19.8 | 8.4 |
+| 3000+ | 15 | 40% | 21.4 | 0.4 | 24.0 | 11.2 |
 
 What this changes:
 - **The game thread isn't over budget.** It needs 24 ms of CPU at 3000+ draws. The older
   `guest_begin` to swap figures (42 ms there) include waits. It barely waits for a CPU core either
   (medians under 64 µs), and the limiter and ring waits are 0 at the median.
-- **Frames over 40 ms point at the GPU.** Their median GPU figure is 38.2 ms against 7.9 ms for all
-  frames, and `swap_fence_us` is 7.8 ms against 6 µs. A caveat: the GPU figure can include a wait
-  for the swapchain image, so this isn't settled.
+- **Frames over 40 ms may point at the GPU, but this isn't settled.** Such a frame waits 7.8 ms on
+  the previous frame's fence (6 µs for all frames), and that previous frame's GPU figure is 38.2 ms
+  (7.9 ms for all frames). The slow frame's own GPU figure is only 19.9 ms, starting 0.5 ms after the
+  one before. The 38.2 ms can include a wait for the swapchain image, so it may not all be GPU work.
 - **The GPU clock stays low.** It averages 437-494 MHz per five minutes at 13-14 W, under the 15 W
   cap. The sensor samples once a second, so it can't show a clock ramping up for one slow frame.
   Whether a slow clock causes the slow frames is the next thing to check.

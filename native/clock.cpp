@@ -72,7 +72,8 @@ uint64_t TicksToNs(uint64_t ticks) { return uint64_t(double(ticks) * Calibrated(
 ThreadUsage ThreadUsageNow() {
   ThreadUsage u;
 #if defined(_WIN32)
-  // Cycle counts run on the time-stamp counter here: GetThreadTimes only moves in 15.6 ms steps.
+  // An estimate: Windows doesn't promise cycle counts run at the time-stamp counter's rate. The
+  // calls that return time (GetThreadTimes) only move in 15.6 ms steps, too coarse for one frame.
   ULONG64 cycles = 0;
   if (QueryThreadCycleTime(GetCurrentThread(), &cycles)) u.cpu_ns = TicksToNs(cycles);
   if (QueryProcessCycleTime(GetCurrentProcess(), &cycles)) u.process_cpu_ns = TicksToNs(cycles);

@@ -35,4 +35,15 @@ uint64_t NowNs();
 // A tick count (a difference of Ticks()) in nanoseconds.
 uint64_t TicksToNs(uint64_t ticks);
 
+// The calling thread's use of the CPU so far, for the frame CSV: a syscall or three, so once per
+// frame at most. Linux only: runq_ns, the time it was ready to run but had no CPU (0 where the
+// kernel doesn't report it), blocks, how often it gave up the CPU to wait, and preempts, how often
+// it was taken off it. process_cpu_ns: all of the process's threads together.
+struct ThreadUsage {
+  uint64_t cpu_ns = 0, runq_ns = 0, blocks = 0, preempts = 0, process_cpu_ns = 0;
+};
+ThreadUsage ThreadUsageNow();
+// What `now` adds to `begin` (zeros for a counter that went backwards: another thread's `begin`).
+ThreadUsage ThreadUsageSince(const ThreadUsage& begin, const ThreadUsage& now);
+
 }  // namespace graw::native

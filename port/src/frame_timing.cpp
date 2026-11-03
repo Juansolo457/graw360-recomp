@@ -11,6 +11,7 @@
 //    tools/perf_report.py reads.
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -73,6 +74,14 @@ void GrawSleepUs(int64_t us);  // below
 
 namespace {
 
+// What the frame limiter and D3D's wait for ring space held the game for, for the frame log.
+std::atomic<uint64_t> g_limit_wait_ns{0}, g_ring_wait_ns{0};
+
+uint64_t NsSince(Clock::time_point start) {
+  const auto elapsed = Clock::now() - start;
+  return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count());
+}
+
 // Waits until the next frame is due. Deadlines step by whole periods, so short sleeps' jitter
 // doesn't drift the rate; after a frame longer than a period the schedule restarts from now
 // instead of letting the next frames catch up.
@@ -83,16 +92,22 @@ void LimitFrameRate() {
   static Clock::time_point next{};
   Clock::time_point now = Clock::now();
   if (next != Clock::time_point{} && now < next) {
+    const Clock::time_point wait_start = now;
     // The timer wakes up to ~0.2 ms late: sleep to 0.5 ms before the deadline, then spin.
     const int64_t sleep_us =
         std::chrono::duration_cast<std::chrono::microseconds>(next - now).count() - 500;
     GrawSleepUs(sleep_us);
     while ((now = Clock::now()) < next) std::this_thread::yield();
+    g_limit_wait_ns.fetch_add(NsSince(wait_start), std::memory_order_relaxed);
   }
   next = next != Clock::time_point{} && now - next < period ? next + period : now + period;
 }
 
 }  // namespace
+
+// The frame log (native/renderer.cpp): the time since the last call.
+uint64_t GrawTakeLimitWaitNs() { return g_limit_wait_ns.exchange(0, std::memory_order_relaxed); }
+uint64_t GrawTakeRingWaitNs() { return g_ring_wait_ns.exchange(0, std::memory_order_relaxed); }
 
 void GrawFrameMark() {
   LimitFrameRate();
@@ -191,16 +206,18 @@ void GrawSleepUs(int64_t us) {
     WaitForSingleObject(timer, INFINITE);
   }
 }
-
-void GrawRingWaitYield() { GrawSleepUs(REXCVAR_GET(graw_ring_wait_sleep_us)); }
 #else
 void GrawSleepUs(int64_t us) {
   // nanosleep: sub-millisecond on Linux.
   if (us > 0) std::this_thread::sleep_for(std::chrono::microseconds(us));
 }
-
-void GrawRingWaitYield() { GrawSleepUs(REXCVAR_GET(graw_ring_wait_sleep_us)); }
 #endif
+
+void GrawRingWaitYield() {
+  const Clock::time_point start = Clock::now();
+  GrawSleepUs(REXCVAR_GET(graw_ring_wait_sleep_us));
+  g_ring_wait_ns.fetch_add(NsSince(start), std::memory_order_relaxed);
+}
 
 #include <rex/ppc/context.h>
 

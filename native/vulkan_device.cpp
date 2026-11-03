@@ -52,6 +52,7 @@ VulkanDevice::~VulkanDevice() {
   if (device_) {
     fn_.vkDeviceWaitIdle(device_);
     DestroySwapchainObjects();
+    if (timestamps_) fn_.vkDestroyQueryPool(device_, timestamps_, nullptr);
     for (Frame& f : frames_) {
       if (f.acquired) fn_.vkDestroySemaphore(device_, f.acquired, nullptr);
       if (f.fence) fn_.vkDestroyFence(device_, f.fence, nullptr);
@@ -81,6 +82,7 @@ bool VulkanDevice::Initialize(void* game_window, bool vsync, bool validation) {
   vsync_ = vsync;
   if (!LoadLoader() || !CreateInstance(validation) || !PickDevice() || !CreateDevice())
     return false;
+  CreateTimestamps();
   for (Frame& f : frames_) {
     VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pool.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
@@ -535,28 +537,80 @@ bool VulkanDevice::CreateSwapchain() {
   return true;
 }
 
+void VulkanDevice::CreateTimestamps() {
+  VkPhysicalDeviceProperties props;
+  fn_.vkGetPhysicalDeviceProperties(physical_, &props);
+  uint32_t qn = 0;
+  fn_.vkGetPhysicalDeviceQueueFamilyProperties(physical_, &qn, nullptr);
+  std::vector<VkQueueFamilyProperties> queues(qn);
+  fn_.vkGetPhysicalDeviceQueueFamilyProperties(physical_, &qn, queues.data());
+  const uint32_t bits = queues[queue_family_].timestampValidBits;
+  VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+  qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+  qi.queryCount = kFramesInFlight * kTimestampsPerFrame;
+  if (!bits || props.limits.timestampPeriod <= 0.0f ||
+      fn_.vkCreateQueryPool(device_, &qi, nullptr, &timestamps_) != VK_SUCCESS) {
+    timestamps_ = VK_NULL_HANDLE;
+    REXLOG_WARN("GRAW native Vulkan: no GPU timestamps, the frame log's gpu_ columns stay 0");
+    return;
+  }
+  timestamp_ns_ = props.limits.timestampPeriod;
+  timestamp_mask_ = bits >= 64 ? ~uint64_t(0) : (uint64_t(1) << bits) - 1;
+}
+
+void VulkanDevice::ReadTimestamps() {
+  uint64_t t[kTimestampsPerFrame];
+  if (fn_.vkGetQueryPoolResults(device_, timestamps_, slot_ * kTimestampsPerFrame,
+                                kTimestampsPerFrame, sizeof(t), t, sizeof(uint64_t),
+                                VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
+    return;
+  const auto ms = [this](uint64_t from, uint64_t to) {
+    return double((to - from) & timestamp_mask_) * timestamp_ns_ / 1e6;
+  };
+  times_.gpu_ms = ms(t[0], t[2]);
+  times_.gpu_present_ms = ms(t[1], t[2]);
+  times_.gpu_gap_ms = last_frame_end_ && t[0] > last_frame_end_ ? ms(last_frame_end_, t[0]) : 0;
+  last_frame_end_ = t[2];
+}
+
+void VulkanDevice::WriteTimestamp(VkCommandBuffer cmd, VkPipelineStageFlagBits stage,
+                                  uint32_t index) {
+  if (timestamps_)
+    fn_.vkCmdWriteTimestamp(cmd, stage, timestamps_, slot_ * kTimestampsPerFrame + index);
+}
+
 bool VulkanDevice::BeginSlot() {
   Frame& f = frames_[slot_];
+  times_.fence_ns = 0;
   if (f.number) {
+    const uint64_t t0 = NowNs();
     if (!Check(fn_.vkWaitForFences(device_, 1, &f.fence, VK_TRUE, UINT64_MAX), "vkWaitForFences"))
       return false;
+    times_.fence_ns = NowNs() - t0;
     completed_ = std::max(completed_, f.number);
     fn_.vkResetFences(device_, 1, &f.fence);
+    if (timestamps_) ReadTimestamps();
   }
   fn_.vkResetCommandPool(device_, f.pool, 0);
   VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  return Check(fn_.vkBeginCommandBuffer(f.cmd, &bi), "vkBeginCommandBuffer");
+  if (!Check(fn_.vkBeginCommandBuffer(f.cmd, &bi), "vkBeginCommandBuffer")) return false;
+  if (timestamps_)
+    fn_.vkCmdResetQueryPool(f.cmd, timestamps_, slot_ * kTimestampsPerFrame, kTimestampsPerFrame);
+  WriteTimestamp(f.cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0);
+  return true;
 }
 
 bool VulkanDevice::EndFrame(bool present, PresentPass& pass) {
   times_.presented = false;
-  times_.submit_ns = times_.present_ns = 0;
+  times_.submit_ns = times_.present_ns = times_.acquire_ns = 0;
   Frame& f = frames_[slot_];
   uint32_t image = UINT32_MAX;
   if (present && swapchain_) {
+    const uint64_t acquire_start = NowNs();
     VkResult r = fn_.vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, f.acquired,
                                            VK_NULL_HANDLE, &image);
+    times_.acquire_ns = NowNs() - acquire_start;
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
       // Resized: a new swapchain, shown from the next frame.
       fn_.vkDeviceWaitIdle(device_);
@@ -567,6 +621,7 @@ bool VulkanDevice::EndFrame(bool present, PresentPass& pass) {
       return Check(r, "vkAcquireNextImageKHR");
     }
   }
+  WriteTimestamp(f.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
   if (image != UINT32_MAX) {
     VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -588,6 +643,7 @@ bool VulkanDevice::EndFrame(bool present, PresentPass& pass) {
                              VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1,
                              &b);
   }
+  WriteTimestamp(f.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 2);
   if (!Check(fn_.vkEndCommandBuffer(f.cmd), "vkEndCommandBuffer")) return false;
   const uint64_t t0 = NowNs();
   const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;

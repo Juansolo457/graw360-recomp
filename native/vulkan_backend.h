@@ -83,7 +83,7 @@ class VulkanBackend final : public Backend, public GuestMemoryMirror::Sink {
   uint64_t texture_count() const override { return 0; }
   bool front_buffer_found() const override { return front_buffer_found_; }
   const LumaProbe& luma_probe() const override { return luma_; }
-  double gpu_last_frame_ms() const override { return 0.0; }
+  double gpu_last_frame_ms() const override;
   void LogGpuTiming() override {}
 
   // GuestMemoryMirror::Sink. The shared buffer is allocated whole (no sparse binding yet).

@@ -4,7 +4,12 @@
 #if defined(_WIN32)
 #include <windows.h>
 #else
+#include <fcntl.h>
+#include <sys/resource.h>
 #include <time.h>
+#include <unistd.h>
+
+#include <cstdio>
 #endif
 
 namespace graw::native {
@@ -63,5 +68,45 @@ uint64_t NowNs() {
 }
 
 uint64_t TicksToNs(uint64_t ticks) { return uint64_t(double(ticks) * Calibrated().ns_per_tick); }
+
+ThreadUsage ThreadUsageNow() {
+  ThreadUsage u;
+#if defined(_WIN32)
+  // Cycle counts run on the time-stamp counter here: GetThreadTimes only moves in 15.6 ms steps.
+  ULONG64 cycles = 0;
+  if (QueryThreadCycleTime(GetCurrentThread(), &cycles)) u.cpu_ns = TicksToNs(cycles);
+  if (QueryProcessCycleTime(GetCurrentProcess(), &cycles)) u.process_cpu_ns = TicksToNs(cycles);
+#else
+  timespec t;
+  clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t);
+  u.cpu_ns = uint64_t(t.tv_sec) * 1'000'000'000u + uint64_t(t.tv_nsec);
+  clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t);
+  u.process_cpu_ns = uint64_t(t.tv_sec) * 1'000'000'000u + uint64_t(t.tv_nsec);
+  rusage r;
+  if (getrusage(RUSAGE_THREAD, &r) == 0) {
+    u.blocks = uint64_t(r.ru_nvcsw);
+    u.preempts = uint64_t(r.ru_nivcsw);
+  }
+  // "<time on the CPU> <time waiting for it> <timeslices>", per thread: kept open for the thread.
+  thread_local const int schedstat = open("/proc/thread-self/schedstat", O_RDONLY | O_CLOEXEC);
+  char text[96];
+  if (schedstat >= 0) {
+    const ssize_t n = pread(schedstat, text, sizeof(text) - 1, 0);
+    if (n > 0) {
+      text[n] = 0;
+      unsigned long long on_cpu = 0, waiting = 0;
+      if (std::sscanf(text, "%llu %llu", &on_cpu, &waiting) == 2) u.runq_ns = waiting;
+    }
+  }
+#endif
+  return u;
+}
+
+ThreadUsage ThreadUsageSince(const ThreadUsage& begin, const ThreadUsage& now) {
+  const auto since = [](uint64_t b, uint64_t n) { return n >= b ? n - b : 0; };
+  return {since(begin.cpu_ns, now.cpu_ns), since(begin.runq_ns, now.runq_ns),
+          since(begin.blocks, now.blocks), since(begin.preempts, now.preempts),
+          since(begin.process_cpu_ns, now.process_cpu_ns)};
+}
 
 }  // namespace graw::native

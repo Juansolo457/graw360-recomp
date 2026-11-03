@@ -158,6 +158,10 @@ class Backend {
     uint64_t fence = 0;       // the fence value the frame signals
     uint64_t completed = 0;   // the fence value the GPU completed, after the submission
     uint64_t untile_ns = 0, submit_ns = 0, present_ns = 0, fence_ns = 0;
+    uint64_t acquire_ns = 0;  // Vulkan: waiting for a swapchain image
+    // Vulkan, of the frame before: the GPU's time on the present pass, part of
+    // gpu_last_frame_ms, and how long the GPU sat idle before the frame.
+    double gpu_present_ms = 0, gpu_gap_ms = 0;
   };
   enum class SubmitResult : uint8_t { kNotReady, kSubmitted, kFailed };
 

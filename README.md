@@ -2,10 +2,10 @@
 
 The Xbox 360 **Tom Clancy's Ghost Recon Advanced Warfighter** (2006), the console-exclusive
 Red Storm version with the third-person camera and the Cross-Com drone, statically recompiled to
-run natively on PC.
+run natively on PC, Linux and the Steam Deck.
 
-> Unofficial. **No game data included.** Bring your own Xbox 360 disc. Releases, when there are
-> any, are source only: you build from your own disc.
+> Unofficial. **No game data included.** Bring your own Xbox 360 disc. A release's Linux / Steam
+> Deck zip holds the built programs and no game files; on Windows you build from your own disc.
 
 ## What it is
 
@@ -17,7 +17,7 @@ from [Lost Odyssey Recomp](https://github.com/freefrank/LostOdysseyRecomp).
 
 ## Status
 
-**Version 0.5: the campaign plays on Windows and on Linux / Steam Deck; a work in progress.** The
+**Version 0.6: the campaign plays on Windows and on Linux / Steam Deck; a work in progress.** The
 disc holds three programs, each recompiled separately, and the front end hands over between them
 as the console did:
 
@@ -33,6 +33,8 @@ as the console did:
   four players ([docs/MULTIPLAYER.md](docs/MULTIPLAYER.md)); two players have played
   split-screen on one Steam Deck. Online play is being scoped (#35, #48).
 
+- [Releases](https://github.com/Juansolo457/graw360-recomp/releases): the Linux / Steam Deck zip;
+  its README has the setup
 - [docs/SETUP.md](docs/SETUP.md): build and play from your own disc
 - [docs/HANDOFF.md](docs/HANDOFF.md): current state, how things work, where things live
 - [docs/NATIVE_RENDERER.md](docs/NATIVE_RENDERER.md): the campaign's native renderer
@@ -69,9 +71,11 @@ private/     your captures, logs and decrypted images (ignored)
 
 ## Legal
 
-- No assets, executables, generated code, keys or proprietary code are distributed. Never
-  attach builds or game files to a release. Before pushing, run `python -I tools/audit_repo.py`
-  (CI runs it too).
+- This repository holds no assets, executables, generated code, keys or proprietary code. Before
+  pushing, run `python -I tools/audit_repo.py` (CI runs it too).
+- A release's Linux / Steam Deck zip holds the built programs, which contain a machine translation
+  of the game's code, and no game files: players need their own disc. Never attach game files or
+  the private test packages to a release.
 - Three sets of terms, file by file in [NOTICE](NOTICE), full texts in [LICENSES/](LICENSES/):
   - **MIT** ([LICENSE](LICENSE)): our own tools, docs and glue.
   - **GPL-3.0-or-later** ([LICENSES/GPL-3.0.txt](LICENSES/GPL-3.0.txt)):

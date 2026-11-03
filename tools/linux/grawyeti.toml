@@ -1,0 +1,22 @@
+# GRAW 360 recomp - Linux and Steam Deck: the campaign's settings (grawyeti only; the front end and
+# Instant Action don't read this file). Same names as the command-line options.
+#
+# The native Vulkan renderer is on by default in the Linux build (no F9 switch to the emulated
+# renderer there). The campaign runs at the 360's 30 fps (graw-linux.sh's 30 Hz vblank).
+
+# A frame log for the performance numbers: one row per frame (frame time, draws, CPU and GPU time,
+# pipelines compiled and frames held for them). It stays on this machine, in logs/.
+graw_native_csv = "logs/grawyeti-frames.csv"
+
+# The renderer's CPU time per draw split into its stages, as extra columns in the frame log
+# (st_<stage>_us). Costs a few percent. v0.6's 30 fps was measured with it on.
+graw_native_profile = true
+
+# Shimmer A/B: the old way of sampling textures whose detail level the shader computes (explicit
+# gradients). Only to compare, if there's shimmer: remove the # in front of it.
+# graw_native_implicit_gradients = false
+
+# The 30 fps limiter is off (#51): it made frames show up late, 8.5% of them over 40 ms in Deck
+# test 11 against test 13's 0.64%. To try it, remove the # in front of both.
+# graw_present_interval = 0
+# graw_max_fps = 30

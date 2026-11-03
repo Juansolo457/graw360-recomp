@@ -6,6 +6,10 @@ Update it at the end of every session; the next model starts here, not from chat
 **#2 (black video panels) is FIXED (2026-10-24): a mistranslated jump table in the HUD sprite blend switch, see "Root cause" at the end of [CROSSCOM.md](CROSSCOM.md). #13 (black screen under fire) was the same bug: verified 2026-10-24 by grenade damage, black without the #2 override and the red, desaturated damage effect with it. #1 (tutorial border noise) is FIXED in the renderer (2026-10-24): a resolve into freed memory left the HUD atlases stale on the GPU, see "Root cause" at the end of [BORDER.md](BORDER.md) and `tools/patches/rexglue-bd833a2-freed-page-resolve.patch`. The campaign's installed `rexgpu-xenosrd.dll` is stock bd833a2 plus that fix (copy: `.fixed`); how it reaches players (upstream or a source-built plugin) is undecided. #3 (tactical map empty) is FIXED in the code generator (2026-10-24): `vpkd3d128` float16 packs lost the sign when vD == vB, see [TACMAP.md](TACMAP.md) and `tools/patches/rexglue-bd833a2-vpkd3d128-alias.patch`; all three programs were regenerated with a patched CLI; `tools/check_vector_aliasing.py` finds no other instruction with the same hazard.**
 
 ## Where it stands
+**v0.6 (2026-11-02) is the first release with built programs:** a Linux / Steam Deck zip from
+`tools/make_release_linux.py`, no game files. Its launcher and settings are in `tools/linux/`.
+Windows stays build-from-disc. Deck numbers and what limits them: docs/PERF.md, "Deck test 13".
+
 **The game plays.** The front end hands over to the campaign and to Instant Action, as the
 console's loader would. The user played the campaign tutorial and the first mission. Audio is
 fine. At a 240 Hz guest refresh, the campaign's frame rate is "fantastic" in the user's words.

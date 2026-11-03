@@ -17,8 +17,8 @@ or the toolchain can't hide or add anything. It rejects:
     holds), symlinks, submodules and anything over 2 MB, except the reviewed exceptions below.
 
 This catches the common accidents, not every copyright question: a clean run doesn't make a
-change legally safe. Releases stay source only: never attach builds, game files or the private
-test packages (private/) to a release. Same script in fear360-recomp and graw360-recomp.
+change legally safe. Builds go on GitHub releases, never in git, and never with game files or the
+private test packages (private/). Same script in fear360-recomp and graw360-recomp.
 """
 import hashlib
 import os

@@ -43,6 +43,10 @@
 // runtime has no such patch, so the column stays 0.
 static uint64_t rex_xam_take_frame_pad() { return 0; }
 
+// port/src/frame_timing.cpp: the time since the last call.
+uint64_t GrawTakeLimitWaitNs();
+uint64_t GrawTakeRingWaitNs();
+
 // The Linux build has the native renderer's Vulkan backend only: the campaign's output from the
 // start, with no switch to the Xenos plugin (docs/VULKAN_RENDERER.md, Decisions).
 #if defined(_WIN32)
@@ -239,6 +243,8 @@ struct NativeRenderer::Queue {
     // Guest-thread numbers of the frame, added to the render thread's before its CSV row.
     uint64_t hook_ns, hook_wait_ns, hook_max_ns, state_fail, track_calls, pad;
     uint64_t guest_begin_ns, guest_swap_ns, pace_wait_ns;
+    ThreadUsage guest_usage;
+    uint64_t limit_wait_ns, ring_wait_ns;
     PrepareCounters prep;
     uint64_t ticks[profile::kStageCount];
     uint32_t log_frames;  // a marked Swap with --graw_native_mark_audit: the frames to log
@@ -521,6 +527,9 @@ void NativeRenderer::RenderThreadMain() {
             stats_.guest_begin_ns = s.guest_begin_ns;
             stats_.guest_swap_ns = s.guest_swap_ns;
             stats_.pace_wait_ns = s.pace_wait_ns;
+            stats_.guest_usage = s.guest_usage;
+            stats_.limit_wait_ns = s.limit_wait_ns;
+            stats_.ring_wait_ns = s.ring_wait_ns;
             stats_.state_fail += s.state_fail;
             backend_->AddPrepareCounters(s.prep);
             if (s.log_frames) backend_->LogFrames(s.log_frames);
@@ -616,6 +625,9 @@ void NativeRenderer::QueueSwap(uint8_t* base, const HookArgs& args) {
   s.guest_begin_ns = q.begin_ns;
   s.guest_swap_ns = t0;
   s.pace_wait_ns = q.pace_wait_ns;
+  s.guest_usage = ThreadUsageSince(guest_usage_begin_, ThreadUsageNow());
+  s.limit_wait_ns = GrawTakeLimitWaitNs();
+  s.ring_wait_ns = GrawTakeRingWaitNs();
   Presenter::ReadSwap(base, args, &s.call);
   // Captures with the Xenos copy: from the Swap that arms one (HoldFullReadback) to the one
   // captured, the next shown (Backend::SwapResult::incomplete holds frames back), every Swap runs
@@ -664,6 +676,7 @@ void NativeRenderer::QueueSwap(uint8_t* base, const HookArgs& args) {
   q.hook_max_ns = tail - capture_wait;
   q.begin_ns = t2;
   q.pace_wait_ns = pace_wait;
+  guest_usage_begin_ = ThreadUsageNow();
   if (hand_over) HandOver(base, args.device);
 }
 
@@ -703,6 +716,9 @@ void NativeRenderer::OnSwap(uint8_t* base, const HookArgs& args) {
   if (g_failed) [[unlikely]]
     return HandOver(base, args.device);
   stats_.guest_swap_ns = NowNs();
+  stats_.guest_usage = ThreadUsageSince(guest_usage_begin_, ThreadUsageNow());
+  stats_.limit_wait_ns = GrawTakeLimitWaitNs();
+  stats_.ring_wait_ns = GrawTakeRingWaitNs();
   SwapCall swap;
   Presenter::ReadSwap(base, args, &swap);
   stats_.pad = rex_xam_take_frame_pad();
@@ -711,6 +727,7 @@ void NativeRenderer::OnSwap(uint8_t* base, const HookArgs& args) {
   // stats_ is the next frame's from here.
   stats_.pace_wait_ns = pacer_ ? pacer_->WaitToBegin() : 0;
   stats_.guest_begin_ns = NowNs();
+  guest_usage_begin_ = ThreadUsageNow();
   if (swap.hand_over || g_failed) HandOver(base, args.device);
 }
 
@@ -827,6 +844,9 @@ void NativeRenderer::ExecuteSwap(const SwapCall& swap) {
   stats_.swap_submit_ns = r.submit_ns;
   stats_.swap_present_ns = r.present_ns;
   stats_.swap_fence_ns = r.fence_ns;
+  stats_.swap_acquire_ns = r.acquire_ns;
+  stats_.gpu_present_ms = r.gpu_present_ms;
+  stats_.gpu_gap_ms = r.gpu_gap_ms;
   stats_.present = r.presented ? r.presents : 0;
   const uint64_t fence = r.fence;
   if (pacer_ && r.presented)
@@ -852,6 +872,9 @@ void NativeRenderer::ExecuteSwap(const SwapCall& swap) {
   stats_.clear_ns = TicksToNs(clear_ticks_);
   stats_.resolve_ns = TicksToNs(resolve_ticks_);
   draw_ticks_ = clear_ticks_ = resolve_ticks_ = 0;
+  const ThreadUsage render_usage = ThreadUsageNow();
+  stats_.render_usage = ThreadUsageSince(render_usage_begin_, render_usage);
+  render_usage_begin_ = render_usage;
   if (!queue_)
     stats_.hook_ns = stats_.draw_ns + stats_.clear_ns + stats_.resolve_ns + stats_.swap_ns;
   WriteCsvRow(stats_, t1 - frame_start_ns_);
@@ -932,6 +955,18 @@ void NativeRenderer::AppendCsvColumns(const FrameStats& s, uint64_t frame_ns, bo
       Fix3("guest_swap_ms", s.guest_swap_ns / 1e6),
       Fix1("pace_wait_us", s.pace_wait_ns / 1000.0),
       Uint("present", s.present),
+      Fix1("swap_acquire_us", s.swap_acquire_ns / 1000.0),
+      Fix3("gpu_present_prev_ms", s.gpu_present_ms),
+      Fix3("gpu_gap_prev_ms", s.gpu_gap_ms),
+      Fix3("guest_cpu_ms", s.guest_usage.cpu_ns / 1e6),
+      Fix1("guest_runq_us", s.guest_usage.runq_ns / 1000.0),
+      Uint("guest_blocks", s.guest_usage.blocks),
+      Uint("guest_preempts", s.guest_usage.preempts),
+      Fix1("limit_wait_us", s.limit_wait_ns / 1000.0),
+      Fix1("ring_wait_us", s.ring_wait_ns / 1000.0),
+      Fix3("render_cpu_ms", s.render_usage.cpu_ns / 1e6),
+      Fix1("render_runq_us", s.render_usage.runq_ns / 1000.0),
+      Fix3("process_cpu_ms", s.render_usage.process_cpu_ns / 1e6),
   };
   AppendCsvCells(cells, header, false, line);
 }

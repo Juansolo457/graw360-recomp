@@ -25,6 +25,53 @@ Target: 120 fps at 4K (`--resolution_scale 3`, 3840x2160 internal). Measured wit
   00000003 00000010), 348 times: type 0, base 0. That is D3D's "nothing bound" placeholder (a
   shader sampling an empty slot), not a descriptor the recompiled code built wrong (#6).
 
+## Deck test 13: where the frame's time goes (2026-11-02)
+
+One session in Gaming Mode: 43 minutes of the campaign (77,295 frames), Steam's 30 fps limit on, the
+limiter off (`graw_max_fps` and `graw_present_interval` commented out). The user: "played great at
+a solid 30". The frame log's new columns (`swap_acquire_us`, `gpu_*`, `guest_cpu_ms` and the rest)
+and `deck-sensors.py` give the split:
+
+| | Test 9 | Test 11 (limiter on) | Test 13 |
+|---|---|---|---|
+| Frames over 40 ms | 2.1% | 8.5% | 0.64% |
+
+Test 13 also: 29.9 fps average, 33.3 ms median, 36.7 ms at the 99th percentile. 57 frames took over
+100 ms, the longest 7.1 s, and those weigh on the 1% low (14.8 fps): 20 of 2,576 seconds showed
+under 27 frames, most of the worst in the first 2.5 minutes and around minute 31. What they were
+isn't known yet.
+
+A row's `gpu_*` columns and `swap_fence_us` describe the frame before it: they're read when the next
+slot's fence signals, and with two slots that's the previous frame's. The GPU columns below are
+aligned to the frame that drew those draws. The first row's `guest_*` and `render_*` usage columns
+are cumulative since the thread started, because they have no baseline yet: skip that row.
+
+Medians by draws, in ms:
+
+| Draws | Frames | Over 40 ms | GPU | GPU idle before it | Game thread CPU | Render thread CPU |
+|---|---|---|---|---|---|---|
+| 300-1000 | 53,118 | 0.17% | 7.5 | 25.7 | 10.8 | 3.0 |
+| 1000-1500 | 12,051 | 0.34% | 9.2 | 24.1 | 14.0 | 4.4 |
+| 1500-2000 | 6,459 | 1.24% | 14.6 | 18.6 | 16.7 | 6.3 |
+| 2000-2500 | 3,519 | 5.51% | 19.5 | 13.1 | 18.7 | 7.5 |
+| 2500-3000 | 436 | 13.07% | 22.7 | 8.3 | 19.8 | 8.4 |
+| 3000+ | 15 | 40% | 21.4 | 0.4 | 24.0 | 11.2 |
+
+What this changes:
+- **The game thread isn't over budget.** It needs 24 ms of CPU at 3000+ draws. The older
+  `guest_begin` to swap figures (42 ms there) include waits. It barely waits for a CPU core either
+  (medians under 64 µs), and the limiter and ring waits are 0 at the median.
+- **Frames over 40 ms may point at the GPU, but this isn't settled.** Such a frame waits 7.8 ms on
+  the previous frame's fence (6 µs for all frames), and that previous frame's GPU figure is 38.2 ms
+  (7.9 ms for all frames). The slow frame's own GPU figure is only 19.9 ms, starting 0.5 ms after the
+  one before. The 38.2 ms can include a wait for the swapchain image, so it may not all be GPU work.
+- **The GPU clock stays low.** It averages 437-494 MHz per five minutes at 13-14 W, under the 15 W
+  cap. The sensor samples once a second, so it can't show a clock ramping up for one slow frame.
+  Whether a slow clock causes the slow frames is the next thing to check.
+- **The CPU runs hot:** 90-94 C averaged over each five minutes, up to 99.9 C, fan near 7,000 rpm,
+  with the process using 76 ms of CPU per 33 ms frame (median). Threads that spin instead of
+  sleeping are worth checking first.
+
 ## Stutter at 60 Hz: the Windows timer resolution (2026-10-25)
 With the guest display at 60 Hz (the default since #17), a play-test felt uneven: median 60 fps
 but ~half the frames 3 ms early or late, ~3% a full 33 ms (a missed refresh) and a 1% low of

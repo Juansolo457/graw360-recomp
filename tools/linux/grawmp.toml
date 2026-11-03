@@ -1,0 +1,8 @@
+# GRAW 360 recomp - Linux and Steam Deck: Instant Action's settings (grawmp only). Same names as the
+# command-line options.
+
+# Split-screen (Multiplayer -> Local Play): each controller is a player of its own, up to 4. The
+# first controller connected is player 1 (normally the Deck's own controls), the next player 2, and
+# so on.
+# The front end and the campaign keep every controller on player 1.
+graw_shared_controllers = false

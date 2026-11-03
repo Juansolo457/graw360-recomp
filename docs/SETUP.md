@@ -1,9 +1,12 @@
 # Build and play from your own disc (Windows)
 
-This project ships **source only**. No download contains the game. The game's code is
-translated from your copy of the Xbox 360 disc on your own PC, and the game data comes from the
-same disc. You need your own disc of **Tom Clancy's Ghost Recon Advanced Warfighter** for the
-Xbox 360.
+No download contains the game's files. On Windows, the game's code is translated from your copy of
+the Xbox 360 disc on your own PC, and the game data comes from the same disc. You need your own
+disc of **Tom Clancy's Ghost Recon Advanced Warfighter** for the Xbox 360.
+
+On Linux and the Steam Deck you don't have to build: a
+[release](https://github.com/Juansolo457/graw360-recomp/releases)'s zip has the programs, and its
+README covers your disc and Steam. [Building it yourself](#linux-and-the-steam-deck-38) is below.
 
 The first setup and build take 30–60 minutes, most of it compiling. After that, rebuilds take a
 minute or two.
@@ -165,3 +168,7 @@ own Linux releases are built in), with its own SDK checkout and build folder
 (`port-yeti/out/build/deck-amd64-relwithdebinfo`), and checks the result: the campaign and its
 libraries need glibc 2.35 and libstdc++ `GLIBCXX_3.4.32` (GCC 13) at most, and otherwise only
 X11, xcb and Wayland client libraries.
+
+To run it, `tools/make_release_linux.py` packs the three programs with the launcher and settings
+in `tools/linux/` (`graw-linux.sh` passes the Deck's 1280x720 and 30 Hz). The release zip is the
+same thing.

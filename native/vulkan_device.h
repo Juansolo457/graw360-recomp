@@ -110,7 +110,12 @@ namespace graw::native {
   X(vkCmdPushConstants)             \
   X(vkCreatePipelineCache)          \
   X(vkDestroyPipelineCache)         \
-  X(vkGetPipelineCacheData)
+  X(vkGetPipelineCacheData)         \
+  X(vkCreateQueryPool)              \
+  X(vkDestroyQueryPool)             \
+  X(vkCmdResetQueryPool)            \
+  X(vkCmdWriteTimestamp)            \
+  X(vkGetQueryPoolResults)
 
 class VulkanDevice {
  public:
@@ -164,6 +169,12 @@ class VulkanDevice {
     bool presented = false;
     uint64_t presents = 0;  // presents so far
     uint64_t submit_ns = 0, present_ns = 0;
+    uint64_t acquire_ns = 0;  // vkAcquireNextImageKHR
+    uint64_t fence_ns = 0;    // BeginSlot: the GPU finishing the slot's last frame
+    // That frame's GPU time, the present pass's part of it, and the GPU's idle time before it
+    // (timestamps; 0 where the queue has none). The first includes a wait for the acquire
+    // semaphore, if the driver makes one.
+    double gpu_ms = 0, gpu_present_ms = 0, gpu_gap_ms = 0;
   };
 
   ~VulkanDevice();
@@ -236,6 +247,9 @@ class VulkanDevice {
   bool CreateSurface();  // surface_ on game_window_
   void DestroySwapchainObjects();
   bool BeginSlot();  // waits for the slot's previous frame and opens its command buffer
+  void CreateTimestamps();  // timestamps_, if the queue has timestamps
+  void ReadTimestamps();    // the current slot's, after its fence: into times_
+  void WriteTimestamp(VkCommandBuffer cmd, VkPipelineStageFlagBits stage, uint32_t index);
   bool Check(VkResult r, const char* what);
 
   void* library_ = nullptr;
@@ -259,6 +273,11 @@ class VulkanDevice {
   std::vector<VkImageView> views_;
   std::vector<VkSemaphore> rendered_;  // per swapchain image: its present pass finished
   EndFrameTimes times_;
+  // Per frame-in-flight slot: the frame's start, the present pass's start, the frame's end.
+  static constexpr uint32_t kTimestampsPerFrame = 3;
+  VkQueryPool timestamps_ = VK_NULL_HANDLE;
+  double timestamp_ns_ = 0;  // nanoseconds per timestamp tick
+  uint64_t timestamp_mask_ = 0, last_frame_end_ = 0;
 };
 
 }  // namespace graw::native

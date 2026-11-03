@@ -28,6 +28,7 @@
 // waits for the render thread to finish the Swaps around a capture (present.h).
 #pragma once
 
+#include "clock.h"
 #include "hook_args.h"
 
 #include <rex/cvar.h>
@@ -74,6 +75,15 @@ struct FrameStats {
   // reached its Swap, how long FramePacer::WaitToBegin held it before it began, and the frame's
   // present number (Backend::SwapResult::presents; 0: not presented).
   uint64_t guest_begin_ns = 0, guest_swap_ns = 0, pace_wait_ns = 0, present = 0;
+  // The guest thread between those two points, and what the frame limiter and D3D's wait for ring
+  // space held it for (port/src/frame_timing.cpp). What's left of the time after its CPU time,
+  // runq_ns and these is the guest's own waits: the vblank, the game's worker threads.
+  ThreadUsage guest_usage;
+  uint64_t limit_wait_ns = 0, ring_wait_ns = 0;
+  ThreadUsage render_usage;  // the recording thread, Swap to Swap
+  // The Vulkan backend (Backend::SwapResult).
+  uint64_t swap_acquire_ns = 0;
+  double gpu_present_ms = 0, gpu_gap_ms = 0;
 };
 
 class NativeRenderer {
@@ -179,6 +189,8 @@ class NativeRenderer {
   uint64_t frame_index_ = 0;
   uint64_t frame_start_ns_ = 0;
   FrameStats stats_;
+  ThreadUsage guest_usage_begin_;   // when the guest thread began the frame
+  ThreadUsage render_usage_begin_;  // at the recording thread's last Swap
   // Ticks inside ExecuteDraw, ExecuteClear and ExecuteResolve, into stats_ at the Swap.
   uint64_t draw_ticks_ = 0, clear_ticks_ = 0, resolve_ticks_ = 0;
   uint64_t draws_submitted_ = 0;  // stats_.draws at the frame's last SubmitEarly

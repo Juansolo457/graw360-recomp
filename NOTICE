@@ -40,10 +40,14 @@ BSD code keeps its own terms: it isn't relicensed as MIT.
 
 Game material
 No game assets, executables, extracted or decrypted images, generated translations, keys or
-other data from Ghost Recon Advanced Warfighter are distributed here. Tools operate on the
+other data from Ghost Recon Advanced Warfighter are in this repository. Tools operate on the
 user's own copy and their outputs stay local: .gitignore keeps them out, and
 tools/audit_repo.py checks every commit. tools/xex_basic_decrypt.py needs a key the user
 supplies; none is included.
+
+Release zips hold the built programs, which contain a machine translation of the game's code,
+and no game files: they need the player's own disc. The programs link ReXGlue and the libraries
+in its thirdparty/ (FFmpeg among them, LGPL 2.1 or later); the zips carry those licenses.
 
 Ghost Recon is a trademark of Ubisoft Entertainment. This project is not affiliated with or
 endorsed by Ubisoft, Red Storm Entertainment, Ubisoft Paris or Microsoft.

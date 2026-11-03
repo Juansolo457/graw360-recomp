@@ -1740,9 +1740,15 @@ Backend::SwapResult VulkanBackend::Swap(const SwapCall& swap, std::optional<bool
   r.presents = et.presents;
   r.submit_ns = et.submit_ns;
   r.present_ns = et.present_ns;
+  r.fence_ns = et.fence_ns;
+  r.acquire_ns = et.acquire_ns;
+  r.gpu_present_ms = et.gpu_present_ms;
+  r.gpu_gap_ms = et.gpu_gap_ms;
   r.completed = device_->completed_fence();
   r.ok = true;
   return r;
 }
+
+double VulkanBackend::gpu_last_frame_ms() const { return device_->end_frame_times().gpu_ms; }
 
 }  // namespace graw::native

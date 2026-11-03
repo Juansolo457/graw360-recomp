@@ -25,6 +25,8 @@ pushes, and the branch can't be deleted.
 
 ## Releases
 
-Releases are tagged on `master` once the pull requests that make them are merged. **They are
-source only:** never attach builds, game files or private test packages (Steam Deck zips among
-them). Players build from their own disc ([docs/SETUP.md](docs/SETUP.md)).
+Releases are tagged on `master` once the pull requests that make them are merged. **They carry the
+built Linux / Steam Deck programs, never game data:** attach the zip
+`python3 -I tools/make_release_linux.py` makes from the tagged code, and nothing else built. Never
+attach game files or private test packages. The zip's README says how players use their own disc;
+on Windows they still build from it ([docs/SETUP.md](docs/SETUP.md)).

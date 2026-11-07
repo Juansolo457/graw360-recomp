@@ -30,6 +30,7 @@ WHOLE = re.compile(r'ctx\.(v\d+)(?:\.u8)?(?![\w.\[])')
 WRITE = re.compile(r'^\s*(ctx\.v\d+\.(?:u8|s8|u16|s16|u32|s32|f32|u64|s64|f64)\[\d+\])\s*(=|\|=|&=|\^=|\+=|-=)(?!=)')
 STORE = re.compile(r'simde_mm_store\w*\(\(simde__m128i?\*\)ctx\.(v\d+)\.u8')
 WHOLE_ASSIGN = re.compile(r'^\s*ctx\.(v\d+)\s*=(?!=)')
+CALL = re.compile(r'\b(sub_[0-9A-F]+|ppc_setjmp|ppc_longjmp|REX_CALL_INDIRECT_FUNC)\s*\(|\bHostToGuest')
 
 
 def byte_range(kind, index):
@@ -43,6 +44,12 @@ def check_block(mnemonic, lines):
     for line in lines:
         code = line.split('//')[0]
         if not code.strip():
+            continue
+        # A call ends the instruction's own data flow: with the register options on, a call into a
+        # share_registers function writes the locals into the context before it and reads them
+        # back after (ctx.v14 = v14; sub_X(ctx, base); v14 = ctx.v14;), which is not a hazard.
+        if CALL.search(code):
+            written.clear()
             continue
         target = None
         m = WRITE.match(code)

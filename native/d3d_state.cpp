@@ -128,7 +128,7 @@ void GuestStateTracker::Sync(uint8_t* base, uint32_t device, uint32_t fn, bool e
             CurrentThreadId(), last_sync_thread_);
       in_packet_ = false;
     }
-    for (uint32_t a = cursor_ + 4; a <= cur; a += 4) Feed(base, a, Load32(base, a));
+    DecodeWindow(base, cursor_ + 4, cur);
     counters_.dwords += (cur - cursor_) / 4;
   } else {
     // The cursor moved somewhere no hooked jump reported (backwards, or too far).
@@ -162,33 +162,68 @@ void GuestStateTracker::Jump(const uint8_t* base, uint32_t device, uint32_t fn) 
   cursor_ = Load32(base, device + dev::kPush);
 }
 
-void GuestStateTracker::Feed(const uint8_t* base, uint32_t address, uint32_t dw) {
-  if (!in_packet_) {
-    // Space the D3D reserves and patches later is zero; the D3D never writes register 0, so a
-    // zero header is padding, not a one-register type-0 packet.
-    if (dw == 0) return;
-    header_ = dw;
-    packet_address_ = address;
-    pkt_.clear();
-    switch (dw >> 30) {
-      case 0:
-      case 3:
-        need_ = ((dw >> 16) & 0x3FFF) + 1;
-        break;
-      case 1:
-        need_ = 2;
-        break;
-      default:
-        return;  // type 2: NOP
+void GuestStateTracker::DecodeWindow(const uint8_t* base, uint32_t first, uint32_t last) {
+  // The window [first, last] is one run of guest addresses in one view, so one host pointer
+  // walks it (HostPtr adds a per-view offset); a window that straddles views is decoded a dword
+  // at a time. Each packet's body is swapped into pkt_ in one pass, not pushed dword by dword
+  // through the decoder's state machine: this loop ran for 12 million dwords a second on the
+  // Steam Deck, a fifth of the game's render thread.
+  const uint8_t* p = HostPtr(base, first);
+  const uint8_t* end = HostPtr(base, last) + 4;
+  const bool one_view = end - p == ptrdiff_t(last - first) + 4;
+  auto load = [](const uint8_t* at) {
+    uint32_t v;
+    std::memcpy(&v, at, 4);
+    return __builtin_bswap32(v);
+  };
+  uint32_t address = first;
+  while (p < end) {
+    const uint32_t dw = one_view ? load(p) : Load32(base, address);
+    p += 4;
+    address += 4;
+    if (!in_packet_) {
+      // Space the D3D reserves and patches later is zero; the D3D never writes register 0, so a
+      // zero header is padding, not a one-register type-0 packet.
+      if (dw == 0) continue;
+      header_ = dw;
+      packet_address_ = address - 4;
+      pkt_.clear();
+      switch (dw >> 30) {
+        case 0:
+        case 3:
+          need_ = ((dw >> 16) & 0x3FFF) + 1;
+          break;
+        case 1:
+          need_ = 2;
+          break;
+        default:
+          continue;  // type 2: NOP
+      }
+      in_packet_ = true;
+    } else {
+      pkt_.push_back(dw);
+      --need_;
     }
-    in_packet_ = true;
-    return;
-  }
-  pkt_.push_back(dw);
-  if (--need_ == 0) {
-    in_packet_ = false;
-    ++counters_.packets;
-    HandlePacket(base);
+    // The rest of the body, as far as the window holds it.
+    const size_t avail = size_t(end - p) / 4;
+    const size_t take = std::min<size_t>(need_, avail);
+    if (take) {
+      const size_t at = pkt_.size();
+      pkt_.resize(at + take);
+      if (one_view) {
+        for (size_t i = 0; i < take; ++i) pkt_[at + i] = load(p + i * 4);
+      } else {
+        for (size_t i = 0; i < take; ++i) pkt_[at + i] = Load32(base, address + uint32_t(i * 4));
+      }
+      p += take * 4;
+      address += uint32_t(take * 4);
+      need_ -= uint32_t(take);
+    }
+    if (need_ == 0) {
+      in_packet_ = false;
+      ++counters_.packets;
+      HandlePacket(base);
+    }
   }
 }
 
@@ -198,8 +233,31 @@ void GuestStateTracker::LoadShader(uint32_t type, uint32_t address, uint32_t dwo
   ShaderRef ref;
   ref.ucode = address;
   ref.dwords = dwords;
-  ref.binding = XXH3_64bits(Physical(address), size_t(dwords) * 4);
+  ref.binding = ShaderBinding(address, dwords);
   (type == 0 ? vs_ : ps_) = ref;
+}
+
+uint64_t GuestStateTracker::ShaderBinding(uint32_t address, uint32_t dwords) {
+  // The content hash of the ucode at `address`, hashed once per shader: the D3D loads both
+  // shaders of most draws again (IM_LOAD), and hashing their whole ucode each time was 6% of
+  // the game's render thread on the Steam Deck. A shader replaced in place is told by its
+  // length and its first and last ShaderBindingMemo::kSample / 2 dwords, as the draw side's
+  // shader memo tells one (draw.cpp LoadShader).
+  const uint32_t* ucode = reinterpret_cast<const uint32_t*>(Physical(address));
+  uint32_t sample[ShaderBindingMemo::kSample];
+  for (uint32_t i = 0; i < ShaderBindingMemo::kSample / 2; ++i) {
+    sample[i] = ucode[std::min(i, dwords - 1)];
+    sample[ShaderBindingMemo::kSample / 2 + i] = ucode[dwords - 1 - std::min(i, dwords - 1)];
+  }
+  ShaderBindingMemo& memo = binding_memo_[(address >> 4) % std::size(binding_memo_)];
+  if (memo.dwords == dwords && memo.ucode == address &&
+      std::memcmp(memo.sample, sample, sizeof(sample)) == 0)
+    return memo.binding;
+  memo.ucode = address;
+  memo.dwords = dwords;
+  std::memcpy(memo.sample, sample, sizeof(sample));
+  memo.binding = XXH3_64bits(ucode, size_t(dwords) * 4);
+  return memo.binding;
 }
 
 void GuestStateTracker::LoadShaderImmediate(uint32_t type, uint32_t address,

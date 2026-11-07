@@ -37,10 +37,14 @@ expected_tree=12884d9f3cbcc28abdd88159c8ed93651bc9192d  # after the last patch
 # outlived every hard exit in /dev/shm (a tmpfs of half the RAM), and a few restarts or
 # hand-overs filled it, the next guest page touched raising SIGBUS (F.E.A.R. 360's Deck crash).
 # The crash report's backtrace runs under a 5 s alarm, so a hang inside the unwinder still ends
-# the process (#53 review).
+# the process (#53 review). Looking up the mapping that holds an address asks the kernel
+# (PROCMAP_QUERY) instead of reading /proc/self/maps, and a commit on a reservation doesn't read it
+# at all: the write watches split guest memory into thousands of mappings, and the game thread
+# spent a quarter of its time in the kernel writing that file out (Deck, mission 3).
 linux_patches=(rexglue-bd833a2-launch-title-path rexglue-bd833a2-linux-crash-renderdoc
-               rexglue-bd833a2-linux-shm-unlink rexglue-bd833a2-linux-crash-watchdog)
-linux_tree=f481d5e488b14bcd76ed16c98e069da692f1fe67
+               rexglue-bd833a2-linux-shm-unlink rexglue-bd833a2-linux-crash-watchdog
+               rexglue-bd833a2-linux-procmaps-query)
+linux_tree=c14edfc4d2dcfdac1374c1c41cfe9e3c72aacb4b
 # Checkouts made by an earlier version of this script move forward by the patches added since,
 # rather than a new clone and full SDK build: "<tree> <patch>..." pairs, each tree -> the next.
 upgrades=("f9d5a19f96e3f2f7ed79ee5b08155eab343a5b9c rexglue-bd833a2-spirv-exp-adjust"
@@ -49,6 +53,7 @@ upgrades=("f9d5a19f96e3f2f7ed79ee5b08155eab343a5b9c rexglue-bd833a2-spirv-exp-ad
           "379fa50a65a1bbf7ec9e525f0316489759223e00 rexglue-bd833a2-linux-crash-renderdoc"
           "88fa3e8437490f8c7c0628370326eaa4561c4788 rexglue-bd833a2-linux-shm-unlink"
           "3a2a409da3864dbd34b93398d11c182feeb87706 rexglue-bd833a2-linux-crash-watchdog"
+          "f481d5e488b14bcd76ed16c98e069da692f1fe67 rexglue-bd833a2-linux-procmaps-query"
           "8b6704526e838bc5de441a142dade478a73f0450 rexglue-bd833a2-vexptefp-underflow")
 force=0
 jobs=$(( $(nproc) > 2 ? $(nproc) - 2 : 1 ))

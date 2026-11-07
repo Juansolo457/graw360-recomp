@@ -36,9 +36,11 @@ def show(value, digits=1):
 
 
 def read(path):
-    """The rows of a CSV log with a time; a last row cut short when the game died is left out."""
+    """The rows of a CSV log with a time and every column of its header; a last row cut short when
+    the game died (missing fields read as None) is left out."""
     with open(path, newline="") as f:
-        return [r for r in csv.DictReader(f) if num(r, "t_ms") is not None]
+        return [r for r in csv.DictReader(f)
+                if num(r, "t_ms") is not None and None not in r.values()]
 
 
 def frames(path):

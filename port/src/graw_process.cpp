@@ -24,6 +24,7 @@
 #include <chrono>
 #include <thread>
 
+#include <SDL3/SDL_error.h>
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_timer.h>
 
@@ -227,9 +228,16 @@ bool SDLCALL FilterEarlyClose(void*, SDL_Event* event) {
       REXLOG_WARN("GRAW: {} {:.0f} ms after this run started (hand-over): ignored", kind, ms);
     } else if (!g_quit_deferred.exchange(true)) {
       const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(g_guard_until - now);
+      if (!SDL_AddTimer(Uint32(std::max<int64_t>(left.count(), 1)), PushDeferredQuit, nullptr)) {
+        // No timer to deliver it later: the quit goes through now rather than nowhere.
+        g_quit_deferred = false;
+        REXLOG_WARN("GRAW: {} {:.0f} ms after this run started (hand-over): no SDL timer ({}), "
+                    "let through",
+                    kind, ms, SDL_GetError());
+        return true;
+      }
       REXLOG_WARN("GRAW: {} {:.0f} ms after this run started (hand-over): held for {} ms", kind,
                   ms, left.count());
-      SDL_AddTimer(Uint32(std::max<int64_t>(left.count(), 1)), PushDeferredQuit, nullptr);
     }
     return false;
   }

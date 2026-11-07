@@ -73,7 +73,7 @@ def frame_stats(rows):
 
 
 def band_stats(rows, lo, hi):
-    picked = [i for i in range(len(rows) - 1) if lo <= num(rows[i], "draws") < hi]
+    picked = [i for i in range(len(rows) - 1) if lo <= (num(rows[i], "draws") or -1) < hi]
     if not picked:
         return None
     times = [num(rows[i], "frame_ms") for i in picked]

@@ -69,6 +69,7 @@ python3 -I "$here/deck-sensors.py" "$here/logs/sensors-$stamp.csv" >/dev/null 2>
 # (lines like GRAW_HZ=60); a variable given at launch wins.
 if [ -f "$here/graw-linux.env" ]; then
   while IFS='=' read -r key value; do
+    value="${value%$'\r'}"  # a file edited on Windows ends its lines with CR LF
     case "$key" in
       GRAW_HZ|GRAW_PERF) [ -z "${!key}" ] && export "$key=$value" ;;
     esac

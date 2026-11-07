@@ -17,6 +17,10 @@
 
 #include <fmt/format.h>
 
+REXCVAR_DEFINE_BOOL(graw_native_shader_hash_check, false, "GRAW native",
+                    "Hash every loaded shader's whole ucode and log when the tracker's shader "
+                    "hash memo (ucode address, length and both ends) would have missed a change");
+
 REXCVAR_DEFINE_BOOL(graw_native_stream_log, false, "GRAW native",
                     "Log the push-buffer tracker's counters now and then (decoded dwords, "
                     "packets, draws, jumps, resyncs, torn packets, unknown opcodes)");
@@ -169,18 +173,19 @@ void GuestStateTracker::DecodeWindow(const uint8_t* base, uint32_t first, uint32
   // through the decoder's state machine: this loop ran for 12 million dwords a second on the
   // Steam Deck, a fifth of the game's render thread.
   const uint8_t* p = HostPtr(base, first);
-  const uint8_t* end = HostPtr(base, last) + 4;
-  const bool one_view = end - p == ptrdiff_t(last - first) + 4;
+  const bool one_view = HostPtr(base, last) + 4 - p == ptrdiff_t(last - first) + 4;
   auto load = [](const uint8_t* at) {
     uint32_t v;
     std::memcpy(&v, at, 4);
     return __builtin_bswap32(v);
   };
   uint32_t address = first;
-  while (p < end) {
+  uint32_t left = (last - first) / 4 + 1;  // dwords of the window still to decode
+  while (left) {
     const uint32_t dw = one_view ? load(p) : Load32(base, address);
     p += 4;
     address += 4;
+    --left;
     if (!in_packet_) {
       // Space the D3D reserves and patches later is zero; the D3D never writes register 0, so a
       // zero header is padding, not a one-register type-0 packet.
@@ -205,8 +210,7 @@ void GuestStateTracker::DecodeWindow(const uint8_t* base, uint32_t first, uint32
       --need_;
     }
     // The rest of the body, as far as the window holds it.
-    const size_t avail = size_t(end - p) / 4;
-    const size_t take = std::min<size_t>(need_, avail);
+    const size_t take = std::min<size_t>(need_, left);
     if (take) {
       const size_t at = pkt_.size();
       pkt_.resize(at + take);
@@ -218,6 +222,7 @@ void GuestStateTracker::DecodeWindow(const uint8_t* base, uint32_t first, uint32
       p += take * 4;
       address += uint32_t(take * 4);
       need_ -= uint32_t(take);
+      left -= uint32_t(take);
     }
     if (need_ == 0) {
       in_packet_ = false;
@@ -251,8 +256,22 @@ uint64_t GuestStateTracker::ShaderBinding(uint32_t address, uint32_t dwords) {
   }
   ShaderBindingMemo& memo = binding_memo_[(address >> 4) % std::size(binding_memo_)];
   if (memo.dwords == dwords && memo.ucode == address &&
-      std::memcmp(memo.sample, sample, sizeof(sample)) == 0)
+      std::memcmp(memo.sample, sample, sizeof(sample)) == 0) {
+    if (REXCVAR_GET(graw_native_shader_hash_check)) {
+      // A patch to the middle of the ucode only (the D3D's declaration patching goes through
+      // IM_LOAD_IMMEDIATE, not here) would pass the sample: the check tells if a title does it.
+      const uint64_t full = XXH3_64bits(ucode, size_t(dwords) * 4);
+      if (full != memo.binding) {
+        static uint32_t logged = 0;
+        if (++logged <= 16)
+          REXLOG_WARN("GRAW native state: shader {:08X} ({} dwords) changed inside its sample: "
+                      "memo {:016X}, now {:016X}",
+                      address, dwords, memo.binding, full);
+        memo.binding = full;
+      }
+    }
     return memo.binding;
+  }
   memo.ucode = address;
   memo.dwords = dwords;
   std::memcpy(memo.sample, sample, sizeof(sample));

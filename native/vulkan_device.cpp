@@ -2,6 +2,7 @@
 #include "vulkan_device.h"
 
 #include "clock.h"
+#include "vulkan_gpu_timer.h"
 
 #include <rex/logging.h>
 
@@ -598,6 +599,8 @@ bool VulkanDevice::BeginSlot() {
   if (timestamps_)
     fn_.vkCmdResetQueryPool(f.cmd, timestamps_, slot_ * kTimestampsPerFrame, kTimestampsPerFrame);
   WriteTimestamp(f.cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0);
+  // After the slot's fence: the timer reads the frame this slot held last.
+  if (pass_timer_) pass_timer_->BeginFrame(f.cmd, slot_);
   return true;
 }
 
@@ -634,6 +637,7 @@ bool VulkanDevice::EndFrame(bool present, PresentPass& pass) {
     fn_.vkCmdPipelineBarrier(f.cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0,
                              nullptr, 1, &b);
+    if (pass_timer_) pass_timer_->Pass(f.cmd, VulkanGpuTimer::KeyPresent());
     pass.Record(f.cmd, {images_[image], views_[image], swapchain_format_, extent_}, slot_);
     b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     b.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
@@ -644,6 +648,7 @@ bool VulkanDevice::EndFrame(bool present, PresentPass& pass) {
                              &b);
   }
   WriteTimestamp(f.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 2);
+  if (pass_timer_) pass_timer_->EndFrame(f.cmd);
   if (!Check(fn_.vkEndCommandBuffer(f.cmd), "vkEndCommandBuffer")) return false;
   const uint64_t t0 = NowNs();
   const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;

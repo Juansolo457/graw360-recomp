@@ -28,6 +28,7 @@
 #include "guest_memory_mirror.h"
 #include "shader_modifications.h"  // ShaderDrawRegs, ShaderModifications (the draw memo)
 #include "surfaces.h"              // SurfaceRegs
+#include "vulkan_gpu_timer.h"
 
 #include <rex/graphics/xenos.h>
 
@@ -85,7 +86,7 @@ class VulkanBackend final : public Backend, public GuestMemoryMirror::Sink {
   bool front_buffer_found() const override { return front_buffer_found_; }
   const LumaProbe& luma_probe() const override { return luma_; }
   double gpu_last_frame_ms() const override;
-  void LogGpuTiming() override {}
+  void LogGpuTiming() override;
 
   // GuestMemoryMirror::Sink. The shared buffer is allocated whole (no sparse binding yet).
   bool MapShared(uint32_t start, uint32_t length) override { return true; }
@@ -101,6 +102,8 @@ class VulkanBackend final : public Backend, public GuestMemoryMirror::Sink {
                                          rex::graphics::xenos::ShaderType type);
 
   std::unique_ptr<VulkanDevice> device_;
+  // --graw_native_gpu_timing (after device_: destroyed first, its query pool is the device's).
+  std::unique_ptr<VulkanGpuTimer> gpu_timer_;
   std::unique_ptr<VulkanShaderCache> shaders_;
   struct Gpu;  // memory, the shared buffer, upload pools (vulkan_backend.cpp)
   struct ResolvedImage;  // a resolve destination (vulkan_backend.cpp)

@@ -175,7 +175,10 @@ VulkanBackend::VulkanBackend() {
 
 VulkanBackend::~VulkanBackend() {
   mirror_.Shutdown();
-  if (device_) device_->WaitIdle();
+  if (device_) {
+    device_->WaitIdle();
+    device_->set_pass_timer(nullptr);
+  }
 }
 
 bool VulkanBackend::Initialize(const Options& o) {
@@ -186,6 +189,16 @@ bool VulkanBackend::Initialize(const Options& o) {
   device_ = std::make_unique<VulkanDevice>();
   if (!device_->Initialize(o.game_window, o.vsync, REXCVAR_GET(graw_native_vulkan_validation)))
     return false;
+  if (o.gpu_timing) {
+    auto timer = std::make_unique<VulkanGpuTimer>();
+    timer->set_per_shader(o.gpu_timing_shaders);
+    if (timer->Initialize(*device_, VulkanDevice::kFramesInFlight)) {
+      gpu_timer_ = std::move(timer);
+      device_->set_pass_timer(gpu_timer_.get());
+    } else {
+      REXLOG_ERROR("GRAW native Vulkan: GPU timing unavailable (no timestamps on the queue)");
+    }
+  }
   shaders_ = std::make_unique<VulkanShaderCache>(*device_);
   rex::memory::Memory* memory = rex::system::kernel_memory();
   membase_ = memory->physical_membase();
@@ -423,6 +436,14 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
   if (!mods.draw) {
     ++stats_.skipped;
     return;
+  }
+  if (gpu_timer_) {
+    const uint64_t key =
+        gpu_timer_->per_shader()
+            ? gpu_timer_->KeyDrawShaders(state.regs, vs->ucode_data_hash(),
+                                         ps ? ps->ucode_data_hash() : 0)
+            : VulkanGpuTimer::KeyDraw(state.regs);
+    gpu_timer_->Pass(device_->command_buffer(), key);
   }
   if (!prep) {
     mirror_.upload_fence = device_->frame_fence();
@@ -865,6 +886,7 @@ void VulkanBackend::DumpTarget(VulkanRenderTarget* rt, uint32_t index) {
 }
 
 void VulkanBackend::Clear(const ClearCall& clear) {
+  if (gpu_timer_) gpu_timer_->Pass(device_->command_buffer(), VulkanGpuTimer::KeyClear(clear));
   gpu_->targets.Clear(device_->command_buffer(), clear);
 }
 
@@ -884,6 +906,7 @@ void VulkanBackend::Resolve(const ResolveParams& p) {
     ++resolves_skipped_;
     return;
   }
+  if (gpu_timer_) gpu_timer_->Pass(device_->command_buffer(), VulkanGpuTimer::KeyResolve(p));
   VulkanRenderTargets& targets = gpu_->targets;
   VkCommandBuffer cmd = device_->command_buffer();
   targets.EndRendering(cmd);
@@ -1799,5 +1822,9 @@ Backend::SwapResult VulkanBackend::Swap(const SwapCall& swap, std::optional<bool
 }
 
 double VulkanBackend::gpu_last_frame_ms() const { return device_->end_frame_times().gpu_ms; }
+
+void VulkanBackend::LogGpuTiming() {
+  if (gpu_timer_) gpu_timer_->Log();
+}
 
 }  // namespace graw::native

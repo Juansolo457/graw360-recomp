@@ -1,0 +1,205 @@
+diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
+index 78e1a3b..0178419 100644
+--- a/include/rex/graphics/command_processor.h
++++ b/include/rex/graphics/command_processor.h
+@@ -12,6 +12,7 @@
+ #pragma once
+ 
+ #include <atomic>
++#include <chrono>
+ #include <cstring>
+ #include <functional>
+ #include <memory>
+@@ -254,6 +255,13 @@ class CommandProcessor {
+   uint32_t read_ptr_index_ = 0;
+   uint32_t read_ptr_update_freq_ = 0;
+   uint32_t read_ptr_update_block_bytes_ = 0;  // RB_BLKSZ in bytes
++  // Counts since the last log line (gpu_cp_stats_seconds), the worker thread's only.
++  void LogStats();
++  uint64_t cp_stat_packets_ = 0, cp_stat_regs_ = 0, cp_stat_ibs_ = 0;
++  uint64_t cp_stat_waits_ = 0, cp_stat_wait_polls_ = 0, cp_stat_wait_ns_ = 0;
++  uint64_t cp_stat_stalls_ = 0, cp_stat_stall_waits_ = 0, cp_stat_stall_ns_ = 0;
++  uint64_t cp_stat_writebacks_ = 0;
++  std::chrono::steady_clock::time_point cp_stat_last_{};
+   uint32_t read_ptr_writeback_ptr_ = 0;
+ 
+   std::unique_ptr<rex::thread::Event> write_ptr_index_event_;
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index d9c499b..594738d 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <array>
+ #include <algorithm>
++#include <chrono>
+ #include <cinttypes>
+ #include <cmath>
+ #include <cstring>
+@@ -81,6 +82,16 @@ REXCVAR_DEFINE_BOOL(async_shader_compilation, true, "GPU",
+                     "pipelines are being prepared.")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
++REXCVAR_DEFINE_INT32(gpu_wait_reg_mem_sleep_us, 50, "GPU",
++                     "How long a WAIT_REG_MEM packet sleeps between polls, microseconds (0 = "
++                     "yield; -1 = the packet's own interval in milliseconds, as before)")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
++REXCVAR_DEFINE_INT32(gpu_cp_stats_seconds, 5, "GPU",
++                     "Log the command processor's packet, wait and stall counts this often "
++                     "(seconds; 0 = never)")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
+ REXCVAR_DEFINE_BOOL(gpu_skip_draws, false, "GPU",
+                     "Skip all host GPU work for draws, resolves, shader loads and swaps, for a "
+                     "host renderer that draws the guest's frames itself; fences, register and "
+@@ -225,10 +236,13 @@ void CommandProcessor::WorkerThreadMain() {
+       // event is too high.
+       PrepareForWait();
+       uint32_t loop_count = 0;
++      const auto stall_begin = std::chrono::steady_clock::now();
++      ++cp_stat_stalls_;
+       do {
+         // If we spin around too much, revert to a "low-power" state.
+         if (loop_count > 500) {
+           const int wait_time_ms = 5;
++          ++cp_stat_stall_waits_;
+           rex::thread::Wait(write_ptr_index_event_.get(), true,
+                             std::chrono::milliseconds(wait_time_ms));
+         }
+@@ -238,6 +252,9 @@ void CommandProcessor::WorkerThreadMain() {
+         write_ptr_index = write_ptr_index_.load();
+       } while (worker_running_ && pending_fns_.empty() &&
+                (write_ptr_index == 0xBAADF00D || read_ptr_index_ == write_ptr_index));
++      cp_stat_stall_ns_ += std::chrono::duration_cast<std::chrono::nanoseconds>(
++                               std::chrono::steady_clock::now() - stall_begin)
++                               .count();
+       ReturnFromWait();
+       if (!worker_running_ || !pending_fns_.empty()) {
+         continue;
+@@ -257,6 +274,7 @@ void CommandProcessor::WorkerThreadMain() {
+ 
+     // FIXME: We're supposed to process the WAIT_UNTIL register at this point,
+     // but no games seem to actually use it.
++    LogStats();
+   }
+ 
+   ShutdownContext();
+@@ -322,6 +340,7 @@ void CommandProcessor::InitializeRingBuffer(uint32_t ptr, uint32_t size_log2) {
+   read_ptr_index_ = 0;
+   primary_buffer_ptr_ = ptr;
+   primary_buffer_size_ = uint32_t(1) << (size_log2 + 3);
++  REXGPU_INFO("CP ring: {} KB at {:08X}", primary_buffer_size_ / 1024, ptr);
+ }
+ 
+ void CommandProcessor::EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_size_log2) {
+@@ -333,6 +352,8 @@ void CommandProcessor::EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_s
+   //              the read pointer.
+   read_ptr_update_freq_ = uint32_t(1) << block_size_log2 >> 2;
+   read_ptr_update_block_bytes_ = uint32_t(8) << std::min<uint32_t>(block_size_log2, 24);
++  REXGPU_INFO("CP ring read pointer write-back at {:08X}, every {} bytes", ptr,
++              read_ptr_update_block_bytes_);
+ }
+ 
+ void CommandProcessor::UpdateWritePointer(uint32_t value) {
+@@ -629,6 +650,28 @@ void CommandProcessor::PrepareForWait() {}
+ 
+ void CommandProcessor::ReturnFromWait() {}
+ 
++void CommandProcessor::LogStats() {
++  const int32_t every = REXCVAR_GET(gpu_cp_stats_seconds);
++  if (every <= 0) return;
++  const auto now = std::chrono::steady_clock::now();
++  if (cp_stat_last_ == std::chrono::steady_clock::time_point{}) {
++    cp_stat_last_ = now;
++    return;
++  }
++  const double seconds = std::chrono::duration<double>(now - cp_stat_last_).count();
++  if (seconds < every) return;
++  REXGPU_INFO(
++      "CP {:.1f}s: packets {} regs {} ibs {} | waits {} polls {} {:.1f} ms | stalls {} waits {} "
++      "{:.1f} ms | write-backs {}",
++      seconds, cp_stat_packets_, cp_stat_regs_, cp_stat_ibs_, cp_stat_waits_, cp_stat_wait_polls_,
++      cp_stat_wait_ns_ / 1e6, cp_stat_stalls_, cp_stat_stall_waits_, cp_stat_stall_ns_ / 1e6,
++      cp_stat_writebacks_);
++  cp_stat_packets_ = cp_stat_regs_ = cp_stat_ibs_ = cp_stat_waits_ = cp_stat_wait_polls_ = 0;
++  cp_stat_wait_ns_ = cp_stat_stalls_ = cp_stat_stall_waits_ = cp_stat_stall_ns_ = 0;
++  cp_stat_writebacks_ = 0;
++  cp_stat_last_ = now;
++}
++
+ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t write_index) {
+   SCOPE_profile_cpu_f("gpu");
+ 
+@@ -659,6 +702,7 @@ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t wr
+       if ((offset + capacity - last_writeback) % capacity >= block_bytes) {
+         memory::store_and_swap<uint32_t>(writeback, offset / sizeof(uint32_t));
+         last_writeback = offset;
++        ++cp_stat_writebacks_;
+       }
+     }
+   } while (reader.read_count());
+@@ -700,6 +744,7 @@ void CommandProcessor::ExecutePacket(uint32_t ptr, uint32_t count) {
+ bool CommandProcessor::ExecutePacket(memory::RingBuffer* reader) {
+   const uint32_t packet = reader->ReadAndSwap<uint32_t>();
+   const uint32_t packet_type = packet >> 30;
++  ++cp_stat_packets_;
+   if (packet == 0) {
+     return true;
+   }
+@@ -727,6 +772,7 @@ bool CommandProcessor::ExecutePacketType0(memory::RingBuffer* reader, uint32_t p
+   // Type-0 packet.
+   // Write count registers in sequence to the registers starting at
+   // (base_index << 2).
++  cp_stat_regs_ += ((packet >> 16) & 0x3FFF) + 1;
+ 
+   uint32_t count = ((packet >> 16) & 0x3FFF) + 1;
+   if (reader->read_count() < count * sizeof(uint32_t)) {
+@@ -1006,6 +1052,7 @@ bool CommandProcessor::ExecutePacketType3_INDIRECT_BUFFER(memory::RingBuffer* re
+   uint32_t list_length = reader->ReadAndSwap<uint32_t>();
+   assert_zero(list_length & ~0xFFFFF);
+   list_length &= 0xFFFFF;
++  ++cp_stat_ibs_;
+   ExecuteIndirectBuffer(GpuToCpu(list_ptr), list_length);
+   return true;
+ }
+@@ -1024,6 +1071,8 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+ 
+   bool is_memory = (wait_info & 0x10) != 0;
+ 
++  ++cp_stat_waits_;
++  const auto wait_begin = std::chrono::steady_clock::now();
+   bool matched = false;
+   do {
+     uint32_t value = 0;
+@@ -1068,11 +1117,18 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+       // Wait.
+       if (wait >= 0x100) {
+         PrepareForWait();
+-        if (!REXCVAR_GET(vsync)) {
++        // The packet's interval is in GPU clocks, which Xenia read as whole milliseconds: a
++        // poll that misses by a few microseconds then costs a millisecond, during which the
++        // ring fills and the title's render thread waits for space. Sleep briefly instead.
++        const int32_t sleep_us = REXCVAR_GET(gpu_wait_reg_mem_sleep_us);
++        ++cp_stat_wait_polls_;
++        if (!REXCVAR_GET(vsync) || sleep_us == 0) {
+           // User wants it fast and dangerous.
+           rex::thread::MaybeYield();
+-        } else {
++        } else if (sleep_us < 0) {
+           rex::thread::Sleep(std::chrono::milliseconds(wait / 0x100));
++        } else {
++          rex::thread::Sleep(std::chrono::microseconds(sleep_us));
+         }
+         rex::thread::SyncMemory();
+         ReturnFromWait();
+@@ -1086,6 +1142,9 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+       }
+     }
+   } while (!matched);
++  cp_stat_wait_ns_ += std::chrono::duration_cast<std::chrono::nanoseconds>(
++                          std::chrono::steady_clock::now() - wait_begin)
++                          .count();
+ 
+   return true;
+ }

@@ -9,7 +9,7 @@
 # Extra arguments go to the game, e.g.  ./graw-linux.sh --no-fullscreen
 # GRAW_HZ=60 runs the guest display at 60 Hz instead of the 360's 30 (Steam launch options:
 # GRAW_HZ=60 %command%). GRAW_PERF=1 also records a CPU profile of every thread, user code only,
-# into logs/perf-<time>.data (read it with perf report; it can be a few hundred MB). Both can also
+# per program into logs/perf-<time>-<program>-<pid>.data (read it with perf report). Both can also
 # go in graw-linux.env beside this script, one per line.
 here="$(cd "$(dirname "$0")" && pwd)"
 game="$(cd "${GRAW_GAME:-$here/../game}" 2>/dev/null && pwd)"
@@ -75,14 +75,33 @@ if [ -f "$here/graw-linux.env" ]; then
   done < "$here/graw-linux.env"
 fi
 hz="${GRAW_HZ:-30}"
-perf=()
-if [ "${GRAW_PERF:-0}" = 1 ] && command -v perf >/dev/null; then
-  perf=(perf record -q -F 499 -e cpu-clock:u -o "$here/logs/perf-$stamp.data" --)
-fi
 echo "refresh: $hz Hz, profile: ${GRAW_PERF:-0}" >> "$info"
+# GRAW_PERF=1: perf attaches to each GRAW program as it starts, so the programs a hand-over starts
+# (their own processes, which outlive the first) get a profile too: logs/perf-<time>-<program>-<pid>.data.
+# Ends once no GRAW program has run for 10 s.
+if [ "${GRAW_PERF:-0}" = 1 ] && command -v perf >/dev/null; then
+  (
+    declare -A seen
+    idle=0
+    while [ $idle -lt 10 ]; do
+      found=0
+      for pid in $(pgrep -u "$(id -u)" -x 'graw|grawmp|grawyeti'); do
+        found=1
+        if [ -z "${seen[$pid]}" ]; then
+          seen[$pid]=1
+          name="$(cat "/proc/$pid/comm" 2>/dev/null)"
+          perf record -q -F 499 -e cpu-clock:u -p "$pid" \
+            -o "$here/logs/perf-$stamp-$name-$pid.data" >/dev/null 2>&1 &
+        fi
+      done
+      if [ $found = 1 ]; then idle=0; else idle=$((idle + 1)); fi
+      sleep 1
+    done
+  ) &
+fi
 
 # The Steam Deck's settings: the 360's 1280x720 output and 30 Hz display (GRAW_HZ).
-"${perf[@]}" "$here/$program" --fullscreen --resolution 720p --resolution_scale 1 \
+"$here/$program" --fullscreen --resolution 720p --resolution_scale 1 \
   --video_mode_refresh_rate "$hz" --anisotropic_override -1 --swap_post_effect none \
   --game_data_root "$game" --user_data_root "$here/user" --cache_root "$here/cache" \
   --log_file "$log" --log_flush_interval 1 --log_level debug "$@" \

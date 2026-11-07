@@ -86,7 +86,8 @@ def frame_stats(rows):
 
 def band_stats(rows, lo, hi):
     """Figures of the frames whose draw count is in [lo, hi): GPU, game and render thread time per frame."""
-    picked = [i for i in range(len(rows) - 1) if lo <= (num(rows[i], "draws") or -1) < hi]
+    draws = [num(r, "draws") for r in rows]
+    picked = [i for i in range(len(rows) - 1) if draws[i] is not None and lo <= draws[i] < hi]
     if not picked:
         return None
     times = [num(rows[i], "frame_ms") for i in picked]

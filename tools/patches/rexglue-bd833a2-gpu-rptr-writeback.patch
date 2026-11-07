@@ -1,0 +1,56 @@
+diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
+index 503682c..78e1a3b 100644
+--- a/include/rex/graphics/command_processor.h
++++ b/include/rex/graphics/command_processor.h
+@@ -253,6 +253,7 @@ class CommandProcessor {
+ 
+   uint32_t read_ptr_index_ = 0;
+   uint32_t read_ptr_update_freq_ = 0;
++  uint32_t read_ptr_update_block_bytes_ = 0;  // RB_BLKSZ in bytes
+   uint32_t read_ptr_writeback_ptr_ = 0;
+ 
+   std::unique_ptr<rex::thread::Event> write_ptr_index_event_;
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index f9097b8..d9c499b 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -332,6 +332,7 @@ void CommandProcessor::EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_s
+   // block_size = RB_BLKSZ, log2 of number of quadwords read between updates of
+   //              the read pointer.
+   read_ptr_update_freq_ = uint32_t(1) << block_size_log2 >> 2;
++  read_ptr_update_block_bytes_ = uint32_t(8) << std::min<uint32_t>(block_size_log2, 24);
+ }
+ 
+ void CommandProcessor::UpdateWritePointer(uint32_t value) {
+@@ -635,6 +636,17 @@ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t wr
+   memory::RingBuffer reader(memory_->TranslatePhysical(primary_buffer_ptr_), primary_buffer_size_);
+   reader.set_read_offset(read_index * sizeof(uint32_t));
+   reader.set_write_offset(write_index * sizeof(uint32_t));
++  // The read pointer is written back as the run goes, every RB_BLKSZ bytes as the hardware does
++  // (VdEnableRingBufferRPtrWriteBack's block size, at least 256 bytes), not only once the whole
++  // run up to the write pointer is done: a title that waits for ring space by polling the
++  // write-back regains it while the command processor is still working, instead of taking turns
++  // with it (GRAW's render thread lost up to half of each heavy frame that way).
++  uint32_t* writeback = read_ptr_writeback_ptr_
++                            ? memory_->TranslatePhysical<uint32_t*>(read_ptr_writeback_ptr_)
++                            : nullptr;
++  const uint32_t capacity = primary_buffer_size_;
++  const uint32_t block_bytes = std::max<uint32_t>(read_ptr_update_block_bytes_, 256);
++  uint32_t last_writeback = reader.read_offset();
+   do {
+     if (!ExecutePacket(&reader)) {
+       // This probably should be fatal - but we're going to continue anyways.
+@@ -642,6 +654,13 @@ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t wr
+       assert_always();
+       break;
+     }
++    if (writeback) {
++      const uint32_t offset = reader.read_offset();
++      if ((offset + capacity - last_writeback) % capacity >= block_bytes) {
++        memory::store_and_swap<uint32_t>(writeback, offset / sizeof(uint32_t));
++        last_writeback = offset;
++      }
++    }
+   } while (reader.read_count());
+ 
+   OnPrimaryBufferEnd();

@@ -1,0 +1,105 @@
+diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
+index 4f84862..3176cf9 100644
+--- a/include/rex/graphics/command_processor.h
++++ b/include/rex/graphics/command_processor.h
+@@ -12,6 +12,7 @@
+ #pragma once
+ 
+ #include <atomic>
++#include <utility>
+ #include <chrono>
+ #include <cstring>
+ #include <functional>
+@@ -153,6 +154,8 @@ class CommandProcessor {
+   virtual void WriteRegister(uint32_t index, uint32_t value);
+   uint32_t ReadRegisterValue(uint32_t index) const;
+   virtual void WriteRegistersFromMem(uint32_t start_index, uint32_t* base, uint32_t num_registers);
++  // Whether gpu_skip_draws may store the range without WriteRegister's side effects.
++  bool IsPlainRegisterRange(uint32_t first, uint32_t last) const;
+   virtual void WriteRegisterRangeFromRing(memory::RingBuffer* ring, uint32_t base,
+                                           uint32_t num_registers);
+   void WriteALURangeFromRing(memory::RingBuffer* ring, uint32_t base, uint32_t num_registers);
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index 1183c24..b9dfa51 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -541,8 +541,32 @@ void CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
+   }
+ }
+ 
++bool CommandProcessor::IsPlainRegisterRange(uint32_t first, uint32_t last) const {
++  // Registers WriteRegister acts on beyond storing the value: the scratch write-backs, the
++  // coherency dirty bit and the gamma ramp. Everything else is state the backends read at draw
++  // time, which gpu_skip_draws never reaches.
++  static constexpr std::pair<uint32_t, uint32_t> special[] = {
++      {XE_GPU_REG_SCRATCH_REG0, XE_GPU_REG_SCRATCH_REG7},
++      {XE_GPU_REG_COHER_STATUS_HOST, XE_GPU_REG_COHER_STATUS_HOST},
++      {XE_GPU_REG_DC_LUT_RW_INDEX, XE_GPU_REG_DC_LUT_RW_INDEX},
++      {XE_GPU_REG_DC_LUT_SEQ_COLOR, XE_GPU_REG_DC_LUT_SEQ_COLOR},
++      {XE_GPU_REG_DC_LUT_PWL_DATA, XE_GPU_REG_DC_LUT_PWL_DATA},
++      {XE_GPU_REG_DC_LUT_30_COLOR, XE_GPU_REG_DC_LUT_30_COLOR},
++  };
++  if (last >= RegisterFile::kRegisterCount || first > last) return false;
++  for (const auto& [a, b] : special) {
++    if (first <= b && last >= a) return false;
++  }
++  return true;
++}
++
+ void CommandProcessor::WriteRegistersFromMem(uint32_t start_index, uint32_t* base,
+                                              uint32_t num_registers) {
++  if (num_registers && REXCVAR_GET(gpu_skip_draws) &&
++      IsPlainRegisterRange(start_index, start_index + num_registers - 1)) {
++    memory::copy_and_swap(register_file_->values + start_index, base, num_registers);
++    return;
++  }
+   for (uint32_t i = 0; i < num_registers; ++i) {
+     uint32_t data = memory::load_and_swap<uint32_t>(base + i);
+     WriteRegister(start_index + i, data);
+@@ -795,10 +819,16 @@ bool CommandProcessor::ExecutePacketType0(memory::RingBuffer* reader, uint32_t p
+ 
+   uint32_t base_index = (packet & 0x7FFF);
+   uint32_t write_one_reg = (packet >> 15) & 0x1;
++  if (!write_one_reg) {
++    // The whole range in one call: with gpu_skip_draws a backend stores it with one copy
++    // (IsPlainRegisterRange) instead of a virtual call per register, which was a core's worth of
++    // work at 40 million register writes a second on the Steam Deck.
++    WriteRegisterRangeFromRing(reader, base_index, count);
++    return true;
++  }
+   for (uint32_t m = 0; m < count; m++) {
+     uint32_t reg_data = reader->ReadAndSwap<uint32_t>();
+-    uint32_t target_index = write_one_reg ? base_index : base_index + m;
+-    WriteRegister(target_index, reg_data);
++    WriteRegister(base_index, reg_data);
+   }
+ 
+   return true;
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+index 001f36b..e0aa436 100644
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -69,6 +69,8 @@ REXCVAR_DEFINE_BOOL(vulkan_dynamic_rendering, true, "GPU/Vulkan",
+                     "device (falls back to render passes otherwise)")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
++REXCVAR_DECLARE(bool, gpu_skip_draws);
++
+ namespace rex::graphics::vulkan {
+ 
+ namespace {
+@@ -2166,6 +2168,14 @@ void VulkanCommandProcessor::WriteRegistersFromMem(uint32_t start_index, uint32_
+     return;
+   }
+   uint32_t end_index = start_index + num_registers - 1;
++  if (REXCVAR_GET(gpu_skip_draws) && IsPlainRegisterRange(start_index, end_index)) {
++    // No draw will read this state while draws are skipped; once they resume, every constant
++    // buffer is rebuilt (the texture and vertex fetch notifications are the next draw's job as
++    // with the shaders gpu_skip_draws leaves behind).
++    memory::copy_and_swap(register_file_->values + start_index, base, num_registers);
++    current_constant_buffers_up_to_date_ = 0;
++    return;
++  }
+ 
+   auto range_has_any_constant_usage = [](const uint64_t* usage_map, uint32_t first_constant,
+                                          uint32_t last_constant) -> bool {

@@ -54,6 +54,9 @@ expected_tree=12884d9f3cbcc28abdd88159c8ed93651bc9192d  # after the last patch
 # With gpu_skip_draws a WAIT_REG_MEM on memory passes at once (--gpu_skip_draws_memory_waits):
 # GRAW's D3D parks the GPU on its swap word until the last frame was scanned out, which with the
 # native renderer presenting only starved the command ring and stalled the render thread.
+# With gpu_skip_draws a type-0 packet or constant upload is one copy into the register file
+# (gpu-skip-draws-fast-regs) instead of a virtual WriteRegister per register: the command
+# processor thread cost a whole core at 40 million register writes a second on the Deck.
 # A WAIT_REG_MEM packet polls for 500 us without sleeping (--gpu_wait_reg_mem_spin_us), then
 # sleeps 50 us between polls (--gpu_wait_reg_mem_sleep_us), not the whole
 # milliseconds Xenia made of the packet's interval, and the command processor logs its packet,
@@ -62,8 +65,9 @@ linux_patches=(rexglue-bd833a2-launch-title-path rexglue-bd833a2-linux-crash-ren
                rexglue-bd833a2-linux-shm-unlink rexglue-bd833a2-linux-crash-watchdog
                rexglue-bd833a2-linux-procmaps-query rexglue-bd833a2-linux-wait-block
                rexglue-bd833a2-gpu-known-registers rexglue-bd833a2-codegen-register-options
-               rexglue-bd833a2-gpu-rptr-writeback rexglue-bd833a2-gpu-cp-stats)
-linux_tree=ebc504b27f0ab9b3e8a09148281eeef430850c79
+               rexglue-bd833a2-gpu-rptr-writeback rexglue-bd833a2-gpu-cp-stats
+               rexglue-bd833a2-gpu-skip-draws-fast-regs)
+linux_tree=fc85110477edaa6fdf129f5b167cc3e9d8c10a3a
 # Checkouts made by an earlier version of this script move forward by the patches added since,
 # rather than a new clone and full SDK build: "<tree> <patch>..." pairs, each tree -> the next.
 upgrades=("f9d5a19f96e3f2f7ed79ee5b08155eab343a5b9c rexglue-bd833a2-spirv-exp-adjust"
@@ -76,7 +80,8 @@ upgrades=("f9d5a19f96e3f2f7ed79ee5b08155eab343a5b9c rexglue-bd833a2-spirv-exp-ad
           "c14edfc4d2dcfdac1374c1c41cfe9e3c72aacb4b rexglue-bd833a2-linux-wait-block rexglue-bd833a2-gpu-known-registers"
           "c613d54bf983448a7f0567afa9b8e7799cdfb358 rexglue-bd833a2-codegen-register-options"
           "8b6704526e838bc5de441a142dade478a73f0450 rexglue-bd833a2-vexptefp-underflow"
-          "c8920806959cab6e883b344d3763e562560de792 rexglue-bd833a2-gpu-rptr-writeback rexglue-bd833a2-gpu-cp-stats")
+          "c8920806959cab6e883b344d3763e562560de792 rexglue-bd833a2-gpu-rptr-writeback rexglue-bd833a2-gpu-cp-stats rexglue-bd833a2-gpu-skip-draws-fast-regs"
+          "ebc504b27f0ab9b3e8a09148281eeef430850c79 rexglue-bd833a2-gpu-skip-draws-fast-regs")
 force=0
 jobs=$(( $(nproc) > 2 ? $(nproc) - 2 : 1 ))
 while [[ $# -gt 0 ]]; do
@@ -167,7 +172,9 @@ if [[ -x "$install/bin/rexglue" && -f "$install/lib/librexruntimerd.so" && $forc
       "$(cat "$stamp" 2>/dev/null)" == "$linux_tree" ]]; then
   echo "SDK: built ($install)"
 else
-  (cd "$sdk" && cmake --preset linux-amd64 -DREXGLUE_BUILD_TESTS=OFF)
+  # Perf counters off: every dispatched guest call did an atomic add on one counter shared by
+  # all threads (7% of the game thread's samples on the Deck); nothing here reads them.
+  (cd "$sdk" && cmake --preset linux-amd64 -DREXGLUE_BUILD_TESTS=OFF -DREXGLUE_ENABLE_PERF_COUNTERS=OFF)
   for config in RelWithDebInfo Release; do
     echo "SDK: building $config ($jobs jobs)"
     cmake --build "$sdk/out/build/linux-amd64" --config "$config" --parallel "$jobs"

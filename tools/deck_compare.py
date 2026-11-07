@@ -36,8 +36,14 @@ def show(value, digits=1):
 
 
 def read(path):
+    """The rows of a CSV log with a time; a last row cut short when the game died is left out."""
     with open(path, newline="") as f:
-        return list(csv.DictReader(f))
+        return [r for r in csv.DictReader(f) if num(r, "t_ms") is not None]
+
+
+def frames(path):
+    """A frame log's rows, those with a frame time."""
+    return [r for r in read(path) if num(r, "frame_ms") is not None]
 
 
 def beside(log, pattern, begin, end):
@@ -139,7 +145,7 @@ def main():
     runs = []
     names = []
     for log in args.logs:
-        rows = read(log)
+        rows = frames(log)
         if not rows:
             raise SystemExit(f"{log}: no frames")
         start = num(rows[0], "t_ms")

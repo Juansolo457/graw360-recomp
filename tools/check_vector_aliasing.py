@@ -34,11 +34,13 @@ CALL = re.compile(r'\b(sub_[0-9A-F]+|ppc_setjmp|ppc_longjmp|REX_CALL_INDIRECT_FU
 
 
 def byte_range(kind, index):
+    """The byte offsets of lane `index` of a vector of `kind` (its lane width)."""
     size = LANES[kind]
     return set(range(index * size, index * size + size))
 
 
 def check_block(mnemonic, lines):
+    """The reads of a vector's bytes before anything wrote them in one translated block, by line."""
     written = collections.defaultdict(set)  # register -> bytes written so far
     hits = []
     for line in lines:
@@ -85,12 +87,14 @@ def check_block(mnemonic, lines):
 
 
 def main():
+    """Scans the generated code (the folder named on the command line) for vector reads of unwritten lanes."""
     root = sys.argv[1] if len(sys.argv) > 1 else 'port-yeti/generated/yeti_final_xenon'
     by_mnemonic = collections.Counter()
     checked = collections.Counter()
     examples = {}
 
     def finish(path, mnemonic, block):
+        """Checks the block of one translated instruction once its lines are complete, and records the hits."""
         if not mnemonic or not block:
             return
         if 'ctx.v' in ''.join(block):

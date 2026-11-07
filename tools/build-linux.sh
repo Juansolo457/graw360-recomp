@@ -74,6 +74,30 @@ if [[ "$lto" == ON ]]; then
 elif [[ "$lto" != OFF ]]; then
   echo "GRAW_LTO is ON or OFF, not $lto" >&2; exit 2
 fi
+# Profile-guided optimization, per project (the translated code is most of the binary), as in
+# fear360-recomp:
+#   GRAW_PGO=generate  an instrumented build for a training run; it writes pgo-raw/*.profraw
+#                      beside the program (port/src/pgo.cpp), merged by tools/pgo-merge.sh
+#   GRAW_PGO=use       optimize with pgo/<project>/default.profdata
+#   GRAW_PGO=off       neither
+# Default: use when that profile exists, else off. pgo/ stays out of git (counts from runs of the
+# game's code), so only builds made where the training ran get it.
+pgo="${GRAW_PGO:-}"
+profile="$root/pgo/$project/default.profdata"
+[[ -n "$pgo" ]] || { [[ -f "$profile" ]] && pgo=use || pgo=off; }
+case "$pgo" in
+  generate)
+    flags="$flags -fprofile-generate=pgo-raw -DGRAW_PGO_GENERATE=1"
+    exe_link_flags="$exe_link_flags -fprofile-generate=pgo-raw" ;;
+  use)
+    [[ -f "$profile" ]] || { echo "GRAW_PGO=use: $profile is missing (tools/pgo-merge.sh)" >&2; exit 1; }
+    # Functions the training never reached have no record (tools/pgo-merge.sh drops them; a zero
+    # count would mark them cold), so they're compiled as without a profile.
+    flags="$flags \"-fprofile-use=$profile\" -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
+    flags="$flags -Wno-backend-plugin" ;;
+  off) ;;
+  *) echo "GRAW_PGO is generate, use or off, not $pgo" >&2; exit 2 ;;
+esac
 args=(--preset "$preset" -B "$build" -DCMAKE_PREFIX_PATH="$sdk_install"
       -DGRAW_REXGLUE_SDK_SRC="$sdk_src"
       -DCMAKE_C_COMPILER="${CC:-clang}" -DCMAKE_CXX_COMPILER="${CXX:-clang++}"
@@ -99,6 +123,12 @@ if ! python3 -I "$root/tools/check_vector_aliasing.py" "generated/$out" >/dev/nu
   }
 fi
 if [[ $first_time -eq 1 ]]; then cmake "${args[@]}"; fi
+pgo_stamp="$build/.graw-pgo-profile"
+pgo_sum=none
+[[ "$pgo" == use ]] && pgo_sum=$(sha256sum "$profile" | cut -d' ' -f1)
+if [[ -f "$pgo_stamp" && "$(cat "$pgo_stamp")" != "$pgo_sum" ]]; then
+  cmake --build "$build" --target clean
+fi
 cmake --build "$build" --parallel "$jobs"
 # The program finds its shared libraries beside itself ($ORIGIN): the SDK stages the renderer
 # plugin there, but its runtime and Tracy libraries only on Windows and macOS.
@@ -106,4 +136,6 @@ postfix=$(case "$config" in Debug) echo d ;; RelWithDebInfo) echo rd ;; *) echo 
 for lib in librexruntime libTracyClient; do
   cp -u "$sdk_install/lib/$lib$postfix.so" "$build/"
 done
-echo "Built $build/$name (LTO $lto)"
+# Ninja doesn't track the profile's contents: a new one rebuilds everything (the clean above).
+echo "$pgo_sum" > "$pgo_stamp"
+echo "Built $build/$name (LTO $lto, PGO $pgo)"

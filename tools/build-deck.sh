@@ -38,6 +38,9 @@ sdk=/src/third_party/rexglue-sdk-bd833a2-deck
 lto="${GRAW_LTO:-OFF}"
 build_rel="$project/out/build/deck-amd64-${config,,}"
 [[ "$lto" == ON ]] && build_rel="$build_rel-lto"
+# A GRAW_PGO=generate build (instrumented, tools/build-linux.sh) has its own folder too.
+pgo="${GRAW_PGO:-}"
+[[ "$pgo" == generate ]] && build_rel="$build_rel-pgogen"
 # The disc files: a project's assets may be a link out of the tree (port-yeti/assets ->
 # port/assets); the link's target is mounted read-only at the same path so it resolves.
 mounts=(-v "$root:/src")
@@ -49,7 +52,7 @@ for assets in "$root"/port*/assets; do
   [[ " ${mounts[*]} " == *" $real:$real:ro "* ]] || mounts+=(-v "$real:$real:ro")
 done
 podman run --rm --userns=keep-id "${mounts[@]}" -w /src -e HOME=/tmp \
-  -e GRAW_SDK_DIR="$sdk" -e GRAW_BUILD_DIR="/src/$build_rel" -e GRAW_LTO="$lto" "$image" \
+  -e GRAW_SDK_DIR="$sdk" -e GRAW_BUILD_DIR="/src/$build_rel" -e GRAW_LTO="$lto" -e GRAW_PGO="$pgo" "$image" \
   bash -c "tools/setup-linux.sh --jobs $jobs && tools/build-linux.sh --project $project --config $config --jobs $jobs"
 
 # The newest glibc symbol version each binary needs, and libstdc++'s for the record (libstdc++ 13

@@ -47,9 +47,10 @@ expected_tree=12884d9f3cbcc28abdd88159c8ed93651bc9192d  # after the last patch
 # The translator's register options take F.E.A.R.'s fixes (its patches 0007-0012: SEH funclets'
 # r12 and non-volatiles, mtlr before blrl, setjmp's locals, hand-offs into share_registers
 # functions); the Windows-only 0013 (callee-saved xmm registers) has no Linux counterpart.
-# The command processor writes the ring read pointer back as it goes (every RB_BLKSZ bytes, as
-# the hardware does), not only once it has consumed everything submitted: the game's render
-# thread, which waits for ring space by polling that write-back, no longer takes turns with it.
+# The command processor writes the ring read pointer back after every primary packet, not only
+# once it has consumed everything submitted: the game's render thread, which waits for that
+# write-back to pass a segment's indirect-buffer packet before reusing the segment, no longer
+# waits for every submitted buffer to finish.
 # A WAIT_REG_MEM packet sleeps 50 us between polls (--gpu_wait_reg_mem_sleep_us), not the whole
 # milliseconds Xenia made of the packet's interval, and the command processor logs its packet,
 # wait and stall counts every --gpu_cp_stats_seconds.
@@ -58,7 +59,7 @@ linux_patches=(rexglue-bd833a2-launch-title-path rexglue-bd833a2-linux-crash-ren
                rexglue-bd833a2-linux-procmaps-query rexglue-bd833a2-linux-wait-block
                rexglue-bd833a2-gpu-known-registers rexglue-bd833a2-codegen-register-options
                rexglue-bd833a2-gpu-rptr-writeback rexglue-bd833a2-gpu-cp-stats)
-linux_tree=6b50fda8e56d4486fc7c7584800a66772460217e
+linux_tree=f78c01342bd231e5d7aade929c64cf801079f7f6
 # Checkouts made by an earlier version of this script move forward by the patches added since,
 # rather than a new clone and full SDK build: "<tree> <patch>..." pairs, each tree -> the next.
 upgrades=("f9d5a19f96e3f2f7ed79ee5b08155eab343a5b9c rexglue-bd833a2-spirv-exp-adjust"
@@ -71,8 +72,7 @@ upgrades=("f9d5a19f96e3f2f7ed79ee5b08155eab343a5b9c rexglue-bd833a2-spirv-exp-ad
           "c14edfc4d2dcfdac1374c1c41cfe9e3c72aacb4b rexglue-bd833a2-linux-wait-block rexglue-bd833a2-gpu-known-registers"
           "c613d54bf983448a7f0567afa9b8e7799cdfb358 rexglue-bd833a2-codegen-register-options"
           "8b6704526e838bc5de441a142dade478a73f0450 rexglue-bd833a2-vexptefp-underflow"
-          "c8920806959cab6e883b344d3763e562560de792 rexglue-bd833a2-gpu-rptr-writeback rexglue-bd833a2-gpu-cp-stats"
-          "b7b7b463b400d8793c05ee12c95fb0df4a757e9f rexglue-bd833a2-gpu-cp-stats")
+          "c8920806959cab6e883b344d3763e562560de792 rexglue-bd833a2-gpu-rptr-writeback rexglue-bd833a2-gpu-cp-stats")
 force=0
 jobs=$(( $(nproc) > 2 ? $(nproc) - 2 : 1 ))
 while [[ $# -gt 0 ]]; do

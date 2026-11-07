@@ -25,7 +25,7 @@ index 78e1a3b..0178419 100644
  
    std::unique_ptr<rex::thread::Event> write_ptr_index_event_;
 diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
-index d9c499b..594738d 100644
+index 4bcfc25..8f3f103 100644
 --- a/src/graphics/command_processor.cpp
 +++ b/src/graphics/command_processor.cpp
 @@ -11,6 +11,7 @@
@@ -131,15 +131,15 @@ index d9c499b..594738d 100644
  uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t write_index) {
    SCOPE_profile_cpu_f("gpu");
  
-@@ -659,6 +702,7 @@ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t wr
-       if ((offset + capacity - last_writeback) % capacity >= block_bytes) {
-         memory::store_and_swap<uint32_t>(writeback, offset / sizeof(uint32_t));
-         last_writeback = offset;
-+        ++cp_stat_writebacks_;
-       }
+@@ -657,6 +700,7 @@ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t wr
+     }
+     if (writeback) {
+       memory::store_and_swap<uint32_t>(writeback, reader.read_offset() / sizeof(uint32_t));
++      ++cp_stat_writebacks_;
      }
    } while (reader.read_count());
-@@ -700,6 +744,7 @@ void CommandProcessor::ExecutePacket(uint32_t ptr, uint32_t count) {
+ 
+@@ -697,6 +741,7 @@ void CommandProcessor::ExecutePacket(uint32_t ptr, uint32_t count) {
  bool CommandProcessor::ExecutePacket(memory::RingBuffer* reader) {
    const uint32_t packet = reader->ReadAndSwap<uint32_t>();
    const uint32_t packet_type = packet >> 30;
@@ -147,7 +147,7 @@ index d9c499b..594738d 100644
    if (packet == 0) {
      return true;
    }
-@@ -727,6 +772,7 @@ bool CommandProcessor::ExecutePacketType0(memory::RingBuffer* reader, uint32_t p
+@@ -724,6 +769,7 @@ bool CommandProcessor::ExecutePacketType0(memory::RingBuffer* reader, uint32_t p
    // Type-0 packet.
    // Write count registers in sequence to the registers starting at
    // (base_index << 2).
@@ -155,7 +155,7 @@ index d9c499b..594738d 100644
  
    uint32_t count = ((packet >> 16) & 0x3FFF) + 1;
    if (reader->read_count() < count * sizeof(uint32_t)) {
-@@ -1006,6 +1052,7 @@ bool CommandProcessor::ExecutePacketType3_INDIRECT_BUFFER(memory::RingBuffer* re
+@@ -1003,6 +1049,7 @@ bool CommandProcessor::ExecutePacketType3_INDIRECT_BUFFER(memory::RingBuffer* re
    uint32_t list_length = reader->ReadAndSwap<uint32_t>();
    assert_zero(list_length & ~0xFFFFF);
    list_length &= 0xFFFFF;
@@ -163,7 +163,7 @@ index d9c499b..594738d 100644
    ExecuteIndirectBuffer(GpuToCpu(list_ptr), list_length);
    return true;
  }
-@@ -1024,6 +1071,8 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+@@ -1021,6 +1068,8 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
  
    bool is_memory = (wait_info & 0x10) != 0;
  
@@ -172,7 +172,7 @@ index d9c499b..594738d 100644
    bool matched = false;
    do {
      uint32_t value = 0;
-@@ -1068,11 +1117,18 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+@@ -1065,11 +1114,18 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
        // Wait.
        if (wait >= 0x100) {
          PrepareForWait();
@@ -193,7 +193,7 @@ index d9c499b..594738d 100644
          }
          rex::thread::SyncMemory();
          ReturnFromWait();
-@@ -1086,6 +1142,9 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+@@ -1083,6 +1139,9 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
        }
      }
    } while (!matched);

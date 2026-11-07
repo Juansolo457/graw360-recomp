@@ -1,5 +1,6 @@
 // Stress test of rex::thread waits (the SDK's POSIX WaitMultiple) against a built librexruntime:
-//   clang++ -std=c++23 -O2 -I<SDK install>/include tools/linux/waittest.cpp -L<SDK install>/lib \n//     -lrexruntimerd -Wl,-rpath,<SDK install>/lib -o /tmp/waittest && /tmp/waittest
+//   clang++ -std=c++23 -O2 -I<SDK install>/include tools/linux/waittest.cpp -L<SDK install>/lib \
+//     -lrexruntimerd -Wl,-rpath,<SDK install>/lib -o /tmp/waittest && /tmp/waittest
 #include <rex/thread.h>
 #include <atomic>
 #include <chrono>

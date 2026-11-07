@@ -7,6 +7,9 @@
 # Reads the disc files from ../game (the graw360 folder this sits in); GRAW_GAME=/path overrides.
 # Saves, caches and logs stay in this folder (user/, cache/, logs/), apart from the Windows copy's.
 # Extra arguments go to the game, e.g.  ./graw-linux.sh --no-fullscreen
+# GRAW_HZ=60 runs the guest display at 60 Hz instead of the 360's 30 (Steam launch options:
+# GRAW_HZ=60 %command%). GRAW_PERF=1 also records a CPU profile of every thread, user code only,
+# into logs/perf-<time>.data (read it with perf report; it can be a few hundred MB).
 here="$(cd "$(dirname "$0")" && pwd)"
 game="$(cd "${GRAW_GAME:-$here/../game}" 2>/dev/null && pwd)"
 program="${GRAW_PROGRAM:-graw}"
@@ -61,9 +64,16 @@ EOF
 # after the last program; the game doesn't depend on it.
 python3 -I "$here/deck-sensors.py" "$here/logs/sensors-$stamp.csv" >/dev/null 2>&1 &
 
-# The Steam Deck's settings: the 360's 1280x720 output and 30 Hz display.
-"$here/$program" --fullscreen --resolution 720p --resolution_scale 1 \
-  --video_mode_refresh_rate 30 --anisotropic_override -1 --swap_post_effect none \
+hz="${GRAW_HZ:-30}"
+perf=()
+if [ "${GRAW_PERF:-0}" = 1 ] && command -v perf >/dev/null; then
+  perf=(perf record -q -F 499 -e cpu-clock:u -o "$here/logs/perf-$stamp.data" --)
+fi
+echo "refresh: $hz Hz, profile: ${GRAW_PERF:-0}" >> "$info"
+
+# The Steam Deck's settings: the 360's 1280x720 output and 30 Hz display (GRAW_HZ).
+"${perf[@]}" "$here/$program" --fullscreen --resolution 720p --resolution_scale 1 \
+  --video_mode_refresh_rate "$hz" --anisotropic_override -1 --swap_post_effect none \
   --game_data_root "$game" --user_data_root "$here/user" --cache_root "$here/cache" \
   --log_file "$log" --log_flush_interval 1 --log_level debug "$@" \
   >> "$here/logs/stdout-$stamp.txt" 2>&1

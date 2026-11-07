@@ -1,0 +1,179 @@
+diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
+index 9ac8d15..482a25d 100644
+--- a/src/core/threading_posix.cpp
++++ b/src/core/threading_posix.cpp
+@@ -267,8 +267,30 @@ static sem_t* RexCreateAnonymousSemaphore() {
+ }
+ #endif  // __APPLE__
+ 
++// A thread in PosixConditionBase::WaitMultiple, registered with every handle it waits on while it
++// sleeps. A handle that becomes signaled wakes the waiters registered with it, and only those.
++struct PosixMultiWaiter {
++  std::mutex mutex;
++  std::condition_variable cond;
++  bool woken = false;  // Protected by mutex.
++
++  void Wake() {
++    std::lock_guard<std::mutex> lock(mutex);
++    woken = true;
++    cond.notify_one();
++  }
++};
++
+ class PosixConditionBase {
+  public:
++  // With mutex_ held: wakes the single-handle waiters (cond_) and the WaitMultiple waiters.
++  void NotifyAllLocked() {
++    cond_.notify_all();
++    for (auto* waiter : multi_waiters_) {
++      waiter->Wake();
++    }
++  }
++
+   PosixConditionBase() {
+ #if REX_PLATFORM_LINUX
+     // Use robust mutexes so waits can recover if owner thread terminates.
+@@ -320,6 +342,8 @@ class PosixConditionBase {
+     }
+   }
+ 
++  static constexpr std::chrono::microseconds kWaitMultipleSpin{50};
++
+   static std::pair<WaitResult, size_t> WaitMultiple(std::vector<PosixConditionBase*>&& handles,
+                                                     bool wait_all,
+                                                     std::chrono::milliseconds timeout) {
+@@ -404,21 +428,55 @@ class PosixConditionBase {
+         return std::make_pair(WaitResult::kSuccess, first_signaled);
+       }
+ 
+-      locks.clear();
+-
+       auto now = std::chrono::steady_clock::now();
+       if (now >= end_time) {
+         return std::make_pair<WaitResult, size_t>(WaitResult::kTimeout, 0);
+       }
++      // A hand-off between two guest threads is usually answered within microseconds: keep
++      // polling for a short while first, as the old loop did for its whole wait, and only then
++      // sleep (a wake through the waiter costs tens of microseconds).
++      if (now - start_time < kWaitMultipleSpin) {
++        locks.clear();
++        std::this_thread::yield();
++        continue;
++      }
+ 
+-      if (timeout == std::chrono::milliseconds::max()) {
+-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+-      } else {
+-        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - now);
+-        auto sleep_time = std::min(remaining, std::chrono::milliseconds(1));
+-        std::this_thread::sleep_for(sleep_time);
++      // Not signaled yet: register with every handle while their locks are still held, so a
++      // signal from here on finds this waiter, then sleep until one wakes it or the time is up.
++      // This used to poll every millisecond with the time left cast to whole milliseconds, 0
++      // under 1 ms: the alertable waits (1 ms slices) spun for their whole slice, and the audio
++      // worker, waiting on nine handles, used a full core.
++      PosixMultiWaiter waiter;
++      for (auto* handle : handles) {
++        handle->multi_waiters_.push_back(&waiter);
+       }
++      locks.clear();
++      {
++        std::unique_lock<std::mutex> waiter_lock(waiter.mutex);
++        if (timeout == std::chrono::milliseconds::max()) {
++          waiter.cond.wait(waiter_lock, [&waiter] { return waiter.woken; });
++        } else {
++          waiter.cond.wait_until(waiter_lock, end_time, [&waiter] { return waiter.woken; });
++        }
++      }
++      for (auto* handle : handles) {
++        handle->LockMutex();
++        std::erase(handle->multi_waiters_, &waiter);
++        handle->mutex_.unlock();
++      }
++    }
++  }
++
++  // Blocking lock of mutex_, recovering it if its owner died (robust mutex).
++  void LockMutex() {
++#if REX_PLATFORM_LINUX
++    auto native_mutex = static_cast<pthread_mutex_t*>(mutex_.native_handle());
++    if (pthread_mutex_lock(native_mutex) == EOWNERDEAD) {
++      pthread_mutex_consistent(native_mutex);
+     }
++#else
++    mutex_.lock();
++#endif
+   }
+ 
+   virtual void* native_handle() const {
+@@ -430,6 +488,7 @@ class PosixConditionBase {
+   inline virtual void post_execution() = 0;
+   std::condition_variable cond_;
+   std::mutex mutex_;
++  std::vector<PosixMultiWaiter*> multi_waiters_;  // Protected by mutex_.
+ };
+ 
+ // There really is no native POSIX handle for a single wait/signal construct
+@@ -449,7 +508,7 @@ class PosixCondition<Event> : public PosixConditionBase {
+   bool Signal() override {
+     auto lock = std::unique_lock<std::mutex>(mutex_);
+     signal_ = true;
+-    cond_.notify_all();
++    NotifyAllLocked();
+     return true;
+   }
+ 
+@@ -486,7 +545,7 @@ class PosixCondition<Semaphore> : public PosixConditionBase {
+       *out_previous_count = count_;
+     }
+     count_ += release_count;
+-    cond_.notify_all();
++    NotifyAllLocked();
+     return true;
+   }
+ 
+@@ -494,7 +553,7 @@ class PosixCondition<Semaphore> : public PosixConditionBase {
+   inline bool signaled() const override { return count_ > 0; }
+   inline void post_execution() override {
+     count_--;
+-    cond_.notify_all();
++    cond_.notify_all();  // A count going down: no waiter to wake.
+   }
+   uint32_t count_;
+   const uint32_t maximum_count_;
+@@ -518,7 +577,7 @@ class PosixCondition<Mutant> : public PosixConditionBase {
+       --count_;
+       // Free to be acquired by another thread
+       if (count_ == 0) {
+-        cond_.notify_all();
++        NotifyAllLocked();
+       }
+       return true;
+     }
+@@ -550,7 +609,7 @@ class PosixCondition<Timer> : public PosixConditionBase {
+   bool Signal() override {
+     std::lock_guard<std::mutex> lock(mutex_);
+     signal_ = true;
+-    cond_.notify_all();
++    NotifyAllLocked();
+     return true;
+   }
+ 
+@@ -978,7 +1037,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
+ 
+       exit_code_ = exit_code;
+       signaled_ = true;
+-      cond_.notify_all();
++      NotifyAllLocked();
+     }
+     if (is_current_thread) {
+       pthread_exit(reinterpret_cast<void*>(exit_code));
+@@ -1448,7 +1507,7 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
+     std::unique_lock<std::mutex> lock(thread->handle_.mutex_);
+     thread->handle_.exit_code_ = 0;
+     thread->handle_.signaled_ = true;
+-    thread->handle_.cond_.notify_all();
++    thread->handle_.NotifyAllLocked();
+   }
+ 
+   current_thread_ = nullptr;

@@ -53,10 +53,32 @@ preset="linux-amd64-${config,,}"
 # x86-64-v3 as on Windows (tools/build.ps1, #11); the Steam Deck has it. The presets name
 # clang-20; any clang 20 or later works.
 build="${GRAW_BUILD_DIR:-$port/out/build/$preset}"
+flags="-march=x86-64-v3"
+# GRAW_LTO=ON: ThinLTO over the program, its translated code (files whose calls to each other can't
+# be inlined otherwise) and our host code; the SDK's shared libraries stay as they are. lld links
+# it. tools/linux/ltext.ld merges the translated code's per-function sections back into one, as in
+# fear360-recomp, where ThinLTO halved the Deck's hitches. Off unless asked for.
+lto="${GRAW_LTO:-OFF}"
+exe_link_flags=
+lto_tools=()
+if [[ "$lto" == ON ]]; then
+  flags="$flags -flto=thin"
+  exe_link_flags="-fuse-ld=lld -flto=thin \"-Wl,-T,$root/tools/linux/ltext.ld\""
+  llvm=$("${CC:-clang}" -dumpversion | cut -d. -f1)
+  ar=$(command -v "llvm-ar-$llvm" || command -v llvm-ar) || { echo "llvm-ar is not installed" >&2; exit 1; }
+  ranlib=$(command -v "llvm-ranlib-$llvm" || command -v llvm-ranlib) || {
+    echo "llvm-ranlib is not installed" >&2; exit 1; }
+  [[ -x "$("${CC:-clang}" -print-prog-name=ld.lld)" ]] || command -v ld.lld >/dev/null || {
+    echo "lld is not installed, or build with GRAW_LTO=OFF" >&2; exit 1; }
+  lto_tools=(-DCMAKE_AR="$ar" -DCMAKE_RANLIB="$ranlib")
+elif [[ "$lto" != OFF ]]; then
+  echo "GRAW_LTO is ON or OFF, not $lto" >&2; exit 2
+fi
 args=(--preset "$preset" -B "$build" -DCMAKE_PREFIX_PATH="$sdk_install"
       -DGRAW_REXGLUE_SDK_SRC="$sdk_src"
       -DCMAKE_C_COMPILER="${CC:-clang}" -DCMAKE_CXX_COMPILER="${CXX:-clang++}"
-      -DCMAKE_C_FLAGS=-march=x86-64-v3 -DCMAKE_CXX_FLAGS=-march=x86-64-v3)
+      "-DCMAKE_C_FLAGS=$flags" "-DCMAKE_CXX_FLAGS=$flags"
+      "-DCMAKE_EXE_LINKER_FLAGS=$exe_link_flags" "${lto_tools[@]}")
 cd "$port"
 cmake "${args[@]}"
 first_time=0
@@ -84,4 +106,4 @@ postfix=$(case "$config" in Debug) echo d ;; RelWithDebInfo) echo rd ;; *) echo 
 for lib in librexruntime libTracyClient; do
   cp -u "$sdk_install/lib/$lib$postfix.so" "$build/"
 done
-echo "Built $build/$name"
+echo "Built $build/$name (LTO $lto)"

@@ -9,7 +9,8 @@
 # Extra arguments go to the game, e.g.  ./graw-linux.sh --no-fullscreen
 # GRAW_HZ=60 runs the guest display at 60 Hz instead of the 360's 30 (Steam launch options:
 # GRAW_HZ=60 %command%). GRAW_PERF=1 also records a CPU profile of every thread, user code only,
-# into logs/perf-<time>.data (read it with perf report; it can be a few hundred MB).
+# into logs/perf-<time>.data (read it with perf report; it can be a few hundred MB). Both can also
+# go in graw-linux.env beside this script, one per line.
 here="$(cd "$(dirname "$0")" && pwd)"
 game="$(cd "${GRAW_GAME:-$here/../game}" 2>/dev/null && pwd)"
 program="${GRAW_PROGRAM:-graw}"
@@ -64,6 +65,15 @@ EOF
 # after the last program; the game doesn't depend on it.
 python3 -I "$here/deck-sensors.py" "$here/logs/sensors-$stamp.csv" >/dev/null 2>&1 &
 
+# graw-linux.env beside this script, if there is one, sets the same variables without launch options
+# (lines like GRAW_HZ=60); a variable given at launch wins.
+if [ -f "$here/graw-linux.env" ]; then
+  while IFS='=' read -r key value; do
+    case "$key" in
+      GRAW_HZ|GRAW_PERF) [ -z "${!key}" ] && export "$key=$value" ;;
+    esac
+  done < "$here/graw-linux.env"
+fi
 hz="${GRAW_HZ:-30}"
 perf=()
 if [ "${GRAW_PERF:-0}" = 1 ] && command -v perf >/dev/null; then

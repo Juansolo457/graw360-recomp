@@ -51,6 +51,9 @@ expected_tree=12884d9f3cbcc28abdd88159c8ed93651bc9192d  # after the last patch
 # once it has consumed everything submitted: the game's render thread, which waits for that
 # write-back to pass a segment's indirect-buffer packet before reusing the segment, no longer
 # waits for every submitted buffer to finish.
+# With gpu_skip_draws a WAIT_REG_MEM on memory passes at once (--gpu_skip_draws_memory_waits):
+# GRAW's D3D parks the GPU on its swap word until the last frame was scanned out, which with the
+# native renderer presenting only starved the command ring and stalled the render thread.
 # A WAIT_REG_MEM packet polls for 500 us without sleeping (--gpu_wait_reg_mem_spin_us), then
 # sleeps 50 us between polls (--gpu_wait_reg_mem_sleep_us), not the whole
 # milliseconds Xenia made of the packet's interval, and the command processor logs its packet,
@@ -60,7 +63,7 @@ linux_patches=(rexglue-bd833a2-launch-title-path rexglue-bd833a2-linux-crash-ren
                rexglue-bd833a2-linux-procmaps-query rexglue-bd833a2-linux-wait-block
                rexglue-bd833a2-gpu-known-registers rexglue-bd833a2-codegen-register-options
                rexglue-bd833a2-gpu-rptr-writeback rexglue-bd833a2-gpu-cp-stats)
-linux_tree=0a550a8dd8b59dba481ac367545bae581abc92ef
+linux_tree=ebc504b27f0ab9b3e8a09148281eeef430850c79
 # Checkouts made by an earlier version of this script move forward by the patches added since,
 # rather than a new clone and full SDK build: "<tree> <patch>..." pairs, each tree -> the next.
 upgrades=("f9d5a19f96e3f2f7ed79ee5b08155eab343a5b9c rexglue-bd833a2-spirv-exp-adjust"

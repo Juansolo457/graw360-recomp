@@ -26,7 +26,8 @@
 
 #include "backend.h"
 #include "guest_memory_mirror.h"
-#include "surfaces.h"  // SurfaceRegs
+#include "shader_modifications.h"  // ShaderDrawRegs, ShaderModifications (the draw memo)
+#include "surfaces.h"              // SurfaceRegs
 
 #include <rex/graphics/xenos.h>
 
@@ -134,6 +135,21 @@ class VulkanBackend final : public Backend, public GuestMemoryMirror::Sink {
   uint32_t frame_draw_ = 0;
   uint32_t skip_first_ = UINT32_MAX, skip_last_ = 0;
   DrawStats stats_;
+  // A draw's shader modifications and modules by (vs, ps, the registers they are selected
+  // from): SelectSpirvModifications reads only those registers and the shaders' translation-time
+  // fields, shader pointers are stable (shaders_ never erases) and (shader, modification) ->
+  // module is immutable. 4 entries so alternating materials keep hitting; `valid` is the
+  // occupied flag (the Draw thread's only).
+  struct ModsMemo {
+    const rex::graphics::SpirvShader* vs;
+    const rex::graphics::SpirvShader* ps;  // the draw's, before pixel_shader_used drops it
+    ShaderDrawRegs regs;
+    ShaderModifications mods;
+    VkShaderModule vs_module, ps_module;
+    bool valid;
+  };
+  ModsMemo mods_memo_[4] = {};
+  uint64_t mods_memo_hits_ = 0;
   // What the draws set in this frame's command buffer (#51): Draw skips the calls whose values
   // are unchanged. Valid for one command buffer (`fence`, its frame); the present pass binds its
   // own pipeline at the end of it.
@@ -209,6 +225,16 @@ class VulkanBackend final : public Backend, public GuestMemoryMirror::Sink {
                       uint8_t signs[32]);
   std::vector<VkImageView> texture_views_;
   std::vector<VkSampler> samplers_;
+  // A sampler by (fetch constant dwords, the binding's filters), direct-mapped: SamplerKey is a
+  // pure function of exactly those and VulkanBindings keeps its samplers for its lifetime. The
+  // filters are 2- and 3-bit fields, so 0xFF marks an empty entry (draw.cpp's sampler memo).
+  struct SamplerMemo {
+    uint32_t fetch[6];
+    uint8_t filters[4];  // mag, min, mip, aniso
+    VkSampler sampler;
+  };
+  SamplerMemo sampler_memo_[1024];
+  uint64_t sampler_memo_hits_ = 0, sampler_memo_misses_ = 0;
   // Reasons draws were unsupported, logged once each.
   std::unordered_set<const char*> unsupported_seen_;
   uint32_t unsupported_logged_ = 0;

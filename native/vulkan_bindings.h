@@ -99,11 +99,22 @@ class VulkanBindings {
   }
 
  private:
-  // A constant buffer's last contents and where they were uploaded this frame.
+  // A constant buffer's last contents and where they were uploaded this frame. `last` is used
+  // by Upload (system, bool/loop, fetch); the float buffers keep theirs in FloatConstants.
   struct Constants {
     std::vector<uint8_t> last;
     VkDescriptorBufferInfo info{};
     uint64_t frame = 0;  // the frame `info` belongs to (0: none)
+  };
+  // A float constant buffer's last contents: Bind packs the shader's registers straight into
+  // `last` (as draw.cpp's PackFloats), comparing with what was there on the way, so the bytes
+  // are never zero-filled or copied twice. 256 vec4 is the most a shader reads (dynamic
+  // addressing); `last_size` is the bytes of the current contents (16: the no-constants
+  // placeholder).
+  struct FloatConstants {
+    static constexpr uint32_t kMaxSize = 256 * 16;
+    alignas(16) uint8_t last[kMaxSize] = {};
+    uint32_t last_size = 0;
   };
   // Uploads data[size] unless the frame's last upload has the same contents; `changed`: it
   // uploaded.
@@ -142,8 +153,8 @@ class VulkanBindings {
   VulkanUploadPool uniforms_{4u << 20, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};
   uint64_t uniform_align_ = 256;
   std::array<Constants, SpirvShaderTranslator::kConstantBufferCount> constants_;
+  std::array<FloatConstants, 2> float_last_;        // [0] vertex, [1] pixel
   VkDescriptorSet constants_set_ = VK_NULL_HANDLE;  // this frame's last, for constants_
-  std::vector<uint8_t> float_scratch_;              // packed float constants
 
   // Placeholder textures: [0] 2D array (6 layers, cube compatible), [1] 3D.
   std::array<VulkanMemory::Image, 2> placeholder_images_{};
@@ -156,11 +167,15 @@ class VulkanBindings {
   std::vector<VkDescriptorImageInfo> image_infos_;
   // This frame's texture sets (#51), by what was written: the set layout, then the views and
   // samplers after placeholders and the default sampler are filled in (the placeholder depends
-  // on the shader's texture dimension, so the bound views alone aren't enough). Cleared with the
-  // pools at BeginFrame.
+  // on the shader's texture dimension, so the bound views alone aren't enough). The map isn't
+  // cleared per frame (freeing and reallocating its ~500 nodes every frame showed in the
+  // profile): an entry counts only when its `frame` is the one being recorded, since its set
+  // lives in that frame's pools and its key in that frame's texture_set_keys_. The same keys
+  // recur frame after frame, so after warm-up the nodes are simply rewritten.
   struct TextureSetEntry {
     uint32_t key_offset = 0, key_size = 0;  // in texture_set_keys_
     VkDescriptorSet set = VK_NULL_HANDLE;
+    uint64_t frame = 0;  // the frame `set` was written in (0: none)
   };
   std::unordered_map<uint64_t, TextureSetEntry> texture_sets_;
   std::vector<uint64_t> texture_set_keys_, key_scratch_;

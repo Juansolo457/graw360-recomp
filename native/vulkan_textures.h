@@ -31,6 +31,8 @@ class Memory;
 
 namespace graw::native {
 
+class VulkanRenderTargets;
+
 // A resolve destination image at a guest physical address (VK_NULL_HANDLE: none), single
 // level and layer, in SHADER_READ_ONLY_OPTIMAL between uses. format_signed: the format of its
 // signed views (a MUTABLE image's), or UNDEFINED. depth_image: a depth resolve's R32_SFLOAT
@@ -47,6 +49,7 @@ struct VulkanTextureStats {
   uint64_t uploads = 0, upload_bytes = 0, created = 0, resolved_binds = 0;
   uint64_t unsupported = 0, failed = 0, resolved_mismatches = 0;
   uint64_t with_mips = 0;  // created with more than one level
+  uint64_t memo_hits = 0, memo_misses = 0;  // Get's fetch-constant memo
 };
 
 // What a draw binds for one texture fetch constant.
@@ -66,11 +69,11 @@ class VulkanTextureCache {
   void SetResolvedLookup(VulkanResolvedLookup lookup) { resolved_ = std::move(lookup); }
 
   // The texture of a fetch constant (6 dwords), uploaded first if new or written since: the
-  // upload ends the open rendering instance (`end_rendering`) and records the copy into cmd.
-  // frame: the frame being recorded (upload memory is kept until it completes). False: no data
-  // or unsupported (logged once per format).
+  // upload ends the open rendering instance (targets.EndRendering) and records the copy into
+  // cmd. frame: the frame being recorded (upload memory is kept until it completes). False: no
+  // data or unsupported (logged once per format).
   bool Get(const uint32_t fetch[6], VkCommandBuffer cmd, uint64_t frame,
-           const std::function<void()>& end_rendering, VulkanTextureBinding* out);
+           VulkanRenderTargets& targets, VulkanTextureBinding* out);
 
   // The backend replaces a resolve image: its views go once the GPU finished `frame` (the
   // fence of the frame being recorded, which may still use them).
@@ -116,6 +119,25 @@ class VulkanTextureCache {
   void* invalidation_handle_ = nullptr;
   VulkanResolvedLookup resolved_;
   std::unordered_map<TextureKey, std::unique_ptr<Texture>, TextureKeyHasher> textures_;
+  // Get's result by fetch constant (direct-mapped on a hash of its 6 dwords): the key, format,
+  // swizzle and signs are pure functions of the dwords, textures_ and a texture's views are
+  // insert-only and Upload keeps the image, so a filled entry stays right for a guest texture
+  // (dirty/initialized are re-checked on a hit). A resolve candidate (a 2D single-level,
+  // single-layer key) re-reads resolved_ and compares, and checks view_generation_: resolved
+  // views are the only ones retired (ForgetResolvedImage). texture is null for a resolved
+  // binding; `valid` is the occupied flag. Filled on success returns only.
+  struct GetMemo {
+    uint32_t fetch[6];
+    uint32_t base;  // key.base_page << 12, what resolved_ is asked for
+    Texture* texture;
+    VulkanTextureBinding binding;
+    VulkanResolvedImage resolved;  // resolved_'s answer at fill (zero when not asked)
+    uint64_t view_generation;
+    bool valid;
+    bool resolve_candidate;
+  };
+  GetMemo get_memo_[1024] = {};
+  uint64_t view_generation_ = 1;
   // Watched ranges (physical [start, end)) per texture, listed in each 64 KB bucket of guest
   // physical memory they touch: Invalidate looks up the faulting range's buckets.
   struct Watch {

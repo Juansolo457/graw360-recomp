@@ -168,7 +168,10 @@ struct VulkanBackend::Gpu {
   }
 };
 
-VulkanBackend::VulkanBackend() = default;
+VulkanBackend::VulkanBackend() {
+  // No filter value is 0xFF: an empty sampler memo entry can't match.
+  std::memset(sampler_memo_, 0xFF, sizeof(sampler_memo_));
+}
 
 VulkanBackend::~VulkanBackend() {
   mirror_.Shutdown();
@@ -400,8 +403,23 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
     ++stats_.skipped;
     return;
   }
-  const ShaderModifications mods = SelectSpirvModifications(
-      shaders_->translator(), *vs, ps, ReadShaderDrawRegs(state.regs, state.primitive));
+  // The modifications and modules of (vs, ps, registers), computed once per combination
+  // (mods_memo_); the modules are looked up here and filled in after the checks below.
+  const ShaderDrawRegs sdr = ReadShaderDrawRegs(state.regs, state.primitive);
+  ModsMemo& mm = mods_memo_[((uintptr_t(vs) ^ uintptr_t(ps)) >> 4) & 3];
+  const bool mods_hit = mm.valid && mm.vs == vs && mm.ps == ps &&
+                        std::memcmp(&mm.regs, &sdr, sizeof(sdr)) == 0;
+  if (mods_hit) ++mods_memo_hits_;
+  const ShaderModifications mods =
+      mods_hit ? mm.mods : SelectSpirvModifications(shaders_->translator(), *vs, ps, sdr);
+  if (!mods_hit) {
+    mm.vs = vs;
+    mm.ps = ps;
+    mm.regs = sdr;
+    mm.mods = mods;
+    mm.vs_module = mm.ps_module = VK_NULL_HANDLE;  // looked up when the draw gets that far
+    mm.valid = true;
+  }
   if (!mods.draw) {
     ++stats_.skipped;
     return;
@@ -422,7 +440,15 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
     ++stats_.skipped;
     return;
   }
-  if (!shaders_->Module(*vs, mods.vertex) || (ps && !shaders_->Module(*ps, mods.pixel))) {
+  // A null memoized vertex module: not looked up yet (or it failed: looked up again, as before).
+  VkShaderModule vs_module = mm.vs_module, ps_module = mm.ps_module;
+  if (vs_module == VK_NULL_HANDLE) {
+    vs_module = shaders_->Module(*vs, mods.vertex);
+    ps_module = ps ? shaders_->Module(*ps, mods.pixel) : VK_NULL_HANDLE;
+    mm.vs_module = vs_module;
+    mm.ps_module = ps_module;
+  }
+  if (vs_module == VK_NULL_HANDLE || (ps && ps_module == VK_NULL_HANDLE)) {
     ++stats_.failed;
     return;
   }
@@ -587,8 +613,8 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
   // The pipeline.
   VulkanPipelineKey key;
   std::memset(&key, 0, sizeof(key));
-  key.vs = shaders_->Module(*vs, mods.vertex);
-  key.ps = ps ? shaders_->Module(*ps, mods.pixel) : VK_NULL_HANDLE;
+  key.vs = vs_module;
+  key.ps = ps_module;
   if (geometry != PipelineGeometryShader::kNone) {
     key.gs = shaders_->Geometry(GetVulkanGeometryShaderKey(geometry, mods.vertex, mods.pixel));
     if (!key.gs) {
@@ -1420,13 +1446,12 @@ void VulkanBackend::GetShaderTextures(const SpirvShader& shader, const DrawState
   using rex::graphics::xenos::FetchOpDimension;
   VkCommandBuffer cmd = device_->command_buffer();
   VulkanRenderTargets& targets = gpu_->targets;
-  const auto end_rendering = [&] { targets.EndRendering(cmd); };
+  const uint64_t fence = device_->frame_fence();  // the frame's: constant until EndFrame
   for (const SpirvShader::TextureBinding& tb : shader.GetTextureBindingsAfterTranslation()) {
     VkImageView view = VK_NULL_HANDLE;
     VulkanTextureBinding b;
     ++texture_stats_.gets;
-    if (gpu_->textures->Get(state.fetch(tb.fetch_constant), cmd, device_->frame_fence(),
-                            end_rendering, &b)) {
+    if (gpu_->textures->Get(state.fetch(tb.fetch_constant), cmd, fence, targets, &b)) {
       // The translator's image type: 2D array (1D, 2D, stacked), cube, or 3D.
       bool fits = tb.dimension == FetchOpDimension::kCube
                             ? b.dimension == DataDimension::kCube
@@ -1444,9 +1469,30 @@ void VulkanBackend::GetShaderTextures(const SpirvShader& shader, const DrawState
     texture_views_.push_back(view);  // VK_NULL_HANDLE: the placeholder
   }
   const RegisterFile& regs = *reinterpret_cast<const RegisterFile*>(state.regs);
-  for (const SpirvShader::SamplerBinding& sb : shader.GetSamplerBindingsAfterTranslation())
-    samplers_.push_back(gpu_->bindings.Sampler(
-        GetSamplerKey(regs, sb, rex::graphics::xenos::AnisoFilter::kDisabled)));
+  for (const SpirvShader::SamplerBinding& sb : shader.GetSamplerBindingsAfterTranslation()) {
+    // The sampler by fetch constant and binding filters (sampler_memo_): what GetSamplerKey
+    // reads, and the only inputs besides the constant kDisabled below.
+    const uint32_t* fetch = state.fetch(sb.fetch_constant);
+    const uint8_t filters[4] = {uint8_t(sb.mag_filter), uint8_t(sb.min_filter),
+                                uint8_t(sb.mip_filter), uint8_t(sb.aniso_filter)};
+    uint32_t h = 0;
+    for (uint32_t i = 0; i < 6; ++i) h = (h ^ fetch[i]) * 0x9E3779B1u;
+    uint32_t packed;
+    std::memcpy(&packed, filters, 4);
+    h = (h ^ packed) * 0x9E3779B1u;
+    SamplerMemo& m = sampler_memo_[h >> 22];
+    if (std::memcmp(m.fetch, fetch, sizeof(m.fetch)) == 0 &&
+        std::memcmp(m.filters, filters, sizeof(filters)) == 0) {
+      ++sampler_memo_hits_;
+    } else {
+      ++sampler_memo_misses_;
+      m.sampler = gpu_->bindings.Sampler(
+          GetSamplerKey(regs, sb, rex::graphics::xenos::AnisoFilter::kDisabled));
+      std::memcpy(m.fetch, fetch, sizeof(m.fetch));
+      std::memcpy(m.filters, filters, sizeof(filters));
+    }
+    samplers_.push_back(m.sampler);
+  }
 }
 
 void VulkanBackend::RecordPipeline(const VulkanPipelineKey& key, const SpirvShader& vs,
@@ -1723,9 +1769,12 @@ Backend::SwapResult VulkanBackend::Swap(const SwapCall& swap, std::optional<bool
     const VulkanTextureStats& t = gpu_->textures->stats();
     REXLOG_INFO("GRAW native Vulkan textures: {} textures, {} created ({} with mips), {} "
                 "uploads ({} KB), {} resolved binds ({} mismatched), {} unsupported, {} failed; "
-                "{} samplers",
+                "{} samplers; memos: textures {} hits / {} misses, samplers {} / {}, shader "
+                "mods {} hits",
                 gpu_->textures->count(), t.created, t.with_mips, t.uploads, t.upload_bytes >> 10,
-                t.resolved_binds, t.resolved_mismatches, t.unsupported, t.failed, gpu_->bindings.sampler_count());
+                t.resolved_binds, t.resolved_mismatches, t.unsupported, t.failed,
+                gpu_->bindings.sampler_count(), t.memo_hits, t.memo_misses, sampler_memo_hits_,
+                sampler_memo_misses_, mods_memo_hits_);
   }
   front_buffer_found_ = SetPresentImage(swap) && !REXCVAR_GET(graw_native_vulkan_show_target);
   target_use_.clear();

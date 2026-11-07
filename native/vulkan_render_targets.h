@@ -31,7 +31,8 @@ struct VulkanRenderTarget {
   bool depth = false;
   uint32_t edram_base = 0;  // tiles
   uint32_t pitch = 0;       // pixels
-  uint32_t samples = 1;     // 1, 2 or 4
+  uint32_t samples = 1;     // the guest's: 1, 2 or 4 (the EDRAM layout follows it)
+  uint32_t host_samples = 1;  // the host image's: samples, at most --graw_native_msaa_max
   uint32_t width = 0, height = 0;
   uint32_t guest_format = 0;
   VkFormat format = VK_FORMAT_UNDEFINED;
@@ -44,11 +45,14 @@ struct VulkanRenderTarget {
   uint64_t fill_seq = 0;  // EDRAM fills up to this sequence are applied (SyncEdram)
 };
 
+// The host sample count of a guest one (1, 2 or 4): capped by --graw_native_msaa_max.
+uint32_t HostSamples(uint32_t guest);
+
 struct VulkanBoundTargets {
   VulkanRenderTarget* color[4] = {};
   uint32_t color_count = 0;  // highest bound color index + 1
   VulkanRenderTarget* depth = nullptr;
-  uint32_t samples = 1;
+  uint32_t samples = 1;  // the host images' (VulkanRenderTarget::host_samples), for pipelines
   uint32_t width = 0, height = 0;  // smallest bound target
 };
 

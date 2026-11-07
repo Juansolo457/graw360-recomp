@@ -20,6 +20,7 @@ BANDS = [(0, 300), (300, 1000), (1000, 1500), (1500, 2000), (2000, 2500), (2500,
 
 
 def num(row, column):
+    """The column of a row as a float, or None when it is missing or not a number."""
     try:
         return float(row[column])
     except (KeyError, TypeError, ValueError):
@@ -27,11 +28,13 @@ def num(row, column):
 
 
 def median(values, scale=1.0):
+    """The median of the values that are not None, times scale; None when there are none."""
     values = [v for v in values if v is not None]
     return statistics.median(values) * scale if values else None
 
 
 def show(value, digits=1):
+    """A value with the given decimals, or "-" for None."""
     return "-" if value is None else f"{value:.{digits}f}"
 
 
@@ -61,6 +64,7 @@ def beside(log, pattern, begin, end):
 
 
 def frame_stats(rows):
+    """Whole-run figures of a frame log: frames, minutes, fps, frame-time percentiles, draws, pipelines."""
     times = [num(r, "frame_ms") for r in rows]
     worst = sorted(times)[-max(1, len(times) // 100):]
     return [
@@ -81,6 +85,7 @@ def frame_stats(rows):
 
 
 def band_stats(rows, lo, hi):
+    """Figures of the frames whose draw count is in [lo, hi): GPU, game and render thread time per frame."""
     picked = [i for i in range(len(rows) - 1) if lo <= (num(rows[i], "draws") or -1) < hi]
     if not picked:
         return None
@@ -99,6 +104,7 @@ def band_stats(rows, lo, hi):
 
 
 def sensor_stats(sensors, begin, end):
+    """Median clocks, power and temperatures of the sensors rows between begin and end (t_ms)."""
     picked = [s for s in sensors if begin <= num(s, "t_ms") <= end]
     return [
         (label, show(median(num(s, column) for s in picked), digits))
@@ -127,6 +133,7 @@ def thread_table(threads, begin, end, seconds):
 
 
 def table(title, names, columns):
+    """Prints one table: a row per label, a column per run, "-" where a run has no such label."""
     labels = []
     for column in columns:
         labels += [label for label, _ in column if label not in labels]
@@ -139,6 +146,7 @@ def table(title, names, columns):
 
 
 def main():
+    """Compares the frame logs named on the command line, whole and by draw band, with their sensors and threads."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("logs", nargs="+")
     parser.add_argument("--skip-seconds", type=float, default=30, help="drop each log's start (loading)")

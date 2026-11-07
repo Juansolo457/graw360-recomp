@@ -44,6 +44,7 @@ MEMORY = re.compile(r'^(l|st|dcb|icbi)')
 
 
 def operands(text):
+    """An instruction's mnemonic and its operands, from the comment the translator left."""
     parts = text.replace('(', ',').replace(')', '').split(None, 1)
     op = parts[0]
     args = [a.strip() for a in parts[1].split(',')] if len(parts) > 1 else []
@@ -87,6 +88,7 @@ def defs_uses(op, args):
 
 
 def gpr_defs_uses(op, args):
+    """The general-purpose registers an instruction writes and reads, by mnemonic and operands."""
     defs, uses = set(), set()
     if op.startswith(('tw', 'td')):  # traps
         return defs, uses
@@ -154,6 +156,7 @@ def is_frame_save(op, args):
 
 
 def analyse(name, body):
+    """The registers a function reads before writing them, with the instruction of the first such read."""
     lines = body.split('\n')
     insns = []  # (address index, op, args, gotos, falls through)
     labels = {}
@@ -218,10 +221,12 @@ def analyse(name, body):
 
 
 def kind(r):
+    """How a register is classed for the register options: cr, a special register, non-volatile or non-argument."""
     return 'cr' if r in CRS else r if r in SPECIAL else 'nonvol' if r in NONVOL else 'nonarg'
 
 
 def main():
+    """Scans the generated code folder named on the command line and prints what the register options assume."""
     gen = sys.argv[1]
     callers = collections.Counter()
     funcs = {}

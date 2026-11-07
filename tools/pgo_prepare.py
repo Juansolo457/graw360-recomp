@@ -19,6 +19,7 @@ MAGIC = bytes.fromhex('8172666f72706cff')
 
 
 def last_snapshot(out_dir, paths):
+    """Copies each raw profile that is a complete snapshot into out_dir, numbered."""
     os.makedirs(out_dir, exist_ok=True)
     for n, path in enumerate(paths):
         with open(path, 'rb') as f:
@@ -33,6 +34,7 @@ def last_snapshot(out_dir, paths):
 
 
 def drop_unreached(src, dst):
+    """Writes the text profile at src to dst without the functions no training run reached."""
     with open(src, encoding='utf-8', errors='surrogateescape') as f:
         text = f.read()
     # The header (":ir" and its comment, written straight above the first function with no
@@ -66,6 +68,7 @@ def drop_unreached(src, dst):
 
 
 def main():
+    """Runs the subcommand named on the command line: last-snapshot or drop-unreached."""
     if len(sys.argv) >= 4 and sys.argv[1] == 'last-snapshot':
         last_snapshot(sys.argv[2], sys.argv[3:])
     elif len(sys.argv) == 4 and sys.argv[1] == 'drop-unreached':

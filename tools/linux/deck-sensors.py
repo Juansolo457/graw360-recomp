@@ -19,6 +19,7 @@ TICK_MS = 1000 / os.sysconf("SC_CLK_TCK")
 
 
 def hwmon(name):
+    """The /sys/class/hwmon folder of the sensor chip called name, or None."""
     for path in glob.glob("/sys/class/hwmon/hwmon*"):
         try:
             with open(os.path.join(path, "name")) as f:
@@ -30,6 +31,7 @@ def hwmon(name):
 
 
 def read_int(path):
+    """The integer in the sysfs file at path, or 0 when it cannot be read."""
     try:
         with open(path) as f:
             return int(f.read())
@@ -38,6 +40,7 @@ def read_int(path):
 
 
 def game_pids():
+    """The pids of the GRAW programs running now (by /proc/<pid>/comm)."""
     pids = []
     for pid in os.listdir("/proc"):
         if pid.isdigit():
@@ -98,6 +101,7 @@ def write_threads(out, pids, last, now_ms):
 
 
 def main():
+    """Writes a sensors row (clocks, power, temperatures) and each GRAW thread's CPU use once a second."""
     gpu = hwmon("amdgpu")
     cpu = hwmon("k10temp")
     fan = hwmon("steamdeck_hwmon")

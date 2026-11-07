@@ -23,6 +23,8 @@
 #include <chrono>
 #include <thread>
 
+#include <SDL3/SDL_events.h>
+
 extern char** environ;
 #endif
 
@@ -33,6 +35,8 @@ REXCVAR_DEFINE_UINT32(graw_restart_wait_pid, 0, "GRAW",
 
 namespace graw::process {
 namespace {
+
+constexpr int kEarlyCloseGuardSeconds = 5;
 
 #if defined(_WIN32)
 std::wstring Wide(const std::string& text) {
@@ -184,6 +188,41 @@ bool StartAfterThis(const std::filesystem::path& executable, std::vector<std::st
   return true;
 #endif
 }
+
+#if !defined(_WIN32)
+namespace {
+std::chrono::steady_clock::time_point g_guard_until;
+
+// SDL's event filter, set for a run a hand-over started: a close request in the first seconds of
+// its life is logged and dropped. On the Steam Deck (test 17, 2026-11-06) the front end the
+// campaign started got one 0.5 s into its life, before its first frame, and the game vanished;
+// nothing had asked for it (Steam logged the game as stopped only after the process was gone).
+// Which event it is says where it came from: a window close request is the compositor's, a quit
+// is a signal (SDL turns SIGTERM and SIGINT into one) or the last window closing.
+bool SDLCALL FilterEarlyClose(void*, SDL_Event* event) {
+  const bool close = event->type == SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+  if (!close && event->type != SDL_EVENT_QUIT) return true;
+  const char* kind = close ? "window close request" : "quit";
+  const auto now = std::chrono::steady_clock::now();
+  if (now < g_guard_until) {
+    REXLOG_WARN("GRAW: {} {:.0f} ms after this run started (hand-over): ignored", kind,
+                std::chrono::duration<double, std::milli>(
+                    now - (g_guard_until - std::chrono::seconds(kEarlyCloseGuardSeconds))).count());
+    return false;
+  }
+  REXLOG_INFO("GRAW: {} received", kind);
+  return true;
+}
+}  // namespace
+
+void GuardEarlyClose() {
+  if (!REXCVAR_GET(graw_restart_wait_pid)) return;
+  g_guard_until = std::chrono::steady_clock::now() + std::chrono::seconds(kEarlyCloseGuardSeconds);
+  SDL_SetEventFilter(FilterEarlyClose, nullptr);
+}
+#else
+void GuardEarlyClose() {}
+#endif
 
 void WaitForPreviousRun() {
 #if defined(_WIN32)

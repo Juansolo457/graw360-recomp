@@ -36,7 +36,8 @@ fi
 sdk=/src/third_party/rexglue-sdk-bd833a2-deck
 # GRAW_LTO=ON (tools/build-linux.sh) builds into its own folder, so the two never mix objects.
 lto="${GRAW_LTO:-OFF}"
-build_rel="$project/out/build/deck-amd64-${config,,}$([[ $lto == ON ]] && echo -lto)"
+build_rel="$project/out/build/deck-amd64-${config,,}"
+[[ "$lto" == ON ]] && build_rel="$build_rel-lto"
 # The disc files: a project's assets may be a link out of the tree (port-yeti/assets ->
 # port/assets); the link's target is mounted read-only at the same path so it resolves.
 mounts=(-v "$root:/src")

@@ -9,8 +9,19 @@
 graw_native_csv = "logs/grawyeti-frames.csv"
 
 # The renderer's CPU time per draw split into its stages, as extra columns in the frame log
-# (st_<stage>_us). Costs a few percent. v0.6's 30 fps was measured with it on.
-graw_native_profile = true
+# (st_<stage>_us). Costs a few percent of the render thread, so it's off for play; on to see
+# where the renderer's time goes.
+graw_native_profile = false
+
+# The scene is 4x MSAA on the 360, which its EDRAM does for free. On the Steam Deck 2x saves GPU
+# time and power where it counts (smoke in firefights: mission 3's final fight 12.8 -> 10.8 ms of
+# GPU per frame) at the cost of slightly rougher edges. 4 = as the 360, 1 = none.
+graw_native_msaa_max = 2
+
+# GPU time per pass of the frame, logged every few seconds as "GRAW native GPU:" lines (with
+# _shaders: draws per vertex/pixel shader pair). Only to find what the GPU spends its time on.
+# graw_native_gpu_timing = true
+# graw_native_gpu_timing_shaders = true
 
 # Shimmer A/B: the old way of sampling textures whose detail level the shader computes (explicit
 # gradients). Only to compare, if there's shimmer: remove the # in front of it.

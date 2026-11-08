@@ -1,0 +1,147 @@
+diff --git a/src/core/memory_posix.cpp b/src/core/memory_posix.cpp
+index de959ea..9d8ef78 100644
+--- a/src/core/memory_posix.cpp
++++ b/src/core/memory_posix.cpp
+@@ -9,6 +9,7 @@
+  * @modified    Tom Clay & Rien Gupta, 2026 - Adapted for ReXGlue runtime (POSIX + macOS)
+  */
+ 
++#include <atomic>
+ #include <cerrno>
+ #include <cstddef>
+ #include <cstdio>
+@@ -18,6 +19,7 @@
+ #include <string>
+ 
+ #include <fcntl.h>
++#include <sys/ioctl.h>
+ 
+ #if REX_PLATFORM_MAC
+ #include <mach/mach.h>
+@@ -170,9 +172,68 @@ static bool ParseProcMapsLine(const std::string& line, LinuxMapEntry& out) {
+   return out.start < out.end;
+ }
+ 
+-// Find the mapping entry in /proc/self/maps that contains the given address
++// The kernel's PROCMAP_QUERY ioctl on /proc/self/maps (Linux 6.11): the one mapping that holds an
++// address, found by the kernel without writing out the whole file. Declared here because the
++// build's kernel headers may predate it (include/uapi/linux/fs.h).
++struct ProcmapQuery {
++  uint64_t size;
++  uint64_t query_flags;
++  uint64_t query_addr;
++  uint64_t vma_start;
++  uint64_t vma_end;
++  uint64_t vma_flags;
++  uint64_t vma_page_size;
++  uint64_t vma_offset;
++  uint64_t inode;
++  uint32_t dev_major;
++  uint32_t dev_minor;
++  uint32_t vma_name_size;
++  uint32_t build_id_size;
++  uint64_t vma_name_addr;
++  uint64_t build_id_addr;
++};
++constexpr unsigned long kProcmapQuery = _IOWR('f', 17, ProcmapQuery);
++constexpr uint64_t kProcmapVmaReadable = 0x01;
++constexpr uint64_t kProcmapVmaWritable = 0x02;
++constexpr uint64_t kProcmapVmaExecutable = 0x04;
++constexpr uint64_t kProcmapVmaShared = 0x08;
++
++// 1 found, 0 no mapping holds the address, -1 the kernel has no PROCMAP_QUERY.
++static int QueryEntryForAddress(uintptr_t addr, LinuxMapEntry& out_entry) {
++  // One descriptor for the process's life: the ioctl reads the live address space each call.
++  static const int fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
++  static std::atomic<bool> unsupported{false};
++  if (fd < 0 || unsupported.load(std::memory_order_relaxed))
++    return -1;
++  ProcmapQuery q = {};
++  q.size = sizeof(q);
++  q.query_addr = addr;
++  if (ioctl(fd, kProcmapQuery, &q) != 0) {
++    if (errno == ENOENT)
++      return 0;
++    if (errno == ENOTTY || errno == EINVAL || errno == EOPNOTSUPP)
++      unsupported.store(true, std::memory_order_relaxed);
++    return -1;
++  }
++  out_entry = LinuxMapEntry{};
++  out_entry.start = static_cast<uintptr_t>(q.vma_start);
++  out_entry.end = static_cast<uintptr_t>(q.vma_end);
++  out_entry.perms[0] = (q.vma_flags & kProcmapVmaReadable) ? 'r' : '-';
++  out_entry.perms[1] = (q.vma_flags & kProcmapVmaWritable) ? 'w' : '-';
++  out_entry.perms[2] = (q.vma_flags & kProcmapVmaExecutable) ? 'x' : '-';
++  out_entry.perms[3] = (q.vma_flags & kProcmapVmaShared) ? 's' : 'p';
++  return addr >= out_entry.start && addr < out_entry.end ? 1 : 0;
++}
++
++// Find the mapping entry in /proc/self/maps that contains the given address. Write watches split
++// the guest mapping into thousands of mappings, so reading the file costs the kernel tens of KB of
++// text per call; every unclaimed fault (MMIOHandler) and Protect with an old-access out parameter
++// comes here. PROCMAP_QUERY first, the text only on a kernel without it.
+ static bool FindEntryForAddress(void* address, LinuxMapEntry& out_entry) {
+   const uintptr_t addr = reinterpret_cast<uintptr_t>(address);
++  const int queried = QueryEntryForAddress(addr, out_entry);
++  if (queried >= 0)
++    return queried == 1;
+   std::ifstream maps("/proc/self/maps");
+   if (!maps.is_open())
+     return false;
+@@ -189,38 +250,6 @@ static bool FindEntryForAddress(void* address, LinuxMapEntry& out_entry) {
+   return false;
+ }
+ 
+-// Check if [base, base+length) is fully covered by existing mappings (no gaps)
+-static bool IsRangeFullyMapped(void* base_address, size_t length) {
+-  if (!base_address || length == 0)
+-    return false;
+-
+-  const uintptr_t begin = reinterpret_cast<uintptr_t>(base_address);
+-  const uintptr_t end = begin + length;
+-  if (end < begin) {  // overflow check
+-    return false;
+-  }
+-
+-  std::ifstream maps("/proc/self/maps");
+-  if (!maps.is_open())
+-    return false;
+-
+-  uintptr_t cursor = begin;
+-  std::string line;
+-  while (std::getline(maps, line)) {
+-    LinuxMapEntry e;
+-    if (!ParseProcMapsLine(line, e))
+-      continue;
+-    if (e.end <= cursor)
+-      continue;
+-    if (e.start > cursor)
+-      return false;  // gap found
+-    cursor = e.end;
+-    if (cursor >= end)
+-      return true;
+-  }
+-  return cursor >= end;
+-}
+-
+ // Convert /proc/self/maps permission chars to PageAccess
+ static PageAccess PermsToPageAccess(const char perms[5]) {
+   const bool r = perms[0] == 'r';
+@@ -304,11 +333,12 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
+   if (errno == EEXIST && base_address &&
+       (allocation_type == AllocationType::kCommit ||
+        allocation_type == AllocationType::kReserveCommit)) {
+-    // Verify the entire range is mapped before using mprotect
+-    if (IsRangeFullyMapped(base_address, length)) {
+-      if (mprotect(base_address, length, static_cast<int>(prot_requested)) == 0) {
+-        return base_address;
+-      }
++    // mprotect fails with ENOMEM if any page of the range isn't mapped, which is what this path
++    // needs to know. It used to parse /proc/self/maps first (IsRangeFullyMapped): with write
++    // watches fragmenting the guest mapping into thousands of mappings, every guest commit read
++    // and parsed the whole file on the committing thread (fear360-recomp's patch 0027).
++    if (mprotect(base_address, length, static_cast<int>(prot_requested)) == 0) {
++      return base_address;
+     }
+   }
+ #endif

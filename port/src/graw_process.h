@@ -32,4 +32,9 @@ bool StartAfterThis(const std::filesystem::path& executable, std::vector<std::st
 // Blocks until the run named by graw_restart_wait_pid has exited (at most 30 s).
 void WaitForPreviousRun();
 
+// In a run a hand-over started (graw_restart_wait_pid set), a window close request or quit in its
+// first seconds is logged and ignored: on the Steam Deck one arrived before the first frame and
+// ended the game (Linux; a no-op on Windows). Call once the window exists.
+void GuardEarlyClose();
+
 }  // namespace graw::process

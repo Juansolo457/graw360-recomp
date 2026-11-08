@@ -7,6 +7,10 @@
 # Reads the disc files from ../game (the graw360 folder this sits in); GRAW_GAME=/path overrides.
 # Saves, caches and logs stay in this folder (user/, cache/, logs/), apart from the Windows copy's.
 # Extra arguments go to the game, e.g.  ./graw-linux.sh --no-fullscreen
+# GRAW_HZ=60 runs the guest display at 60 Hz instead of the 360's 30 (Steam launch options:
+# GRAW_HZ=60 %command%). GRAW_PERF=1 also records a CPU profile of every thread, user code only,
+# per program into logs/perf-<time>-<program>-<pid>.data (read it with perf report). Both can also
+# go in graw-linux.env beside this script, one per line.
 here="$(cd "$(dirname "$0")" && pwd)"
 game="$(cd "${GRAW_GAME:-$here/../game}" 2>/dev/null && pwd)"
 program="${GRAW_PROGRAM:-graw}"
@@ -61,9 +65,45 @@ EOF
 # after the last program; the game doesn't depend on it.
 python3 -I "$here/deck-sensors.py" "$here/logs/sensors-$stamp.csv" >/dev/null 2>&1 &
 
-# The Steam Deck's settings: the 360's 1280x720 output and 30 Hz display.
+# graw-linux.env beside this script, if there is one, sets the same variables without launch options
+# (lines like GRAW_HZ=60); a variable given at launch wins.
+if [ -f "$here/graw-linux.env" ]; then
+  while IFS='=' read -r key value; do
+    value="${value%$'\r'}"  # a file edited on Windows ends its lines with CR LF
+    case "$key" in
+      GRAW_HZ|GRAW_PERF) [ -z "${!key}" ] && export "$key=$value" ;;
+    esac
+  done < "$here/graw-linux.env"
+fi
+hz="${GRAW_HZ:-30}"
+echo "refresh: $hz Hz, profile: ${GRAW_PERF:-0}" >> "$info"
+# GRAW_PERF=1: perf attaches to each GRAW program as it starts, so the programs a hand-over starts
+# (their own processes, which outlive the first) get a profile too: logs/perf-<time>-<program>-<pid>.data.
+# Ends once no GRAW program has run for 10 s.
+if [ "${GRAW_PERF:-0}" = 1 ] && command -v perf >/dev/null; then
+  (
+    declare -A seen
+    idle=0
+    while [ $idle -lt 10 ]; do
+      found=0
+      for pid in $(pgrep -u "$(id -u)" -x 'graw|grawmp|grawyeti'); do
+        found=1
+        if [ -z "${seen[$pid]}" ]; then
+          seen[$pid]=1
+          name="$(cat "/proc/$pid/comm" 2>/dev/null)"
+          perf record -q -F 499 -e cpu-clock:u -p "$pid" \
+            -o "$here/logs/perf-$stamp-$name-$pid.data" >/dev/null 2>&1 &
+        fi
+      done
+      if [ $found = 1 ]; then idle=0; else idle=$((idle + 1)); fi
+      sleep 1
+    done
+  ) &
+fi
+
+# The Steam Deck's settings: the 360's 1280x720 output and 30 Hz display (GRAW_HZ).
 "$here/$program" --fullscreen --resolution 720p --resolution_scale 1 \
-  --video_mode_refresh_rate 30 --anisotropic_override -1 --swap_post_effect none \
+  --video_mode_refresh_rate "$hz" --anisotropic_override -1 --swap_post_effect none \
   --game_data_root "$game" --user_data_root "$here/user" --cache_root "$here/cache" \
   --log_file "$log" --log_flush_interval 1 --log_level debug "$@" \
   >> "$here/logs/stdout-$stamp.txt" 2>&1

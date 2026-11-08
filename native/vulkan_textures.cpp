@@ -1,6 +1,8 @@
 // GRAW native renderer: the Vulkan backend's texture cache (vulkan_textures.h).
 #include "vulkan_textures.h"
 
+#include "vulkan_render_targets.h"
+
 #include <rex/graphics/pipeline/texture/info.h>
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/logging.h>
@@ -186,6 +188,7 @@ void VulkanTextureCache::WatchRange(Texture* t, uint32_t start, uint32_t length)
 }
 
 void VulkanTextureCache::ForgetResolvedImage(VkImage image, uint64_t frame) {
+  ++view_generation_;  // Get's memo entries holding these views stop hitting
   for (auto it = resolved_views_.begin(); it != resolved_views_.end();) {
     if (it->first.image == image) {
       if (it->second) retired_views_.push_back({it->second, frame});
@@ -361,12 +364,41 @@ VkImageView VulkanTextureCache::ResolvedView(VkImage image, VkFormat format, uin
 }
 
 bool VulkanTextureCache::Get(const uint32_t fetch[6], VkCommandBuffer cmd, uint64_t frame,
-                             const std::function<void()>& end_rendering,
-                             VulkanTextureBinding* out) {
+                             VulkanRenderTargets& targets, VulkanTextureBinding* out) {
+  uint32_t h = 0;
+  for (uint32_t i = 0; i < 6; ++i) h = (h ^ fetch[i]) * 0x9E3779B1u;
+  GetMemo& m = get_memo_[h >> 22];
+  if (m.valid && std::memcmp(m.fetch, fetch, sizeof(m.fetch)) == 0) {
+    bool hit = true;
+    if (m.resolve_candidate && resolved_) {
+      // The resolve destination may have appeared, been replaced or changed since the fill.
+      const VulkanResolvedImage now = resolved_(m.base);
+      hit = std::memcmp(&now, &m.resolved, sizeof(now)) == 0 &&
+            m.view_generation == view_generation_;
+    }
+    if (hit) {
+      if (Texture* t = m.texture) {
+        if (t->dirty.load(std::memory_order_acquire) || !t->initialized) {
+          targets.EndRendering(cmd);
+          if (!Upload(*t, cmd, frame)) {
+            ++stats_.failed;
+            if (!t->initialized) return false;
+          }
+        }
+      } else {
+        ++stats_.resolved_binds;
+      }
+      ++stats_.memo_hits;
+      *out = m.binding;
+      return true;  // filled on a non-null unsigned view only
+    }
+  }
+  ++stats_.memo_misses;
   TextureKey key;
   if (!TextureKeyFromFetch(fetch, &key)) return false;
   const HostFormat* host = GetHostFormat(key.format);
-  if (!host || VulkanFormatOf(host->unorm) == VK_FORMAT_UNDEFINED) {
+  const VkFormat vk_unorm = host ? VulkanFormatOf(host->unorm) : VK_FORMAT_UNDEFINED;
+  if (vk_unorm == VK_FORMAT_UNDEFINED) {
     ++stats_.unsupported;
     const uint32_t f = uint32_t(key.format) & 63;
     if (!(unsupported_formats_logged_ >> f & 1)) {
@@ -381,17 +413,30 @@ bool VulkanTextureCache::Get(const uint32_t fetch[6], VkCommandBuffer cmd, uint6
   const uint32_t swizzle = HostSwizzle(f.swizzle, host->host_swizzle);
   out->dimension = key.dimension;
   out->swizzled_signs = texture_util::SwizzleSigns(f);
+  const uint32_t base = key.base_page << 12;
+  const bool resolve_candidate = key.dimension == xenos::DataDimension::k2DOrStacked &&
+                                 key.array_size() == 1 && key.mip_levels() == 1;
+  VulkanResolvedImage looked_up;  // what resolved_ answered, for the memo
+  const auto fill = [&](Texture* texture) {
+    std::memcpy(m.fetch, fetch, sizeof(m.fetch));
+    m.base = base;
+    m.texture = texture;
+    m.binding = *out;
+    m.resolved = looked_up;
+    m.view_generation = view_generation_;
+    m.valid = true;
+    m.resolve_candidate = resolve_candidate;
+  };
   // A resolve destination: bind the image the resolve made (guest memory doesn't have it).
-  if (resolved_ && key.dimension == xenos::DataDimension::k2DOrStacked && key.array_size() == 1 &&
-      key.mip_levels() == 1) {
-    VulkanResolvedImage r = resolved_(key.base_page << 12);
-    if (r.depth_image && VulkanFormatOf(host->unorm) == VK_FORMAT_R32_SFLOAT) {
+  if (resolved_ && resolve_candidate) {
+    looked_up = resolved_(base);
+    VulkanResolvedImage r = looked_up;
+    if (r.depth_image && vk_unorm == VK_FORMAT_R32_SFLOAT) {
       r.image = r.depth_image;
       r.format = VK_FORMAT_R32_SFLOAT;
       r.format_signed = VK_FORMAT_UNDEFINED;
     }
-    if (r.image && r.width == key.width && r.height == key.height &&
-        r.format == VulkanFormatOf(host->unorm)) {
+    if (r.image && r.width == key.width && r.height == key.height && r.format == vk_unorm) {
       out->view_unsigned = ResolvedView(r.image, r.format, swizzle);
       // Float and depth formats: signed components read the unsigned view's values.
       const VkFormat sf = VulkanFormatOf(host->snorm);
@@ -401,7 +446,9 @@ bool VulkanTextureCache::Get(const uint32_t fetch[6], VkCommandBuffer cmd, uint6
                              : VK_NULL_HANDLE;
       ++stats_.resolved_binds;
       out->resolved = true;
-      return out->view_unsigned != VK_NULL_HANDLE;
+      if (out->view_unsigned == VK_NULL_HANDLE) return false;
+      fill(nullptr);
+      return true;
     }
     if (r.image) {
       // A resolve destination read in another format or size: the resolve's conversion (M5).
@@ -410,8 +457,8 @@ bool VulkanTextureCache::Get(const uint32_t fetch[6], VkCommandBuffer cmd, uint6
         ++resolved_mismatches_logged_;
         REXLOG_WARN("GRAW native Vulkan textures: resolve image at {:08X} is {}x{} format {}, "
                     "read as {}x{} {} (format {})",
-                    key.base_page << 12, r.width, r.height, int(r.format), key.width, key.height,
-                    FormatInfo::Get(key.format)->name, int(VulkanFormatOf(host->unorm)));
+                    base, r.width, r.height, int(r.format), key.width, key.height,
+                    FormatInfo::Get(key.format)->name, int(vk_unorm));
       }
     }
   }
@@ -422,7 +469,7 @@ bool VulkanTextureCache::Get(const uint32_t fetch[6], VkCommandBuffer cmd, uint6
     return false;
   }
   if (t->dirty.load(std::memory_order_acquire) || !t->initialized) {
-    end_rendering();
+    targets.EndRendering(cmd);
     if (!Upload(*t, cmd, frame)) {
       ++stats_.failed;
       if (!t->initialized) return false;
@@ -431,7 +478,9 @@ bool VulkanTextureCache::Get(const uint32_t fetch[6], VkCommandBuffer cmd, uint6
   out->view_unsigned = View(*t, false, swizzle);
   out->view_signed = t->format_signed != VK_FORMAT_UNDEFINED ? View(*t, true, swizzle)
                                                              : VK_NULL_HANDLE;
-  return out->view_unsigned != VK_NULL_HANDLE;
+  if (out->view_unsigned == VK_NULL_HANDLE) return false;
+  fill(t);
+  return true;
 }
 
 void VulkanTextureCache::EndFrame(uint64_t completed) {

@@ -156,6 +156,7 @@ class GrawApp : public rex::ReXApp {
 
   // "Ghost Recon Advanced Warfighter - Campaign" instead of "grawyeti [rexglue-v0.10...]".
   void OnPostSetup() override {
+    graw::process::GuardEarlyClose();
     if (auto* w = window()) {
       std::string title = "Ghost Recon Advanced Warfighter";
       if (*GRAW_MODE_TITLE) title += std::string(" - ") + GRAW_MODE_TITLE;

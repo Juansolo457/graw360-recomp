@@ -168,11 +168,17 @@ struct VulkanBackend::Gpu {
   }
 };
 
-VulkanBackend::VulkanBackend() = default;
+VulkanBackend::VulkanBackend() {
+  // No filter value is 0xFF: an empty sampler memo entry can't match.
+  std::memset(sampler_memo_, 0xFF, sizeof(sampler_memo_));
+}
 
 VulkanBackend::~VulkanBackend() {
   mirror_.Shutdown();
-  if (device_) device_->WaitIdle();
+  if (device_) {
+    device_->WaitIdle();
+    device_->set_pass_timer(nullptr);
+  }
 }
 
 bool VulkanBackend::Initialize(const Options& o) {
@@ -183,6 +189,16 @@ bool VulkanBackend::Initialize(const Options& o) {
   device_ = std::make_unique<VulkanDevice>();
   if (!device_->Initialize(o.game_window, o.vsync, REXCVAR_GET(graw_native_vulkan_validation)))
     return false;
+  if (o.gpu_timing) {
+    auto timer = std::make_unique<VulkanGpuTimer>();
+    timer->set_per_shader(o.gpu_timing_shaders);
+    if (timer->Initialize(*device_, VulkanDevice::kFramesInFlight)) {
+      gpu_timer_ = std::move(timer);
+      device_->set_pass_timer(gpu_timer_.get());
+    } else {
+      REXLOG_ERROR("GRAW native Vulkan: GPU timing unavailable (no timestamps on the queue)");
+    }
+  }
   shaders_ = std::make_unique<VulkanShaderCache>(*device_);
   rex::memory::Memory* memory = rex::system::kernel_memory();
   membase_ = memory->physical_membase();
@@ -400,11 +416,34 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
     ++stats_.skipped;
     return;
   }
-  const ShaderModifications mods = SelectSpirvModifications(
-      shaders_->translator(), *vs, ps, ReadShaderDrawRegs(state.regs, state.primitive));
+  // The modifications and modules of (vs, ps, registers), computed once per combination
+  // (mods_memo_); the modules are looked up here and filled in after the checks below.
+  const ShaderDrawRegs sdr = ReadShaderDrawRegs(state.regs, state.primitive);
+  ModsMemo& mm = mods_memo_[((uintptr_t(vs) ^ uintptr_t(ps)) >> 4) & 3];
+  const bool mods_hit = mm.valid && mm.vs == vs && mm.ps == ps &&
+                        std::memcmp(&mm.regs, &sdr, sizeof(sdr)) == 0;
+  if (mods_hit) ++mods_memo_hits_;
+  const ShaderModifications mods =
+      mods_hit ? mm.mods : SelectSpirvModifications(shaders_->translator(), *vs, ps, sdr);
+  if (!mods_hit) {
+    mm.vs = vs;
+    mm.ps = ps;
+    mm.regs = sdr;
+    mm.mods = mods;
+    mm.vs_module = mm.ps_module = VK_NULL_HANDLE;  // looked up when the draw gets that far
+    mm.valid = true;
+  }
   if (!mods.draw) {
     ++stats_.skipped;
     return;
+  }
+  if (gpu_timer_) {
+    const uint64_t key =
+        gpu_timer_->per_shader()
+            ? gpu_timer_->KeyDrawShaders(state.regs, vs->ucode_data_hash(),
+                                         ps ? ps->ucode_data_hash() : 0)
+            : VulkanGpuTimer::KeyDraw(state.regs);
+    gpu_timer_->Pass(device_->command_buffer(), key);
   }
   if (!prep) {
     mirror_.upload_fence = device_->frame_fence();
@@ -422,7 +461,15 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
     ++stats_.skipped;
     return;
   }
-  if (!shaders_->Module(*vs, mods.vertex) || (ps && !shaders_->Module(*ps, mods.pixel))) {
+  // A null memoized vertex module: not looked up yet (or it failed: looked up again, as before).
+  VkShaderModule vs_module = mm.vs_module, ps_module = mm.ps_module;
+  if (vs_module == VK_NULL_HANDLE) {
+    vs_module = shaders_->Module(*vs, mods.vertex);
+    ps_module = ps ? shaders_->Module(*ps, mods.pixel) : VK_NULL_HANDLE;
+    mm.vs_module = vs_module;
+    mm.ps_module = ps_module;
+  }
+  if (vs_module == VK_NULL_HANDLE || (ps && ps_module == VK_NULL_HANDLE)) {
     ++stats_.failed;
     return;
   }
@@ -587,8 +634,8 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
   // The pipeline.
   VulkanPipelineKey key;
   std::memset(&key, 0, sizeof(key));
-  key.vs = shaders_->Module(*vs, mods.vertex);
-  key.ps = ps ? shaders_->Module(*ps, mods.pixel) : VK_NULL_HANDLE;
+  key.vs = vs_module;
+  key.ps = ps_module;
   if (geometry != PipelineGeometryShader::kNone) {
     key.gs = shaders_->Geometry(GetVulkanGeometryShaderKey(geometry, mods.vertex, mods.pixel));
     if (!key.gs) {
@@ -796,7 +843,7 @@ void VulkanBackend::Draw(const DrawState& state, const DrawPrep* prep) {
 }
 
 void VulkanBackend::DumpTarget(VulkanRenderTarget* rt, uint32_t index) {
-  if (rt->samples != 1) return;  // MSAA images can't be copied to buffers
+  if (rt->host_samples != 1) return;  // MSAA images can't be copied to buffers
   Gpu::DumpEntry e;
   e.target_draw = int32_t(index);
   e.target_format = rt->guest_format;
@@ -839,6 +886,7 @@ void VulkanBackend::DumpTarget(VulkanRenderTarget* rt, uint32_t index) {
 }
 
 void VulkanBackend::Clear(const ClearCall& clear) {
+  if (gpu_timer_) gpu_timer_->Pass(device_->command_buffer(), VulkanGpuTimer::KeyClear(clear));
   gpu_->targets.Clear(device_->command_buffer(), clear);
 }
 
@@ -858,6 +906,7 @@ void VulkanBackend::Resolve(const ResolveParams& p) {
     ++resolves_skipped_;
     return;
   }
+  if (gpu_timer_) gpu_timer_->Pass(device_->command_buffer(), VulkanGpuTimer::KeyResolve(p));
   VulkanRenderTargets& targets = gpu_->targets;
   VkCommandBuffer cmd = device_->command_buffer();
   targets.EndRendering(cmd);
@@ -968,9 +1017,10 @@ bool VulkanBackend::CopyDepth(VulkanRenderTarget* rt, int32_t x0, int32_t y0, in
   params.dest_x = dx;
   params.dest_y = dy;
   params.depth_format = rt->guest_format;
-  params.host_sample = VulkanResolveShaders::HostSample(rt->samples, p.sample_select);
+  params.host_sample = VulkanResolveShaders::HostSample(rt->host_samples, p.sample_select);
   return RunResolveShader(rt, src, stencil, r, [&](VkDescriptorSet set) {
-    gpu_->resolve_shaders.RecordDepth(device_->command_buffer(), rt->samples > 1, set, params);
+    gpu_->resolve_shaders.RecordDepth(device_->command_buffer(), rt->host_samples > 1, set,
+                                      params);
   });
 }
 
@@ -997,11 +1047,12 @@ bool VulkanBackend::CopyColor(VulkanRenderTarget* rt, int32_t x0, int32_t y0, in
   params.dest_y = uint32_t(dy);
   params.dest_format = p.dest_format;
   params.src_format = rt->guest_format;
-  params.flags = (p.dest_swap ? 2u : 0u) | (p.sample_select << 4) | (rt->samples << 8) |
+  params.flags = (p.dest_swap ? 2u : 0u) | (p.sample_select << 4) | (rt->host_samples << 8) |
                  (p.dest_number << 12);
   params.exp_bias = p.exp_bias;
   return RunResolveShader(rt, rt->view, VK_NULL_HANDLE, r, [&](VkDescriptorSet set) {
-    gpu_->resolve_shaders.RecordColor(device_->command_buffer(), rt->samples > 1, set, params);
+    gpu_->resolve_shaders.RecordColor(device_->command_buffer(), rt->host_samples > 1, set,
+                                      params);
   });
 }
 
@@ -1224,7 +1275,7 @@ bool VulkanBackend::CopyTarget(VulkanRenderTarget* rt, int32_t x0, int32_t y0, i
   const bool convert = dest_format != rt->format;
   if (convert && !CanBlit(rt->format, dest_format)) return false;
   Gpu::Resolved* temp = nullptr;
-  if (convert && rt->samples > 1) {
+  if (convert && rt->host_samples > 1) {
     temp = EnsureImage(gpu_->msaa_temp, rt->format, VK_FORMAT_UNDEFINED,
                        std::max(rt->width, gpu_->msaa_temp.width),
                        std::max(rt->height, gpu_->msaa_temp.height), "MSAA resolve image");
@@ -1295,7 +1346,7 @@ bool VulkanBackend::CopyTarget(VulkanRenderTarget* rt, int32_t x0, int32_t y0, i
                              {{dx, dy, 0}, {dx + w, dy + h, 1}}};
     fn.vkCmdBlitImage(cmd, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, r->image.image,
                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_NEAREST);
-  } else if (rt->samples > 1) {
+  } else if (rt->host_samples > 1) {
     const VkImageResolve region{layers, {x0, y0, 0}, layers, {dx, dy, 0},
                                 {uint32_t(w), uint32_t(h), 1}};
     fn.vkCmdResolveImage(cmd, rt->image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -1420,13 +1471,12 @@ void VulkanBackend::GetShaderTextures(const SpirvShader& shader, const DrawState
   using rex::graphics::xenos::FetchOpDimension;
   VkCommandBuffer cmd = device_->command_buffer();
   VulkanRenderTargets& targets = gpu_->targets;
-  const auto end_rendering = [&] { targets.EndRendering(cmd); };
+  const uint64_t fence = device_->frame_fence();  // the frame's: constant until EndFrame
   for (const SpirvShader::TextureBinding& tb : shader.GetTextureBindingsAfterTranslation()) {
     VkImageView view = VK_NULL_HANDLE;
     VulkanTextureBinding b;
     ++texture_stats_.gets;
-    if (gpu_->textures->Get(state.fetch(tb.fetch_constant), cmd, device_->frame_fence(),
-                            end_rendering, &b)) {
+    if (gpu_->textures->Get(state.fetch(tb.fetch_constant), cmd, fence, targets, &b)) {
       // The translator's image type: 2D array (1D, 2D, stacked), cube, or 3D.
       bool fits = tb.dimension == FetchOpDimension::kCube
                             ? b.dimension == DataDimension::kCube
@@ -1444,9 +1494,30 @@ void VulkanBackend::GetShaderTextures(const SpirvShader& shader, const DrawState
     texture_views_.push_back(view);  // VK_NULL_HANDLE: the placeholder
   }
   const RegisterFile& regs = *reinterpret_cast<const RegisterFile*>(state.regs);
-  for (const SpirvShader::SamplerBinding& sb : shader.GetSamplerBindingsAfterTranslation())
-    samplers_.push_back(gpu_->bindings.Sampler(
-        GetSamplerKey(regs, sb, rex::graphics::xenos::AnisoFilter::kDisabled)));
+  for (const SpirvShader::SamplerBinding& sb : shader.GetSamplerBindingsAfterTranslation()) {
+    // The sampler by fetch constant and binding filters (sampler_memo_): what GetSamplerKey
+    // reads, and the only inputs besides the constant kDisabled below.
+    const uint32_t* fetch = state.fetch(sb.fetch_constant);
+    const uint8_t filters[4] = {uint8_t(sb.mag_filter), uint8_t(sb.min_filter),
+                                uint8_t(sb.mip_filter), uint8_t(sb.aniso_filter)};
+    uint32_t h = 0;
+    for (uint32_t i = 0; i < 6; ++i) h = (h ^ fetch[i]) * 0x9E3779B1u;
+    uint32_t packed;
+    std::memcpy(&packed, filters, 4);
+    h = (h ^ packed) * 0x9E3779B1u;
+    SamplerMemo& m = sampler_memo_[h >> 22];
+    if (std::memcmp(m.fetch, fetch, sizeof(m.fetch)) == 0 &&
+        std::memcmp(m.filters, filters, sizeof(filters)) == 0) {
+      ++sampler_memo_hits_;
+    } else {
+      ++sampler_memo_misses_;
+      m.sampler = gpu_->bindings.Sampler(
+          GetSamplerKey(regs, sb, rex::graphics::xenos::AnisoFilter::kDisabled));
+      std::memcpy(m.fetch, fetch, sizeof(m.fetch));
+      std::memcpy(m.filters, filters, sizeof(filters));
+    }
+    samplers_.push_back(m.sampler);
+  }
 }
 
 void VulkanBackend::RecordPipeline(const VulkanPipelineKey& key, const SpirvShader& vs,
@@ -1496,6 +1567,8 @@ void VulkanBackend::Prewarm(std::chrono::microseconds slice) {
       ++prewarm_failed_;
       continue;
     }
+    // Recorded with another --graw_native_msaa_max: the pipeline the targets will use now.
+    key.samples = uint8_t(HostSamples(key.samples));
     key.vs = shaders_->Module(*vs, sp.vs_mod);
     key.ps = ps ? shaders_->Module(*ps, sp.ps_mod) : VK_NULL_HANDLE;
     key.gs = VK_NULL_HANDLE;
@@ -1723,9 +1796,12 @@ Backend::SwapResult VulkanBackend::Swap(const SwapCall& swap, std::optional<bool
     const VulkanTextureStats& t = gpu_->textures->stats();
     REXLOG_INFO("GRAW native Vulkan textures: {} textures, {} created ({} with mips), {} "
                 "uploads ({} KB), {} resolved binds ({} mismatched), {} unsupported, {} failed; "
-                "{} samplers",
+                "{} samplers; memos: textures {} hits / {} misses, samplers {} / {}, shader "
+                "mods {} hits",
                 gpu_->textures->count(), t.created, t.with_mips, t.uploads, t.upload_bytes >> 10,
-                t.resolved_binds, t.resolved_mismatches, t.unsupported, t.failed, gpu_->bindings.sampler_count());
+                t.resolved_binds, t.resolved_mismatches, t.unsupported, t.failed,
+                gpu_->bindings.sampler_count(), t.memo_hits, t.memo_misses, sampler_memo_hits_,
+                sampler_memo_misses_, mods_memo_hits_);
   }
   front_buffer_found_ = SetPresentImage(swap) && !REXCVAR_GET(graw_native_vulkan_show_target);
   target_use_.clear();
@@ -1750,5 +1826,9 @@ Backend::SwapResult VulkanBackend::Swap(const SwapCall& swap, std::optional<bool
 }
 
 double VulkanBackend::gpu_last_frame_ms() const { return device_->end_frame_times().gpu_ms; }
+
+void VulkanBackend::LogGpuTiming() {
+  if (gpu_timer_) gpu_timer_->Log();
+}
 
 }  // namespace graw::native

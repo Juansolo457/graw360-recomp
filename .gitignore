@@ -63,3 +63,7 @@ third_party/
 __pycache__/
 Thumbs.db
 .DS_Store
+
+# PGO: training counts and merged profiles come from runs of the game's code
+pgo/
+pgo-raw/

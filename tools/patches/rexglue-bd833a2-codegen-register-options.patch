@@ -1,0 +1,249 @@
+diff --git a/src/codegen/builders/context.cpp b/src/codegen/builders/context.cpp
+index f78e0d8..2b8ca27 100644
+--- a/src/codegen/builders/context.cpp
++++ b/src/codegen/builders/context.cpp
+@@ -26,6 +26,50 @@ namespace rex::codegen {
+ /// if the next instruction after a load/store is eieio, the access is MMIO.
+ static constexpr uint32_t kEieioEncoding = 0xAC06007C;
+ 
++// An SEH funclet runs on its owner's frame and reads whatever non-volatiles the owner
++// left live, so a call to one hands it the localized copies through ctx (and takes them
++// back afterwards). Every non-volatile goes over, not only those referenced earlier in
++// the function: a register first written at a higher address can be live at the call
++// through a loop, the funclet may write one the owner reads later, and a function marked
++// share_registers in the manifest may take a value in any of them (F.E.A.R.'s Havok
++// solver passes a constant in v92). The frame itself comes in r12 (addi r12,r31,N just
++// before the bl). The owner also reaches a split-off inline __finally block by a
++// conditional tail call (bge cr6,block), which needs the same.
++static bool HandsRegistersTo(const BuilderContext& ctx, const FunctionNode& target) {
++  return target.sharesRegisters() && (ctx.localizeNonVolatiles() ||
++                                      ctx.config().nonArgumentRegistersAsLocalVariables);
++}
++
++template <class Emit>
++static void ForEachNonVolatile(BuilderContext& ctx, Emit emit) {
++  for (size_t i = 14; i < 32; ++i)
++    emit(fmt::format("r{}", i), ctx.r(i));
++  for (size_t i = 14; i < 32; ++i)
++    emit(fmt::format("f{}", i), ctx.f(i));
++  for (size_t i = 14; i < 32; ++i)
++    emit(fmt::format("v{}", i), ctx.v(i));
++  for (size_t i = 64; i < 128; ++i)
++    emit(fmt::format("v{}", i), ctx.v(i));
++}
++
++static void HandRegistersOver(BuilderContext& ctx, const char* indent) {
++  if (ctx.config().nonArgumentRegistersAsLocalVariables && !ctx.fn.sharesRegisters())
++    ctx.println("{}ctx.r12 = {};", indent, ctx.r(12));
++  if (!ctx.localizeNonVolatiles())
++    return;
++  ForEachNonVolatile(ctx, [&](const std::string& field, const std::string& local) {
++    ctx.println("{}ctx.{} = {};", indent, field, local);
++  });
++}
++
++static void TakeRegistersBack(BuilderContext& ctx, const char* indent) {
++  if (!ctx.localizeNonVolatiles())
++    return;
++  ForEachNonVolatile(ctx, [&](const std::string& field, const std::string& local) {
++    ctx.println("{}{} = ctx.{};", indent, local, field);
++  });
++}
++
+ //=============================================================================
+ // Convenience Accessors
+ //=============================================================================
+@@ -48,10 +92,12 @@ bool BuilderContext::localizeNonVolatiles() const {
+   return config().nonVolatileRegistersAsLocalVariables && !fn.sharesRegisters();
+ }
+ 
++// An SEH funclet also takes its owner's frame in r12 (addi r12,r31,N; bl funclet, or the C
++// runtime's _CallSettingFrame: mr r12,r4; mtlr r3; blrl), so it reads r12 from ctx.
+ std::string BuilderContext::r(size_t index) {
+   const auto& cfg = config();
+   if ((cfg.nonArgumentRegistersAsLocalVariables &&
+-       (index == 0 || index == 2 || index == 11 || index == 12)) ||
++       (index == 0 || index == 2 || index == 11 || (index == 12 && !fn.sharesRegisters()))) ||
+       (localizeNonVolatiles() && index >= 14)) {
+     locals.r[index] = true;
+     return fmt::format("r{}", index);
+@@ -184,10 +230,42 @@ void BuilderContext::emit_function_call(uint32_t address) {
+   if (address == cfg.setJmpAddress) {
+     // Save PPCContext for restoration after longjmp
+     println("\t{} = ctx;", env());
++    // The guest's jmp_buf holds the non-volatiles (r14-r31, f14-f31, CR) too. Localized ones
++    // are this function's C++ locals, whose values after a longjmp are indeterminate if they
++    // changed after the setjmp, so env keeps them as well (written before the setjmp, never
++    // after) and the longjmp return takes them back.
++    const bool nonVolatiles = localizeNonVolatiles();
++    const bool crs = cfg.crRegistersAsLocalVariables;
++    if (nonVolatiles) {
++      for (size_t i = 14; i < 32; ++i)
++        println("\t{}.r{} = {};", env(), i, r(i));
++      for (size_t i = 14; i < 32; ++i)
++        println("\t{}.f{} = {};", env(), i, f(i));
++    }
++    if (crs) {
++      for (size_t i = 2; i <= 4; ++i)
++        println("\t{}.cr{} = {};", env(), i, cr(i));
++    }
+     // Use custom ppc_setjmp that uses guest address as key
+     println("\t{}.s64 = ppc_setjmp({}.u32);", temp(), r(3));
+     // Restore PPCContext if returning from longjmp
+-    println("\tif ({}.s64 != 0) ctx = {};", temp(), env());
++    if (nonVolatiles || crs) {
++      println("\tif ({}.s64 != 0) {{", temp());
++      println("\t\tctx = {};", env());
++      if (nonVolatiles) {
++        for (size_t i = 14; i < 32; ++i)
++          println("\t\t{} = {}.r{};", r(i), env(), i);
++        for (size_t i = 14; i < 32; ++i)
++          println("\t\t{} = {}.f{};", f(i), env(), i);
++      }
++      if (crs) {
++        for (size_t i = 2; i <= 4; ++i)
++          println("\t\t{} = {}.cr{};", cr(i), env(), i);
++      }
++      println("\t}}");
++    } else {
++      println("\tif ({}.s64 != 0) ctx = {};", temp(), env());
++    }
+     println("\t{} = {};", r(3), temp());
+     return;
+   }
+@@ -198,31 +276,22 @@ void BuilderContext::emit_function_call(uint32_t address) {
+       auto* targetFn = target->asFunction();
+       const auto& name = targetFn->name();
+ 
+-      // Handle save/restore helpers. Gated on the global setting, not this
+-      // function's: the helper bodies are emitted under it too, so once they
+-      // spill to locals they are no-ops that scribble zeros on the caller's
+-      // frame. A share_registers function still has to elide them.
+-      if (cfg.nonVolatileRegistersAsLocalVariables &&
+-          (name.find("__rest") == 0 || name.find("__save") == 0)) {
++      // The save/restore helpers: a function whose non-volatiles are locals
++      // has nothing to save or restore, so its calls to them are dropped. A
++      // share_registers function keeps its non-volatiles in ctx, and the helper
++      // bodies share registers too (phase_register), so its calls stay: without
++      // them it would return with ctx's r14-r31 changed, and a localized caller
++      // takes those back after the call.
++      if (localizeNonVolatiles() && (name.find("__rest") == 0 || name.find("__save") == 0)) {
+         // print nothing - these are handled by local variable tracking
+         return;
+       }
+ 
+-      // An SEH funclet runs on its owner's frame and reads whatever non-volatiles
+-      // the owner left live, so hand it the localized copies through ctx and take
+-      // them back afterwards. Only registers already localized here can be live at
+-      // this point, so that set is the whole live-in the funclet can see.
+-      if (targetFn->sharesRegisters() && localizeNonVolatiles()) {
+-        for (size_t i = 14; i < 32; ++i) {
+-          if (locals.r[i])
+-            println("\tctx.r{} = r{};", i, i);
+-        }
++      if (HandsRegistersTo(*this, *targetFn)) {
++        HandRegistersOver(*this, "\t");
+         emitCtx.reference(name);
+         println("\t{}(ctx, base);", name);
+-        for (size_t i = 14; i < 32; ++i) {
+-          if (locals.r[i])
+-            println("\tr{} = ctx.r{};", i, i);
+-        }
++        TakeRegistersBack(*this, "\t");
+         return;
+       }
+ 
+@@ -298,6 +367,8 @@ void BuilderContext::emit_conditional_branch(bool not_, std::string_view cond) {
+           auto* targetFn = callTarget->asFunction();
+           emitCtx.reference(targetFn->name());
+           println("\tif ({}{}.{}) {{", not_ ? "!" : "", cr(insn.operands[0]), cond);
++          if (HandsRegistersTo(*this, *targetFn))
++            HandRegistersOver(*this, "\t\t");
+           println("\t\t{}(ctx, base);", targetFn->name());
+           println("\t\treturn;");
+           println("\t}}");
+diff --git a/src/codegen/builders/system.cpp b/src/codegen/builders/system.cpp
+index f560429..21b4aec 100644
+--- a/src/codegen/builders/system.cpp
++++ b/src/codegen/builders/system.cpp
+@@ -12,6 +12,8 @@
+ #include "builder_context.h"
+ #include "helpers.h"
+ 
++#include <rex/types.h>
++
+ namespace rex::codegen {
+ 
+ //=============================================================================
+@@ -319,8 +321,19 @@ bool build_mtctr(BuilderContext& ctx) {
+   return true;
+ }
+ 
++// Whether the function calls through LR (blrl, bclrl). Under skip_lr such a function still
++// loads LR: the C runtime's _CallSettingFrame (mtlr r3; blrl) calls an SEH funclet that way.
++static bool CallsThroughLr(const BuilderContext& ctx) {
++  const uint32_t* insn = ctx.data - (ctx.base - ctx.fn.base()) / 4;
++  for (uint32_t address = ctx.fn.base(); address < ctx.fn.end(); address += 4, ++insn) {
++    if ((byte_swap(*insn) & 0xFC0007FF) == 0x4C000021)
++      return true;
++  }
++  return false;
++}
++
+ bool build_mtlr(BuilderContext& ctx) {
+-  if (!ctx.config().skipLr)
++  if (!ctx.config().skipLr || CallsThroughLr(ctx))
+     ctx.println("\tctx.lr = {}.u64;", ctx.r(ctx.insn.operands[0]));
+   return true;
+ }
+diff --git a/src/codegen/phase_register.cpp b/src/codegen/phase_register.cpp
+index 7d1fa44..4374999 100644
+--- a/src/codegen/phase_register.cpp
++++ b/src/codegen/phase_register.cpp
+@@ -507,7 +507,16 @@ VoidResult registerEntryPoints(CodegenContext& ctx) {
+         importCount, resolvedCount, unresolvedCount, variableCount);
+   }
+ 
+-  // Register save/restore helpers
++  // Register save/restore helpers. They share registers: under non_volatile_as_local a
++  // localized function elides its calls to them, and a share_registers function (an SEH
++  // funclet, or one marked in the manifest) keeps its non-volatiles in ctx, so the helper
++  // bodies have to save and restore ctx's, not locals of their own.
++  auto addHelper = [&](uint32_t addr, uint32_t size, std::string name) {
++    auto* node = graph.addFunction(addr, size, FunctionAuthority::HELPER, true);
++    if (node)
++      node->setSharesRegisters(true);
++    graph.setFunctionName(addr, std::move(name));
++  };
+   auto registerHelpers = [&](uint32_t base14, const char* prefix, size_t stride, size_t endReg,
+                              size_t extraSize) {
+     if (base14 == 0)
+@@ -515,8 +524,7 @@ VoidResult registerEntryPoints(CodegenContext& ctx) {
+     for (size_t i = 14; i <= endReg; i++) {
+       uint32_t addr = base14 + static_cast<uint32_t>((i - 14) * stride);
+       uint32_t size = static_cast<uint32_t>((endReg + 1 - i) * stride + extraSize);
+-      graph.addFunction(addr, size, FunctionAuthority::HELPER, true);
+-      graph.setFunctionName(addr, fmt::format("{}{}", prefix, i));
++      addHelper(addr, size, fmt::format("{}{}", prefix, i));
+     }
+   };
+ 
+@@ -532,16 +540,14 @@ VoidResult registerEntryPoints(CodegenContext& ctx) {
+     for (size_t i = 64; i < 128; i++) {
+       uint32_t addr = state.restVmx64Address + static_cast<uint32_t>((i - 64) * 8);
+       uint32_t size = static_cast<uint32_t>((128 - i) * 8 + 4);
+-      graph.addFunction(addr, size, FunctionAuthority::HELPER, true);
+-      graph.setFunctionName(addr, fmt::format("__restvmx_{}", i));
++      addHelper(addr, size, fmt::format("__restvmx_{}", i));
+     }
+   }
+   if (state.saveVmx64Address != 0) {
+     for (size_t i = 64; i < 128; i++) {
+       uint32_t addr = state.saveVmx64Address + static_cast<uint32_t>((i - 64) * 8);
+       uint32_t size = static_cast<uint32_t>((128 - i) * 8 + 4);
+-      graph.addFunction(addr, size, FunctionAuthority::HELPER, true);
+-      graph.setFunctionName(addr, fmt::format("__savevmx_{}", i));
++      addHelper(addr, size, fmt::format("__savevmx_{}", i));
+     }
+   }
+ 

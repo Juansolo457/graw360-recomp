@@ -31,6 +31,7 @@ set(GRAWMP_SOURCES
     ${GRAW_SHARED_SRC}/ui_pad.cpp
     ${GRAW_SHARED_SRC}/frame_timing.cpp
     ${GRAW_SHARED_SRC}/cpu_check.cpp
+    ${GRAW_SHARED_SRC}/pgo.cpp
 )
 
 # The CPU check runs before any x86-64-v3 code (src/cpu_check.cpp), so it is built for v2 and

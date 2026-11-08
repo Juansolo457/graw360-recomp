@@ -117,6 +117,8 @@ namespace graw::native {
   X(vkCmdWriteTimestamp)            \
   X(vkGetQueryPoolResults)
 
+class VulkanGpuTimer;
+
 class VulkanDevice {
  public:
   static constexpr uint32_t kFramesInFlight = 2;
@@ -230,6 +232,11 @@ class VulkanDevice {
   VkInstance instance() const { return instance_; }
   VkPhysicalDevice physical_device() const { return physical_; }
   const ShaderCaps& shader_caps() const { return caps_; }
+  // The queue's timestamps: nanoseconds per tick, and the valid bits (0: no timestamps).
+  double timestamp_period_ns() const { return timestamp_ns_; }
+  uint64_t timestamp_mask() const { return timestamps_ ? timestamp_mask_ : 0; }
+  // --graw_native_gpu_timing: the timer that gets each frame's begin, present and end.
+  void set_pass_timer(VulkanGpuTimer* timer) { pass_timer_ = timer; }
 
  private:
   struct Frame {
@@ -278,6 +285,7 @@ class VulkanDevice {
   VkQueryPool timestamps_ = VK_NULL_HANDLE;
   double timestamp_ns_ = 0;  // nanoseconds per timestamp tick
   uint64_t timestamp_mask_ = 0, last_frame_end_ = 0;
+  VulkanGpuTimer* pass_timer_ = nullptr;
 };
 
 }  // namespace graw::native

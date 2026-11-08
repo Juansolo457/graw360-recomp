@@ -34,6 +34,7 @@ set(GRAWYETI_SOURCES
     ${GRAW_SHARED_SRC}/blend_probe.cpp
     ${GRAW_SHARED_SRC}/resolve_probe.cpp
     ${GRAW_SHARED_SRC}/cpu_check.cpp
+    ${GRAW_SHARED_SRC}/pgo.cpp
 )
 
 # The CPU check runs before any x86-64-v3 code (src/cpu_check.cpp), so it is built for v2 and

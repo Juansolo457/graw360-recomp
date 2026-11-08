@@ -3,17 +3,26 @@
 
 #include "log.h"
 
+#include <rex/cvar.h>
 #include <rex/graphics/xenos.h>
 #include <rex/logging.h>
 
 #include <algorithm>
 #include <cstring>
 
+REXCVAR_DEFINE_INT32(graw_native_msaa_max, 4, "GRAW native",
+                     "Vulkan: at most this many samples per pixel in the host render targets (4, 2 "
+                     "or 1). The campaign draws its scene with 4x MSAA, which the 360's EDRAM does "
+                     "for free; on a small GPU (Steam Deck) fewer samples save fill and bandwidth, "
+                     "at the cost of rougher edges")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
 namespace graw::native {
 
 namespace {
 
 namespace xenos = rex::graphics::xenos;
+
 
 constexpr uint32_t kEdramTiles = 2048;  // 10 MiB of 80x16-sample tiles
 constexpr uint32_t kMaxHeight = 2048;
@@ -99,6 +108,12 @@ void VulkanRenderTargets::Retire(VulkanRenderTarget& rt) {
   rt.stencil_view = VK_NULL_HANDLE;
 }
 
+uint32_t HostSamples(uint32_t guest) {
+  const int32_t cap = REXCVAR_GET(graw_native_msaa_max);
+  const uint32_t max = cap >= 4 ? 4u : cap >= 2 ? 2u : 1u;
+  return std::min(guest, max);
+}
+
 bool VulkanRenderTargets::Create(VulkanRenderTarget* rt, uint32_t height) {
   VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   ii.imageType = VK_IMAGE_TYPE_2D;
@@ -106,7 +121,7 @@ bool VulkanRenderTargets::Create(VulkanRenderTarget* rt, uint32_t height) {
   ii.extent = {std::max(1u, rt->pitch), height, 1};
   ii.mipLevels = 1;
   ii.arrayLayers = 1;
-  ii.samples = VkSampleCountFlagBits(rt->samples);
+  ii.samples = VkSampleCountFlagBits(rt->host_samples);
   ii.tiling = VK_IMAGE_TILING_OPTIMAL;
   ii.usage = (rt->depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
                         : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) |
@@ -180,6 +195,12 @@ VulkanRenderTarget* VulkanRenderTargets::Get(VkCommandBuffer cmd, bool depth, ui
     rt->edram_base = base;
     rt->pitch = pitch;
     rt->samples = samples;
+    rt->host_samples = HostSamples(samples);
+    if (rt->host_samples != samples)
+      GRAW_LOG_FIRST(1, INFO,
+                     "GRAW native Vulkan RT: {}x MSAA targets are {}x on the host "
+                     "(--graw_native_msaa_max)",
+                     samples, rt->host_samples);
     rt->format = format;
     if (!Create(rt, want)) return nullptr;
     targets_.emplace(key, std::move(owned));
@@ -278,7 +299,7 @@ void VulkanRenderTargets::BeginRendering(VkCommandBuffer cmd, VulkanRenderTarget
 bool VulkanRenderTargets::Bind(VkCommandBuffer cmd, const SurfaceRegs& regs, uint32_t color_mask,
                                bool depth_used, uint32_t height, VulkanBoundTargets* out) {
   *out = VulkanBoundTargets{};
-  out->samples = SurfaceSamples(regs.surface_info);
+  out->samples = HostSamples(SurfaceSamples(regs.surface_info));
   out->width = out->height = UINT32_MAX;
   for (uint32_t i = 0; i < 4; ++i) {
     if (!(color_mask >> i & 1)) continue;

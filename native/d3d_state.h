@@ -156,9 +156,19 @@ class GuestStateTracker {
   }
   // `count` registers from guest memory at host pointer `p` (big-endian dwords).
   void PutFromGuest(uint32_t reg, const uint8_t* p, uint32_t count);
-  void Feed(const uint8_t* base, uint32_t address, uint32_t dw);
+  // Decodes the packets the D3D wrote from guest address `first` to `last` (inclusive).
+  void DecodeWindow(const uint8_t* base, uint32_t first, uint32_t last);
   void HandlePacket(const uint8_t* base);
   void LoadShader(uint32_t type, uint32_t address, uint32_t dwords);
+  uint64_t ShaderBinding(uint32_t address, uint32_t dwords);
+  // The content hashes of the shaders loaded lately, by ucode address, length and both ends.
+  struct ShaderBindingMemo {
+    static constexpr uint32_t kSample = 32;
+    uint32_t ucode = 0, dwords = 0;
+    uint32_t sample[kSample] = {};
+    uint64_t binding = 0;
+  };
+  ShaderBindingMemo binding_memo_[256];
   void LoadShaderImmediate(uint32_t type, uint32_t address, const uint32_t* ucode_be,
                            uint32_t dwords);
 

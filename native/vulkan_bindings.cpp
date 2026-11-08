@@ -10,6 +10,7 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#include <simde/x86/sse2.h>
 #include <xxhash.h>
 
 #include <algorithm>
@@ -30,6 +31,11 @@ constexpr uint32_t kBoolLoopSize = 4 * (8 + 32), kFetchSize = 4 * 6 * 32;
 
 // Each frame's descriptor pools; another one is added when a frame needs more.
 constexpr uint32_t kPoolSets = 4096;
+
+// texture_sets_ keeps its nodes across frames (vulkan_bindings.h, TextureSetEntry): the room
+// reserved up front for a frame's distinct sets, and the size above which it is emptied once
+// (a scene change that keeps bringing new keys would otherwise grow it without end).
+constexpr size_t kTextureSetsReserve = 4096, kTextureSetsMax = 16384;
 
 }  // namespace
 
@@ -175,6 +181,7 @@ bool VulkanBindings::Initialize(VulkanMemory& memory, VkBuffer shared) {
   si.maxLod = VK_LOD_CLAMP_NONE;
   if (!Check(fn.vkCreateSampler(d, &si, nullptr, &sampler_), "the placeholder sampler"))
     return false;
+  texture_sets_.reserve(kTextureSetsReserve);
   REXLOG_INFO("GRAW native Vulkan: descriptor sets: shared memory in {} binding(s), uniform "
               "alignment {}, geometry shaders {}",
               shared_count, uniform_align_, caps.geometry_shader ? "yes" : "no");
@@ -301,7 +308,10 @@ void VulkanBindings::BeginFrame(uint64_t frame) {
   for (VkDescriptorPool p : f.pools) device_.fn().vkResetDescriptorPool(device_.device(), p, 0);
   f.current = 0;
   constants_set_ = VK_NULL_HANDLE;
-  texture_sets_.clear();
+  // Last frame's texture set entries stay as nodes (their frame stamp makes them misses) so the
+  // same keys this frame reuse them without freeing and allocating; only unbounded growth is
+  // cut. The keys themselves are a vector, cleared for free.
+  if (texture_sets_.size() > kTextureSetsMax) texture_sets_.clear();
   texture_set_keys_.clear();
   bound_layout_ = VK_NULL_HANDLE;
   bound_sets_ = {};
@@ -430,7 +440,9 @@ VkDescriptorSet VulkanBindings::TextureSet(const Layout& layout, bool vertex,
   const size_t key_bytes = key_scratch_.size() * sizeof(uint64_t);
   const uint64_t hash = XXH3_64bits(key_scratch_.data(), key_bytes);
   TextureSetEntry& entry = texture_sets_[hash];
-  if (entry.set && entry.key_size == key_scratch_.size() &&
+  // The frame stamp first: an older frame's entry points into pools reset since and into keys
+  // cleared since, so neither its set nor its key offset may be used.
+  if (entry.set && entry.frame == frame_ && entry.key_size == key_scratch_.size() &&
       !std::memcmp(texture_set_keys_.data() + entry.key_offset, key_scratch_.data(), key_bytes)) {
     ++stats_.texture_set_reuses;
     return entry.set;
@@ -440,6 +452,7 @@ VkDescriptorSet VulkanBindings::TextureSet(const Layout& layout, bool vertex,
   entry.key_offset = uint32_t(texture_set_keys_.size());
   entry.key_size = uint32_t(key_scratch_.size());
   entry.set = set;  // a hash collision replaces the older set
+  entry.frame = frame_;
   texture_set_keys_.insert(texture_set_keys_.end(), key_scratch_.begin(), key_scratch_.end());
   VkWriteDescriptorSet w[2] = {};
   uint32_t n = 0;
@@ -489,25 +502,64 @@ bool VulkanBindings::Bind(VkCommandBuffer cmd, const Layout& layout, const uint3
     const rex::graphics::Shader* shader = stage ? static_cast<const rex::graphics::Shader*>(ps)
                                                 : &vs;
     const uint32_t base = stage ? kFloatPixelRegs : kFloatVertexRegs;
-    float_scratch_.assign(16, 0);
-    if (shader) {
+    Constants& c =
+        constants_[stage ? T::kConstantBufferFloatPixel : T::kConstantBufferFloatVertex];
+    FloatConstants& f = float_last_[stage];
+    // Packed straight into f.last, one register = one 16-byte load and store, the xor with
+    // what was there OR-ed into `diff` on the way (draw.cpp's PackFloats): nothing to zero-fill,
+    // compare or copy afterwards. The buffer holds all 256 registers, so the gather can't
+    // overrun whatever the bitmap says.
+    simde__m128i* out = reinterpret_cast<simde__m128i*>(f.last);
+    const simde__m128i zero = simde_mm_setzero_si128();
+    simde__m128i diff = zero;
+    const uint32_t float_count = shader ? shader->constant_register_map().float_count : 0;
+    uint32_t n = 16;
+    if (float_count) {
       const auto& map = shader->constant_register_map();
-      float_scratch_.resize(16 * std::max(map.float_count, 1u), 0);
-      uint8_t* out = float_scratch_.data();
+      n = 16 * float_count;
       for (uint32_t i = 0; i < 4; ++i) {
         uint64_t bits = map.float_bitmap[i];
+        const uint32_t* src = regs + base + (i << 8);
         while (bits) {
-          const uint32_t c = uint32_t(std::countr_zero(bits));
+          const uint32_t r = uint32_t(std::countr_zero(bits));
           bits &= bits - 1;
-          std::memcpy(out, regs + base + (i << 8) + (c << 2), 16);
-          out += 16;
+          const simde__m128i v =
+              simde_mm_loadu_si128(reinterpret_cast<const simde__m128i*>(src + (r << 2)));
+          diff = simde_mm_or_si128(diff, simde_mm_xor_si128(v, simde_mm_load_si128(out)));
+          simde_mm_store_si128(out++, v);
         }
       }
+      // float_count is the bitmap's population count (the translator keeps them equal, 256
+      // with an all-ones bitmap under dynamic addressing); should it ever be larger, the rest
+      // reads as zero, as the zero-filled scratch buffer did.
+      for (auto* end = reinterpret_cast<simde__m128i*>(f.last + n); out < end; ++out) {
+        diff = simde_mm_or_si128(diff, simde_mm_load_si128(out));
+        simde_mm_store_si128(out, zero);
+      }
+    } else {
+      // No shader or no constants: 16 zero bytes (a uniform buffer needs some range).
+      diff = simde_mm_load_si128(out);
+      simde_mm_store_si128(out, zero);
     }
-    if (!Upload(constants_[stage ? T::kConstantBufferFloatPixel : T::kConstantBufferFloatVertex],
-                float_scratch_.data(), uint32_t(float_scratch_.size()), frame, &changed))
-      return fail("uniform memory");
-    any_changed |= changed;
+    // The frame first: an upload of an earlier frame lives in pool memory recycled since.
+    changed = c.frame != frame || n != f.last_size ||
+              simde_mm_movemask_epi8(simde_mm_cmpeq_epi8(diff, zero)) != 0xFFFF;
+    if (changed) {
+      VulkanUploadPool::Alloc a;
+      if (!uniforms_.Allocate(n, uniform_align_, frame, &a)) {
+        // f.last already holds the new contents: nothing but a cleared frame makes the next
+        // draw upload them.
+        c.frame = 0;
+        return fail("uniform memory");
+      }
+      std::memcpy(a.cpu, f.last, n);
+      c.info = {a.buffer, a.offset, n};
+      c.frame = frame;
+      f.last_size = n;
+      ++stats_.constant_uploads;
+      stats_.constant_bytes += n;
+      any_changed = true;
+    }
   }
   if (!Upload(constants_[T::kConstantBufferBoolLoop], regs + kBoolLoopRegs, kBoolLoopSize, frame,
               &changed))

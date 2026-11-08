@@ -20,8 +20,13 @@
 #include <spawn.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <chrono>
 #include <thread>
+
+#include <SDL3/SDL_error.h>
+#include <SDL3/SDL_events.h>
+#include <SDL3/SDL_timer.h>
 
 extern char** environ;
 #endif
@@ -33,6 +38,8 @@ REXCVAR_DEFINE_UINT32(graw_restart_wait_pid, 0, "GRAW",
 
 namespace graw::process {
 namespace {
+
+constexpr int kEarlyCloseGuardSeconds = 5;
 
 #if defined(_WIN32)
 std::wstring Wide(const std::string& text) {
@@ -184,6 +191,69 @@ bool StartAfterThis(const std::filesystem::path& executable, std::vector<std::st
   return true;
 #endif
 }
+
+#if !defined(_WIN32)
+namespace {
+std::chrono::steady_clock::time_point g_guard_until;
+
+std::atomic<bool> g_quit_deferred{false};
+
+// Pushes the quit the guard held back, once the guard is over (an SDL timer callback).
+Uint32 SDLCALL PushDeferredQuit(void*, SDL_TimerID, Uint32) {
+  if (g_quit_deferred.exchange(false)) {
+    SDL_Event quit{};
+    quit.type = SDL_EVENT_QUIT;
+    SDL_PushEvent(&quit);
+  }
+  return 0;
+}
+
+// SDL's event filter, set for a run a hand-over started: a close request in the first seconds of
+// its life is logged and dropped. On the Steam Deck (test 17, 2026-11-06) the front end the
+// campaign started got one 0.5 s into its life, before its first frame, and the game vanished;
+// nothing had asked for it (Steam logged the game as stopped only after the process was gone).
+// Which event it is says where it came from: a window close request is the compositor's, a quit
+// is a signal (SDL turns SIGTERM and SIGINT into one) or the last window closing. A quit is not
+// dropped but held until the guard is over, so a signal in those seconds still ends the run.
+bool SDLCALL FilterEarlyClose(void*, SDL_Event* event) {
+  const bool close = event->type == SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+  if (!close && event->type != SDL_EVENT_QUIT) return true;
+  const char* kind = close ? "window close request" : "quit";
+  const auto now = std::chrono::steady_clock::now();
+  if (now < g_guard_until) {
+    const double ms = std::chrono::duration<double, std::milli>(
+                          now - (g_guard_until - std::chrono::seconds(kEarlyCloseGuardSeconds)))
+                          .count();
+    if (close) {
+      REXLOG_WARN("GRAW: {} {:.0f} ms after this run started (hand-over): ignored", kind, ms);
+    } else if (!g_quit_deferred.exchange(true)) {
+      const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(g_guard_until - now);
+      if (!SDL_AddTimer(Uint32(std::max<int64_t>(left.count(), 1)), PushDeferredQuit, nullptr)) {
+        // No timer to deliver it later: the quit goes through now rather than nowhere.
+        g_quit_deferred = false;
+        REXLOG_WARN("GRAW: {} {:.0f} ms after this run started (hand-over): no SDL timer ({}), "
+                    "let through",
+                    kind, ms, SDL_GetError());
+        return true;
+      }
+      REXLOG_WARN("GRAW: {} {:.0f} ms after this run started (hand-over): held for {} ms", kind,
+                  ms, left.count());
+    }
+    return false;
+  }
+  REXLOG_INFO("GRAW: {} received", kind);
+  return true;
+}
+}  // namespace
+
+void GuardEarlyClose() {
+  if (!REXCVAR_GET(graw_restart_wait_pid)) return;
+  g_guard_until = std::chrono::steady_clock::now() + std::chrono::seconds(kEarlyCloseGuardSeconds);
+  SDL_SetEventFilter(FilterEarlyClose, nullptr);
+}
+#else
+void GuardEarlyClose() {}
+#endif
 
 void WaitForPreviousRun() {
 #if defined(_WIN32)

@@ -1,0 +1,53 @@
+diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
+index 503682c..78e1a3b 100644
+--- a/include/rex/graphics/command_processor.h
++++ b/include/rex/graphics/command_processor.h
+@@ -253,6 +253,7 @@ class CommandProcessor {
+ 
+   uint32_t read_ptr_index_ = 0;
+   uint32_t read_ptr_update_freq_ = 0;
++  uint32_t read_ptr_update_block_bytes_ = 0;  // RB_BLKSZ in bytes
+   uint32_t read_ptr_writeback_ptr_ = 0;
+ 
+   std::unique_ptr<rex::thread::Event> write_ptr_index_event_;
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index f9097b8..4bcfc25 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -332,6 +332,7 @@ void CommandProcessor::EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_s
+   // block_size = RB_BLKSZ, log2 of number of quadwords read between updates of
+   //              the read pointer.
+   read_ptr_update_freq_ = uint32_t(1) << block_size_log2 >> 2;
++  read_ptr_update_block_bytes_ = uint32_t(8) << std::min<uint32_t>(block_size_log2, 24);
+ }
+ 
+ void CommandProcessor::UpdateWritePointer(uint32_t value) {
+@@ -635,6 +636,18 @@ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t wr
+   memory::RingBuffer reader(memory_->TranslatePhysical(primary_buffer_ptr_), primary_buffer_size_);
+   reader.set_read_offset(read_index * sizeof(uint32_t));
+   reader.set_write_offset(write_index * sizeof(uint32_t));
++  // The read pointer is written back after every packet of the run, not only once the whole
++  // run up to the write pointer is done: a title that waits for ring space by polling the
++  // write-back regains it while the command processor is still working, instead of taking turns
++  // with it. GRAW's D3D keeps its commands in indirect buffers and waits for the read pointer to
++  // pass the 12-byte primary packet that referenced a segment before reusing it, so with the
++  // write-back only at the end of a run its render thread waited for every submitted buffer to
++  // finish, up to half of each heavy frame on the Steam Deck. (The hardware's RB_BLKSZ block,
++  // VdEnableRingBufferRPtrWriteBack's argument, is 4 KB here: ~340 such packets, so it is not
++  // used as the interval.)
++  uint32_t* writeback = read_ptr_writeback_ptr_
++                            ? memory_->TranslatePhysical<uint32_t*>(read_ptr_writeback_ptr_)
++                            : nullptr;
+   do {
+     if (!ExecutePacket(&reader)) {
+       // This probably should be fatal - but we're going to continue anyways.
+@@ -642,6 +655,9 @@ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t wr
+       assert_always();
+       break;
+     }
++    if (writeback) {
++      memory::store_and_swap<uint32_t>(writeback, reader.read_offset() / sizeof(uint32_t));
++    }
+   } while (reader.read_count());
+ 
+   OnPrimaryBufferEnd();

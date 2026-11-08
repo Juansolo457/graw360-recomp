@@ -37,10 +37,37 @@ expected_tree=12884d9f3cbcc28abdd88159c8ed93651bc9192d  # after the last patch
 # outlived every hard exit in /dev/shm (a tmpfs of half the RAM), and a few restarts or
 # hand-overs filled it, the next guest page touched raising SIGBUS (F.E.A.R. 360's Deck crash).
 # The crash report's backtrace runs under a 5 s alarm, so a hang inside the unwinder still ends
-# the process (#53 review).
+# the process (#53 review). Looking up the mapping that holds an address asks the kernel
+# (PROCMAP_QUERY) instead of reading /proc/self/maps, and a commit on a reservation doesn't read it
+# at all: the write watches split guest memory into thousands of mappings, and the game thread
+# spent a quarter of its time in the kernel writing that file out (Deck, mission 3). A wait on
+# several objects sleeps until one of them is signaled: it polled with the time left cast to whole
+# milliseconds, 0 under 1 ms, so every alertable one spun (the audio worker used a full core). The
+# command processor knows which registers are named without a lookup per register write.
+# The translator's register options take F.E.A.R.'s fixes (its patches 0007-0012: SEH funclets'
+# r12 and non-volatiles, mtlr before blrl, setjmp's locals, hand-offs into share_registers
+# functions); the Windows-only 0013 (callee-saved xmm registers) has no Linux counterpart.
+# The command processor writes the ring read pointer back after every primary packet, not only
+# once it has consumed everything submitted: the game's render thread, which waits for that
+# write-back to pass a segment's indirect-buffer packet before reusing the segment, no longer
+# waits for every submitted buffer to finish.
+# With gpu_skip_draws a WAIT_REG_MEM on memory passes at once (--gpu_skip_draws_memory_waits):
+# GRAW's D3D parks the GPU on its swap word until the last frame was scanned out, which with the
+# native renderer presenting only starved the command ring and stalled the render thread.
+# With gpu_skip_draws a type-0 packet or constant upload is one copy into the register file
+# (gpu-skip-draws-fast-regs) instead of a virtual WriteRegister per register: the command
+# processor thread cost a whole core at 40 million register writes a second on the Deck.
+# A WAIT_REG_MEM packet polls for 500 us without sleeping (--gpu_wait_reg_mem_spin_us), then
+# sleeps 50 us between polls (--gpu_wait_reg_mem_sleep_us), not the whole
+# milliseconds Xenia made of the packet's interval, and the command processor logs its packet,
+# wait and stall counts every --gpu_cp_stats_seconds.
 linux_patches=(rexglue-bd833a2-launch-title-path rexglue-bd833a2-linux-crash-renderdoc
-               rexglue-bd833a2-linux-shm-unlink rexglue-bd833a2-linux-crash-watchdog)
-linux_tree=f481d5e488b14bcd76ed16c98e069da692f1fe67
+               rexglue-bd833a2-linux-shm-unlink rexglue-bd833a2-linux-crash-watchdog
+               rexglue-bd833a2-linux-procmaps-query rexglue-bd833a2-linux-wait-block
+               rexglue-bd833a2-gpu-known-registers rexglue-bd833a2-codegen-register-options
+               rexglue-bd833a2-gpu-rptr-writeback rexglue-bd833a2-gpu-cp-stats
+               rexglue-bd833a2-gpu-skip-draws-fast-regs)
+linux_tree=fc85110477edaa6fdf129f5b167cc3e9d8c10a3a
 # Checkouts made by an earlier version of this script move forward by the patches added since,
 # rather than a new clone and full SDK build: "<tree> <patch>..." pairs, each tree -> the next.
 upgrades=("f9d5a19f96e3f2f7ed79ee5b08155eab343a5b9c rexglue-bd833a2-spirv-exp-adjust"
@@ -49,7 +76,12 @@ upgrades=("f9d5a19f96e3f2f7ed79ee5b08155eab343a5b9c rexglue-bd833a2-spirv-exp-ad
           "379fa50a65a1bbf7ec9e525f0316489759223e00 rexglue-bd833a2-linux-crash-renderdoc"
           "88fa3e8437490f8c7c0628370326eaa4561c4788 rexglue-bd833a2-linux-shm-unlink"
           "3a2a409da3864dbd34b93398d11c182feeb87706 rexglue-bd833a2-linux-crash-watchdog"
-          "8b6704526e838bc5de441a142dade478a73f0450 rexglue-bd833a2-vexptefp-underflow")
+          "f481d5e488b14bcd76ed16c98e069da692f1fe67 rexglue-bd833a2-linux-procmaps-query"
+          "c14edfc4d2dcfdac1374c1c41cfe9e3c72aacb4b rexglue-bd833a2-linux-wait-block rexglue-bd833a2-gpu-known-registers"
+          "c613d54bf983448a7f0567afa9b8e7799cdfb358 rexglue-bd833a2-codegen-register-options"
+          "8b6704526e838bc5de441a142dade478a73f0450 rexglue-bd833a2-vexptefp-underflow"
+          "c8920806959cab6e883b344d3763e562560de792 rexglue-bd833a2-gpu-rptr-writeback rexglue-bd833a2-gpu-cp-stats rexglue-bd833a2-gpu-skip-draws-fast-regs"
+          "ebc504b27f0ab9b3e8a09148281eeef430850c79 rexglue-bd833a2-gpu-skip-draws-fast-regs")
 force=0
 jobs=$(( $(nproc) > 2 ? $(nproc) - 2 : 1 ))
 while [[ $# -gt 0 ]]; do
@@ -140,7 +172,9 @@ if [[ -x "$install/bin/rexglue" && -f "$install/lib/librexruntimerd.so" && $forc
       "$(cat "$stamp" 2>/dev/null)" == "$linux_tree" ]]; then
   echo "SDK: built ($install)"
 else
-  (cd "$sdk" && cmake --preset linux-amd64 -DREXGLUE_BUILD_TESTS=OFF)
+  # Perf counters off: every dispatched guest call did an atomic add on one counter shared by
+  # all threads (7% of the game thread's samples on the Deck); nothing here reads them.
+  (cd "$sdk" && cmake --preset linux-amd64 -DREXGLUE_BUILD_TESTS=OFF -DREXGLUE_ENABLE_PERF_COUNTERS=OFF)
   for config in RelWithDebInfo Release; do
     echo "SDK: building $config ($jobs jobs)"
     cmake --build "$sdk/out/build/linux-amd64" --config "$config" --parallel "$jobs"

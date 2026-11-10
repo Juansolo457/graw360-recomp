@@ -29,17 +29,28 @@ $sdkCommit = 'bd833a2ab69d305f99ddf57418fc38ffec8af93d'
 # 0021 for the SPIR-V translator (the native Vulkan renderer, docs/VULKAN_RENDERER.md). Last, the
 # code generator's vexptefp (2^x estimate): it built the exponent as (floor(x) + 127) << 23, which
 # wraps below 2^-127 (2^-130 came out as -8.5e37) where the hardware gives 0 (found in
-# lotr-conquest-360-recomp's audio; GRAW uses it at 10 sites).
+# lotr-conquest-360-recomp's audio; GRAW uses it at 10 sites). Then the command processor's fixes
+# from the Steam Deck work (tools/setup-linux.sh has the same, docs/PERF.md): no register table
+# lookup per write; the ring read pointer written back after every packet, not once everything
+# submitted is consumed (the game's render thread waited for every buffer it had queued); with the
+# native renderer drawing (gpu_skip_draws) a WAIT_REG_MEM on memory passes at once (the D3D's swap
+# throttle parked the command processor and starved the ring), the others poll without sleeping
+# 500 us, and its counts are logged; and a register packet is one copy into the register file.
 $sdkPatches = @('rexglue-bd833a2-vpkd3d128-alias', 'rexglue-bd833a2-freed-page-resolve',
                 'rexglue-bd833a2-vblank-pacing', 'rexglue-bd833a2-gpu-skip-draws',
                 'pgr4-native/0021-gpu-sample-computed-LOD-pixel-shader-fetches-with-sa',
                 'pgr4-native/0022-gpu-add-a-pixel-shader-modification-for-textures-kno',
                 'rexglue-bd833a2-implicit-gradients-switch', 'rexglue-bd833a2-spirv-exp-adjust',
-                'rexglue-bd833a2-spirv-implicit-gradients', 'rexglue-bd833a2-vexptefp-underflow')
-$expectedTree = '12884d9f3cbcc28abdd88159c8ed93651bc9192d'   # after the last patch
+                'rexglue-bd833a2-spirv-implicit-gradients', 'rexglue-bd833a2-vexptefp-underflow',
+                'rexglue-bd833a2-gpu-known-registers', 'rexglue-bd833a2-gpu-rptr-writeback',
+                'rexglue-bd833a2-gpu-cp-stats', 'rexglue-bd833a2-gpu-skip-draws-fast-regs')
+$expectedTree = '7ae9d8dbf56c5277e03efb0ab7a774102671440e'   # after the last patch
 # Checkouts made by an earlier version of this script move forward by the patches added since,
 # rather than a new clone: "<tree> <patch>..." pairs, each tree -> the next (as setup-linux.sh).
-$upgrades = @('54ab5932e76ba1b8c9e454891c9ba52c16bfdda0 rexglue-bd833a2-vexptefp-underflow')
+$upgrades = @('54ab5932e76ba1b8c9e454891c9ba52c16bfdda0 rexglue-bd833a2-vexptefp-underflow',
+              ('12884d9f3cbcc28abdd88159c8ed93651bc9192d rexglue-bd833a2-gpu-known-registers ' +
+               'rexglue-bd833a2-gpu-rptr-writeback rexglue-bd833a2-gpu-cp-stats ' +
+               'rexglue-bd833a2-gpu-skip-draws-fast-regs'))
 
 function Invoke-Git {
     & git.exe @args
@@ -179,7 +190,9 @@ if (!$built -and !$Force -and $stampTree -eq $expectedTree) {
     Push-Location $sdk
     try {
         Write-Host 'SDK tools: building the code generator and the renderer plugin'
-        & $cmake --preset win-amd64 -DREXGLUE_BUILD_TESTS=OFF -DREXGLUE_USE_VULKAN=OFF
+        # Perf counters off, as on Linux: the plugin's command processor counted every packet into
+        # counters nothing in this project reads.
+        & $cmake --preset win-amd64 -DREXGLUE_BUILD_TESTS=OFF -DREXGLUE_USE_VULKAN=OFF -DREXGLUE_ENABLE_PERF_COUNTERS=OFF
         if ($LASTEXITCODE) { throw 'SDK configure failed.' }
         & $cmake --build --preset win-amd64-relwithdebinfo --parallel $Jobs --target rexglue rexgpu-xenos
         if ($LASTEXITCODE) { throw 'SDK build failed.' }

@@ -6,12 +6,23 @@
 #   pwsh -NoProfile -File tools/build.ps1 -Project port-mp     # Instant Action/multiplayer (grawmp.exe); -Project port-yeti = the campaign
 #   pwsh -NoProfile -File tools/build.ps1 -Project port-yeti-nx   # the campaign on fear-nx's SDK and Vulkan renderer (#2)
 #     (builds that SDK from source: third_party/rexglue-sdk-nx; the first build takes ~15 minutes)
+#   pwsh -NoProfile -File tools/build.ps1 -Project port-yeti -Lto ON        # ThinLTO, as tools/build-linux.sh
+#   pwsh -NoProfile -File tools/build.ps1 -Project port-yeti -Pgo generate  # instrumented, for a training run
+#   (then tools/pgo-merge.ps1; a later build uses pgo/<project>/default.profdata by default)
 [CmdletBinding()]
 param(
     [ValidateSet('Debug','Release','RelWithDebInfo')][string]$Configuration = 'RelWithDebInfo',
     [ValidateRange(1,64)][int]$Jobs = 14,
     # port = the front end (default.xex -> graw.exe); port-mp = Instant Action/multiplayer (GR3Xenon_Release.exe -> grawmp.exe); port-yeti = the campaign (Yeti_Final_Xenon.exe -> grawyeti.exe)
-    [ValidateSet('port', 'port-mp', 'port-yeti', 'port-yeti-nx')][string]$Project = 'port'
+    [ValidateSet('port', 'port-mp', 'port-yeti', 'port-yeti-nx')][string]$Project = 'port',
+    # ThinLTO over the program, its translated code and our host code (lld-link), as
+    # tools/build-linux.sh's GRAW_LTO. Its own build folder (<preset>-lto), so the two never mix.
+    [ValidateSet('ON', 'OFF')][string]$Lto = 'OFF',
+    # Profile-guided optimization, as tools/build-linux.sh's GRAW_PGO: generate = an instrumented
+    # build (<preset>[-lto]-pgogen) whose runs write pgo-raw/*.profraw beside the program
+    # (port/src/pgo.cpp), merged by tools/pgo-merge.ps1; use = optimize with
+    # pgo/<project>/default.profdata; off = neither. Default: use when that profile exists.
+    [ValidateSet('', 'generate', 'use', 'off')][string]$Pgo = ''
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -44,7 +55,32 @@ $prefix = "-DCMAKE_PREFIX_PATH=$tools/rexglue-sdk/win-amd64"
 # x86-64-v3 (AVX2, FMA, BMI; every PC CPU since ~2013 and the Steam Deck): the translated code's
 # std::fma for every PowerPC multiply-add is then one instruction instead of a C runtime call
 # (#11). src/cpu_check.cpp stops older CPUs with a message. Changing these flags rebuilds all.
-$archFlags = @('-DCMAKE_C_FLAGS=-march=x86-64-v3', '-DCMAKE_CXX_FLAGS=-march=x86-64-v3')
+$flags = '-march=x86-64-v3'
+$exeLinkFlags = ''
+$build = Join-Path $port "out/build/$preset"
+if ($Lto -eq 'ON') {
+    if ($Project -like '*-nx') { throw '-Lto ON is for the bd833a2 projects (port, port-mp, port-yeti).' }
+    $flags += ' -flto=thin'
+    $exeLinkFlags = '-fuse-ld=lld -flto=thin'
+    $build += '-lto'
+}
+$profile = Join-Path $root "pgo/$Project/default.profdata"
+if (!$Pgo) { $Pgo = if (Test-Path $profile) { 'use' } else { 'off' } }
+switch ($Pgo) {
+    'generate' {
+        $flags += ' -fprofile-generate=pgo-raw -DGRAW_PGO_GENERATE=1'
+        $exeLinkFlags += ' -fprofile-generate=pgo-raw'
+        $build += '-pgogen'
+    }
+    'use' {
+        if (!(Test-Path $profile)) { throw "-Pgo use: $profile is missing (tools/pgo-merge.ps1)." }
+        # Functions the training never reached have no record (tools/pgo-merge.ps1 drops them; a
+        # zero count would mark them cold), so they're compiled as without a profile.
+        $flags += " -fprofile-use=$($profile -replace '\\', '/') -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date -Wno-backend-plugin"
+    }
+}
+$archFlags = @("-DCMAKE_C_FLAGS=$flags", "-DCMAKE_CXX_FLAGS=$flags", '-B', $build)
+if ($exeLinkFlags) { $archFlags += "-DCMAKE_EXE_LINKER_FLAGS=$($exeLinkFlags.Trim())" }
 if ($Project -like '*-nx') {
     # fear-nx's patched SDK from source, Vulkan on, the Xenos plugin linked in (as fear360's
     # tools/build-nx.ps1). fear-nx's clock patch divides an unsigned __int128 (__udivti3), which
@@ -66,7 +102,7 @@ try {
     # Codegen first (a no-op when nothing changed), then reconfigure once if the generated
     # sources did not exist yet (the recomp target only appears once they do), then build.
     $firstTime = !(Test-Path (Join-Path $port "generated/$outDir/sources.cmake"))
-    & $cmake --build --preset $preset --parallel $Jobs --target "$($name)_codegen"
+    & $cmake --build $build --parallel $Jobs --target "$($name)_codegen"
     if ($LASTEXITCODE) { throw 'Code generation failed.' }
     # The SDK's prebuilt code generator mistranslates vpkd3d128 with the destination aliasing a
     # source (the sign of element 0 is lost: the tactical map and the Cross-Com feed draw off
@@ -93,8 +129,15 @@ try {
         & $cmake --preset $preset $prefix @archFlags
         if ($LASTEXITCODE) { throw 'CMake re-configure failed.' }
     }
-    & $cmake --build --preset $preset --parallel $Jobs
+    # Ninja doesn't track the profile's contents: a new one rebuilds everything.
+    $pgoStamp = Join-Path $build '.graw-pgo-profile'
+    $pgoSum = if ($Pgo -eq 'use') { (Get-FileHash $profile -Algorithm SHA256).Hash } else { 'none' }
+    if ((Test-Path $pgoStamp) -and ((Get-Content $pgoStamp -Raw).Trim() -ne $pgoSum)) {
+        & $cmake --build $build --target clean
+    }
+    & $cmake --build $build --parallel $Jobs
     if ($LASTEXITCODE) { throw 'Build failed.' }
+    Set-Content -Path $pgoStamp -Value $pgoSum -NoNewline
     if ($Project -eq 'port-yeti') {
         # The build copies the SDK's stock renderer plugin next to the campaign; the campaign uses
         # the one tools/setup.ps1 built from the patched source (resolves into freed memory,
@@ -102,7 +145,7 @@ try {
         $suffix = @{ 'Debug' = 'd'; 'Release' = ''; 'RelWithDebInfo' = 'rd' }[$Configuration]
         $plugin = Join-Path $root "third_party/rexglue-sdk-bd833a2/out/win-amd64/$Configuration/rexgpu-xenos$suffix.dll"
         if (Test-Path $plugin) {
-            Copy-Item $plugin (Join-Path $port "out/build/$preset/") -Force
+            Copy-Item $plugin "$build/" -Force
             Write-Host "Installed the patched renderer plugin ($plugin)"
         } elseif ($Configuration -ne 'RelWithDebInfo') {
             throw "tools/setup.ps1 builds the patched renderer plugin for RelWithDebInfo only; build that SDK configuration yourself ($plugin) or build the campaign as RelWithDebInfo."
@@ -110,5 +153,5 @@ try {
             throw "The patched renderer plugin isn't built ($plugin): run tools/setup.ps1 (docs/SETUP.md)."
         }
     }
-    Write-Host "Built $Project/out/build/$preset/$name.exe"
+    Write-Host "Built $build/$name.exe (LTO $Lto, PGO $Pgo)"
 } finally { Pop-Location }

@@ -57,7 +57,11 @@ param(
     # drawing the game and shows the native renderer's frames in a second window, for comparing.
     [switch]$Native,
     [switch]$NativeSide,
-    [ValidateSet('Debug','Release','RelWithDebInfo')][string]$Configuration = 'RelWithDebInfo'
+    [ValidateSet('Debug','Release','RelWithDebInfo')][string]$Configuration = 'RelWithDebInfo',
+    # The build tools/build.ps1 made with these (its -lto and -pgogen build folders), as
+    # tools/smoke.ps1. With -Project port (the front end) they pick the front end's build only.
+    [ValidateSet('ON', 'OFF')][string]$Lto = 'OFF',
+    [ValidateSet('', 'generate', 'use', 'off')][string]$Pgo = ''
 )
 $ErrorActionPreference = 'Stop'
 $port = Join-Path $PSScriptRoot "..\$Project" | Resolve-Path
@@ -91,7 +95,7 @@ if ($Fps -gt 0) {
 }
 $running = Get-Process -Name graw, grawmp, grawyeti -ErrorAction SilentlyContinue
 if ($running) { throw "GRAW is already running (pid $($running.Id -join ', ')). Quit it first." }
-$executable = Join-Path $port "out\build\win-amd64-$($Configuration.ToLowerInvariant())\$exeName.exe"
+$executable = Join-Path $port ($buildDir + $(if ($Lto -eq 'ON') { '-lto' } else { '' }) + $(if ($Pgo -eq 'generate') { '-pgogen' } else { '' }) + "\$exeName.exe")
 New-Item -ItemType Directory -Force (Join-Path $port 'logs') | Out-Null
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $log = Join-Path $port "logs\run-$stamp.log"

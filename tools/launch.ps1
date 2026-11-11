@@ -20,7 +20,7 @@
 [CmdletBinding()]
 param(
     [ValidateRange(1,3)][int]$Scale = 2,                 # internal resolution: 1 = 720p, 2 = 1440p, 3 = 4K
-    [ValidateSet(-1,0,1,2,3,4,5)][int]$Anisotropic = 5,  # SDK enum: 5 = 16x, -1 = the game's own
+    [ValidateSet(-1,0,1,2,3,4,5)][int]$Anisotropic = 5,  # SDK enum: 5 = 16x, -1 = the game's own; both renderers
     [ValidateSet('none', 'fxaa', 'fxaa_extreme')][string]$Aa = 'none',   # FXAA blurs the image (play-test 2026-10-23)
     [switch]$Windowed,
     [switch]$Trace,       # --log_level trace --log_noisy: every kernel call with its arguments (large log)
@@ -85,6 +85,10 @@ if ($Nx -or $Project -eq 'port-yeti-nx') {
 # while the emulated renderer's command processor waits on the D3D's swap throttle. The native
 # renderer skips those waits.
 $nxArguments += @('--gpu_wait_reg_mem_sleep_us=-1')
+# -Anisotropic for the campaign's own renderer too, so F9 doesn't change the textures' sharpness:
+# --anisotropic_override only reaches the Xenos plugin. The native option counts samples (the SDK
+# enum n is 2^(n-1) samples); it can't go below the game's own filtering, so 0 and -1 are both 1.
+$nxArguments += @("--graw_native_anisotropy=$(if ($Anisotropic -ge 1) { [int][Math]::Pow(2, $Anisotropic - 1) } else { 1 })")
 if ($Native) { $nxArguments += @('--graw_native_primary=true') }
 elseif ($NativeSide) { $nxArguments += @('--graw_native=true') }
 if ($Fps -gt 0) {

@@ -18,6 +18,7 @@ if (!(Test-Path $profdata)) { throw "llvm-profdata is missing at $profdata (tool
 $files = foreach ($i in $Inputs) {
     if (Test-Path $i -PathType Container) { Get-ChildItem $i -Filter '*.profraw' | ForEach-Object FullName }
     elseif (Test-Path $i -PathType Leaf) { (Resolve-Path $i).Path }
+    else { throw "$i doesn't exist." }
 }
 if (!$files) { throw "No .profraw files in $($Inputs -join ', ')." }
 

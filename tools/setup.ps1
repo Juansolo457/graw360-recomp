@@ -190,9 +190,7 @@ if (!$built -and !$Force -and $stampTree -eq $expectedTree) {
     Push-Location $sdk
     try {
         Write-Host 'SDK tools: building the code generator and the renderer plugin'
-        # Perf counters off, as on Linux: the plugin's command processor counted every packet into
-        # counters nothing in this project reads.
-        & $cmake --preset win-amd64 -DREXGLUE_BUILD_TESTS=OFF -DREXGLUE_USE_VULKAN=OFF -DREXGLUE_ENABLE_PERF_COUNTERS=OFF
+        & $cmake --preset win-amd64 -DREXGLUE_BUILD_TESTS=OFF -DREXGLUE_USE_VULKAN=OFF
         if ($LASTEXITCODE) { throw 'SDK configure failed.' }
         & $cmake --build --preset win-amd64-relwithdebinfo --parallel $Jobs --target rexglue rexgpu-xenos
         if ($LASTEXITCODE) { throw 'SDK build failed.' }

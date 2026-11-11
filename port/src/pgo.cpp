@@ -15,6 +15,7 @@
 #if defined(GRAW_PGO_GENERATE)
 
 #include <chrono>
+#include <exception>
 #include <filesystem>
 #include <iterator>
 #include <string>
@@ -62,7 +63,14 @@ struct ProfileWriter {
     // The runtime keeps the pointer: strings that live as long as the process.
     static const std::filesystem::path temp = dir / (pid + ".profraw.tmp");
     static const std::filesystem::path done = dir / (pid + ".profraw");
-    static const std::string temp_name = temp.string();
+    // string() throws on Windows for a path outside the ANSI code page: the working folder then.
+    static const std::string temp_name = [] {
+      try {
+        return temp.string();
+      } catch (const std::exception&) {
+        return temp.filename().string();
+      }
+    }();
     __llvm_profile_set_filename(temp_name.c_str());
     std::thread([] {
       for (;;) {

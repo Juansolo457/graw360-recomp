@@ -72,8 +72,7 @@ pwsh -NoProfile -File tools/setup.ps1
      the game's render thread no longer waits for the command processor to drain everything it
      queued, the D3D's swap throttle no longer parks it, and register writes are a copy; it logs
      its counts every few seconds (`--gpu_cp_stats_seconds`, 0 = off).
-3. From that source, it builds the patched code generator and the campaign's renderer plugin
-   (with ReXGlue's perf counters compiled out; nothing here reads them). A
+3. From that source, it builds the patched code generator and the campaign's renderer plugin. A
    checkout made by an earlier version gets the patches added since, and the tools are rebuilt
    when the patched source changed; the next build regenerates the code.
 

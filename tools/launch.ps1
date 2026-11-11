@@ -76,6 +76,11 @@ if ($Nx -or $Project -eq 'port-yeti-nx') {
     $nxArguments = @('--graw_campaign_exe', (Resolve-Path $campaign).Path,
         '--nx_renderer', 'native', '--nx_native_resolution_scale', "$Scale")
 }
+# WAIT_REG_MEM sleeps the packet's own interval between polls, as before the Steam Deck work: its
+# 50 us default is a yield on Windows (rex::thread::Sleep under 100 us), which would spin a core
+# while the emulated renderer's command processor waits on the D3D's swap throttle. The native
+# renderer skips those waits.
+$nxArguments += @('--gpu_wait_reg_mem_sleep_us=-1')
 if ($Native) { $nxArguments += @('--graw_native_primary=true') }
 elseif ($NativeSide) { $nxArguments += @('--graw_native=true') }
 if ($Fps -gt 0) {

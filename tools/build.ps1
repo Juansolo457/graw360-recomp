@@ -64,8 +64,9 @@ if ($Lto -eq 'ON') {
     $exeLinkFlags = '-fuse-ld=lld -flto=thin'
     $build += '-lto'
 }
-$profile = Join-Path $root "pgo/$Project/default.profdata"
-if (!$Pgo) { $Pgo = if (Test-Path $profile) { 'use' } else { 'off' } }
+$pgoProfile = Join-Path $root "pgo/$Project/default.profdata"
+if (!$Pgo) { $Pgo = if ((Test-Path $pgoProfile) -and $Project -notlike '*-nx') { 'use' } else { 'off' } }
+if ($Pgo -in 'generate', 'use' -and $Project -like '*-nx') { throw '-Pgo is for the bd833a2 projects (port, port-mp, port-yeti).' }
 switch ($Pgo) {
     'generate' {
         $flags += ' -fprofile-generate=pgo-raw -DGRAW_PGO_GENERATE=1'
@@ -73,10 +74,14 @@ switch ($Pgo) {
         $build += '-pgogen'
     }
     'use' {
-        if (!(Test-Path $profile)) { throw "-Pgo use: $profile is missing (tools/pgo-merge.ps1)." }
+        if (!(Test-Path $pgoProfile)) { throw "-Pgo use: $pgoProfile is missing (tools/pgo-merge.ps1)." }
         # Functions the training never reached have no record (tools/pgo-merge.ps1 drops them; a
         # zero count would mark them cold), so they're compiled as without a profile.
-        $flags += " -fprofile-use=$($profile -replace '\\', '/') -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date -Wno-backend-plugin"
+        $flags += " -fprofile-use=$($pgoProfile -replace '\\', '/') -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date -Wno-backend-plugin"
+        # Ninja doesn't track the profile's contents: its hash in the flags recompiles everything
+        # when it changes. (Not the clean target: that deletes the generated code, which the
+        # stock code generator would then rewrite after the check below has run.)
+        $flags += " -DGRAW_PGO_PROFILE=$((Get-FileHash $pgoProfile -Algorithm SHA256).Hash.Substring(0, 16))"
     }
 }
 $archFlags = @("-DCMAKE_C_FLAGS=$flags", "-DCMAKE_CXX_FLAGS=$flags", '-B', $build)
@@ -129,15 +134,8 @@ try {
         & $cmake --preset $preset $prefix @archFlags
         if ($LASTEXITCODE) { throw 'CMake re-configure failed.' }
     }
-    # Ninja doesn't track the profile's contents: a new one rebuilds everything.
-    $pgoStamp = Join-Path $build '.graw-pgo-profile'
-    $pgoSum = if ($Pgo -eq 'use') { (Get-FileHash $profile -Algorithm SHA256).Hash } else { 'none' }
-    if ((Test-Path $pgoStamp) -and ((Get-Content $pgoStamp -Raw).Trim() -ne $pgoSum)) {
-        & $cmake --build $build --target clean
-    }
     & $cmake --build $build --parallel $Jobs
     if ($LASTEXITCODE) { throw 'Build failed.' }
-    Set-Content -Path $pgoStamp -Value $pgoSum -NoNewline
     if ($Project -eq 'port-yeti') {
         # The build copies the SDK's stock renderer plugin next to the campaign; the campaign uses
         # the one tools/setup.ps1 built from the patched source (resolves into freed memory,

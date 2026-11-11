@@ -57,7 +57,11 @@ param(
     # drawing the game and shows the native renderer's frames in a second window, for comparing.
     [switch]$Native,
     [switch]$NativeSide,
-    [ValidateSet('Debug','Release','RelWithDebInfo')][string]$Configuration = 'RelWithDebInfo'
+    [ValidateSet('Debug','Release','RelWithDebInfo')][string]$Configuration = 'RelWithDebInfo',
+    # The build tools/build.ps1 made with these (its -lto and -pgogen build folders), as
+    # tools/smoke.ps1. With -Project port (the front end) they pick the front end's build only.
+    [ValidateSet('ON', 'OFF')][string]$Lto = 'OFF',
+    [ValidateSet('', 'generate', 'use', 'off')][string]$Pgo = ''
 )
 $ErrorActionPreference = 'Stop'
 $port = Join-Path $PSScriptRoot "..\$Project" | Resolve-Path
@@ -76,6 +80,11 @@ if ($Nx -or $Project -eq 'port-yeti-nx') {
     $nxArguments = @('--graw_campaign_exe', (Resolve-Path $campaign).Path,
         '--nx_renderer', 'native', '--nx_native_resolution_scale', "$Scale")
 }
+# WAIT_REG_MEM sleeps the packet's own interval between polls, as before the Steam Deck work: its
+# 50 us default is a yield on Windows (rex::thread::Sleep under 100 us), which would spin a core
+# while the emulated renderer's command processor waits on the D3D's swap throttle. The native
+# renderer skips those waits.
+$nxArguments += @('--gpu_wait_reg_mem_sleep_us=-1')
 if ($Native) { $nxArguments += @('--graw_native_primary=true') }
 elseif ($NativeSide) { $nxArguments += @('--graw_native=true') }
 if ($Fps -gt 0) {
@@ -86,7 +95,7 @@ if ($Fps -gt 0) {
 }
 $running = Get-Process -Name graw, grawmp, grawyeti -ErrorAction SilentlyContinue
 if ($running) { throw "GRAW is already running (pid $($running.Id -join ', ')). Quit it first." }
-$executable = Join-Path $port "out\build\win-amd64-$($Configuration.ToLowerInvariant())\$exeName.exe"
+$executable = Join-Path $port ($buildDir + $(if ($Lto -eq 'ON') { '-lto' } else { '' }) + $(if ($Pgo -eq 'generate') { '-pgogen' } else { '' }) + "\$exeName.exe")
 New-Item -ItemType Directory -Force (Join-Path $port 'logs') | Out-Null
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $log = Join-Path $port "logs\run-$stamp.log"

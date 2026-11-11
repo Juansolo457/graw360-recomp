@@ -67,6 +67,11 @@ pwsh -NoProfile -File tools/setup.ps1
      shader translator ([VULKAN_RENDERER.md](VULKAN_RENDERER.md)).
    - `vexptefp-underflow`: a code generator fix; `vexptefp` (2^x) gave huge values instead of 0
      below 2^-127 (found in lotr-conquest-360-recomp's audio; GRAW has 10 of them).
+   - `gpu-known-registers`, `gpu-rptr-writeback`, `gpu-cp-stats` and `gpu-skip-draws-fast-regs`:
+     the command processor's fixes from the Steam Deck work. While the native renderer draws,
+     the game's render thread no longer waits for the command processor to drain everything it
+     queued, the D3D's swap throttle no longer parks it, and register writes are a copy; it logs
+     its counts every few seconds (`--gpu_cp_stats_seconds`, 0 = off).
 3. From that source, it builds the patched code generator and the campaign's renderer plugin. A
    checkout made by an earlier version gets the patches added since, and the tools are rebuilt
    when the patched source changed; the next build regenerates the code.
@@ -106,6 +111,14 @@ Each command translates one program's code into C++ and compiles it:
 - Instant Action: `port-mp/.../grawmp.exe`.
 
 These programs contain code translated from your disc: keep them to yourself.
+
+Optional, as on Linux (`tools/build-linux.sh`'s `GRAW_LTO` and `GRAW_PGO`):
+- `-Lto ON` links with ThinLTO (lld), in its own build folder (`...-lto`).
+- Profile-guided optimization: `-Pgo generate` builds an instrumented program (`...-pgogen`);
+  play with it (it writes `pgo-raw/*.profraw` beside itself every 20 s), then
+  `pwsh -NoProfile -File tools/pgo-merge.ps1 -Project port-yeti <that pgo-raw folder>` makes
+  `pgo/port-yeti/default.profdata`, which later builds of that project use (`-Pgo off` to not).
+  `tools/smoke.ps1` takes the same `-Lto` and `-Pgo` to run those builds.
 
 ## 5. Play
 

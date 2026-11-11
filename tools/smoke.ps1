@@ -20,13 +20,18 @@ param(
     # port = the front end (graw.exe, what a player starts); port-mp = Instant Action/multiplayer (grawmp.exe), port-yeti = the campaign (grawyeti.exe), alone
     [ValidateSet('port', 'port-mp', 'port-yeti', 'port-yeti-nx')][string]$Project = 'port',
     [switch]$FreshProfile,   # start from an empty test profile (the same path through the menus every run)
-    [ValidateSet('Debug','Release','RelWithDebInfo')][string]$Configuration = 'RelWithDebInfo'
+    [ValidateSet('Debug','Release','RelWithDebInfo')][string]$Configuration = 'RelWithDebInfo',
+    # The build tools/build.ps1 made with these (its -lto and -pgogen build folders).
+    [ValidateSet('ON', 'OFF')][string]$Lto = 'OFF',
+    [ValidateSet('', 'generate', 'use', 'off')][string]$Pgo = ''
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $port = Join-Path $root $Project | Resolve-Path
 $exeName = @{ 'port' = 'graw'; 'port-mp' = 'grawmp'; 'port-yeti' = 'grawyeti'; 'port-yeti-nx' = 'grawyeti' }[$Project]
-$executable = Join-Path $port "out\build\win-amd64-$($Configuration.ToLowerInvariant())\$exeName.exe"
+$buildDir = "out\build\win-amd64-$($Configuration.ToLowerInvariant())" +
+            $(if ($Lto -eq 'ON') { '-lto' } else { '' }) + $(if ($Pgo -eq 'generate') { '-pgogen' } else { '' })
+$executable = Join-Path $port "$buildDir\$exeName.exe"
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 New-Item -ItemType Directory -Force (Join-Path $port 'logs') | Out-Null
 $log = Join-Path $port "logs\smoke-$stamp.log"
